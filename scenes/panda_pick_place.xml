@@ -1,0 +1,62 @@
+<mujoco model="panda_pick_place">
+  <compiler angle="radian" autolimits="true" meshdir="../third_party/franka_emika_panda/assets"/>
+  <include file="../third_party/franka_emika_panda/panda.xml"/>
+
+  <statistic center="0.45 0 0.8" extent="0.9"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="145" elevation="-25"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="table_mat" rgba="0.45 0.31 0.20 1"/>
+    <material name="cube_mat" rgba="0.83 0.24 0.24 1"/>
+    <material name="tray_mat" rgba="0.18 0.40 0.75 1"/>
+  </asset>
+
+  <default>
+    <geom solref="0.004 1" solimp="0.95 0.99 0.001" condim="3" friction="0.9 0.05 0.01"/>
+    <default class="marker">
+      <site type="sphere" size="0.008" group="1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="sun" pos="0 0 2.2" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <body name="table" pos="0.52 0 0.73">
+      <geom name="table_top" type="box" size="0.58 0.34 0.02" material="table_mat"/>
+    </body>
+
+    <body name="cube" pos="0.54 -0.12 0.7825">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.08" diaginertia="8.333e-06 8.333e-06 8.333e-06"/>
+      <geom name="cube_geom" type="box" size="0.0125 0.0125 0.0125" material="cube_mat" friction="1.1 0.05 0.01"/>
+      <site name="cube_center" class="marker" rgba="0.95 0.1 0.1 0.9"/>
+      <!-- <site name="cube_hover" class="marker" pos="0 0 0.10" rgba="1 0.65 0.1 0.9"/> -->
+    </body>
+
+    <body name="tray" pos="0.68 0.14 0.755">
+      <geom name="tray_base" type="box" size="0.05 0.05 0.005" material="tray_mat" friction="0.8 0.05 0.01"/>
+      <geom name="tray_wall_north" type="box" pos="0 0.045 0.015" size="0.05 0.005 0.01" material="tray_mat"/>
+      <geom name="tray_wall_south" type="box" pos="0 -0.045 0.015" size="0.05 0.005 0.01" material="tray_mat"/>
+      <geom name="tray_wall_east" type="box" pos="0.045 0 0.015" size="0.005 0.04 0.01" material="tray_mat"/>
+      <geom name="tray_wall_west" type="box" pos="-0.045 0 0.015" size="0.005 0.04 0.01" material="tray_mat"/>
+      <site name="tray_center" class="marker" pos="0 0 0.015" rgba="0.15 0.9 0.25 0.9"/>
+      <!-- <site name="tray_hover" class="marker" pos="0 0 0.115" rgba="0.1 0.8 1 0.9"/> -->
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <key name="task_home"
+      qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04 0.54 -0.12 0.7825 1 0 0 0"
+      ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
+  </keyframe>
+</mujoco>
