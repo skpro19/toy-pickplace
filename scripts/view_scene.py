@@ -48,6 +48,40 @@ def add_site_markers(model: mujoco.MjModel, data: mujoco.MjData, viewer: mujoco.
         viewer.user_scn.ngeom = index + 1
 
 
+def add_world_frame(viewer: mujoco.viewer.Handle, start_index: int = 4) -> None:
+    axis_length = 0.15
+    axis_width = 0.003
+    origin = np.zeros(3)
+    axes = (
+        (np.array([axis_length, 0.0, 0.0]), np.array([1.0, 0.0, 0.0, 1.0]), "world_x"),
+        (np.array([0.0, axis_length, 0.0]), np.array([0.0, 1.0, 0.0, 1.0]), "world_y"),
+        (np.array([0.0, 0.0, axis_length]), np.array([0.0, 0.5, 1.0, 1.0]), "world_z"),
+    )
+
+    for offset, (endpoint, rgba, label) in enumerate(axes):
+        geom_index = start_index + offset
+        if geom_index >= viewer.user_scn.maxgeom:
+            break
+
+        mujoco.mjv_initGeom(
+            viewer.user_scn.geoms[geom_index],
+            type=mujoco.mjtGeom.mjGEOM_ARROW,
+            size=np.zeros(3),
+            pos=np.zeros(3),
+            mat=np.eye(3).ravel(),
+            rgba=rgba,
+        )
+        mujoco.mjv_connector(
+            viewer.user_scn.geoms[geom_index],
+            mujoco.mjtGeom.mjGEOM_ARROW,
+            axis_width,
+            origin,
+            endpoint,
+        )
+        viewer.user_scn.geoms[geom_index].label = label
+        viewer.user_scn.ngeom = geom_index + 1
+
+
 def main() -> None:
     model = mujoco.MjModel.from_xml_path(str(SCENE_PATH))
     data = mujoco.MjData(model)
@@ -66,6 +100,7 @@ def main() -> None:
                 data.ctrl[: model.nu] = model.key_ctrl[home_id, : model.nu]
             mujoco.mj_step(model, data)
             add_site_markers(model, data, viewer)
+            add_world_frame(viewer)
             viewer.sync()
             time.sleep(model.opt.timestep)
 
