@@ -22,6 +22,7 @@ GRIPPER_CLOSE = 0.0
 POS_TOL = 0.02
 ORI_TOL = 0.15
 GRASP_SETTLE_STEPS = 150
+VIEWER_SLOWDOWN = 10.0
 IK_SOLVER = "daqp"
 IK_DAMPING = 1e-3
 MAX_IK_ITERS = 20
@@ -131,15 +132,15 @@ class PickPlaceController:
         if self.phase == Phase.DONE:
             return
 
-        if self.phase == Phase.CLOSE_GRIPPER:
-            self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
-            target = self.target_for_phase()
-            if target is not None:
-                self.last_pos_err, self.last_ori_err = self.run_ik(target)
-            self.settle_steps += 1
-            if self.settle_steps >= GRASP_SETTLE_STEPS:
-                self.phase = Phase.DONE
-            return
+        # if self.phase == Phase.CLOSE_GRIPPER:
+        #     self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
+        #     target = self.target_for_phase()
+        #     if target is not None:
+        #         self.last_pos_err, self.last_ori_err = self.run_ik(target)
+        #     self.settle_steps += 1
+        #     if self.settle_steps >= GRASP_SETTLE_STEPS:
+        #         self.phase = Phase.DONE
+        #     return
 
         self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_OPEN
         target = self.target_for_phase()
@@ -170,7 +171,11 @@ def run_headless(
     return controller.phase, controller
 
 
-def run_viewer(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+def run_viewer(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    slowdown: float = VIEWER_SLOWDOWN,
+) -> None:
     controller = PickPlaceController(model, data)
     viewer_handle: mujoco.viewer.Handle | None = None
 
@@ -197,7 +202,7 @@ def run_viewer(model: mujoco.MjModel, data: mujoco.MjData) -> None:
             controller.step()
             mujoco.mj_step(model, data)
             viewer.sync()
-            time.sleep(model.opt.timestep)
+            time.sleep(model.opt.timestep * slowdown)
 
 
 def main() -> None:
@@ -212,6 +217,12 @@ def main() -> None:
         type=int,
         default=8000,
         help="Step limit for headless runs.",
+    )
+    parser.add_argument(
+        "--slowdown",
+        type=float,
+        default=VIEWER_SLOWDOWN,
+        help="Viewer pacing multiplier (>1 runs slower than real time).",
     )
     args = parser.parse_args()
 
@@ -233,7 +244,7 @@ def main() -> None:
             raise SystemExit(f"Controller did not finish within {args.max_steps} steps.")
         print("Pick-place demo slice completed.")
     else:
-        run_viewer(model, data)
+        run_viewer(model, data, slowdown=args.slowdown)
 
 
 if __name__ == "__main__":
