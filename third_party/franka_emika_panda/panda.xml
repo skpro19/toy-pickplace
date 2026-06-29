@@ -117,9 +117,8 @@
 
   <worldbody>
     <light name="top" pos="0 0 2" mode="trackcom"/>
-    <body name="panda_mount" childclass="panda" pos="0.10 0 0.75">
+    <body name="panda_mount" childclass="panda" pos="0.10 0 0.77">
       <site name="mount_center" type="sphere" size="0.01" group="1" rgba="0.5 0.5 0.9 0.9"/>
-      <!-- <site name="debug_mount" type="sphere" size="0.025" group="0" rgba="0.2 0.4 1 1"/> -->
       <body name="link0">
       <inertial mass="0.629769" pos="-0.041018 -0.00014 0.049974"
         fullinertia="0.00315 0.00388 0.004285 8.2904e-7 0.00015 8.2299e-6"/>
@@ -135,7 +134,6 @@
       <geom mesh="link0_10" material="off_white" class="visual"/>
       <geom mesh="link0_11" material="white" class="visual"/>
       <geom mesh="link0_c" class="collision"/>
-      <!-- <site name="debug_link0" type="sphere" pos="0 0 0.12" size="0.025" group="0" rgba="1 0.2 0.2 1"/> -->
       <body name="link1" pos="0 0 0.333">
         <inertial mass="4.970684" pos="0.003875 0.002081 -0.04762"
           fullinertia="0.70337 0.70661 0.0091170 -0.00013900 0.0067720 0.019169"/>
@@ -157,7 +155,6 @@
             <geom mesh="link3_2" material="white" class="visual"/>
             <geom mesh="link3_3" material="black" class="visual"/>
             <geom mesh="link3_c" class="collision"/>
-            <!-- <site name="debug_link3" type="sphere" size="0.025" group="0" rgba="0.2 1 0.2 1"/> -->
             <body name="link4" pos="0.0825 0 0" quat="1 1 0 0">
               <inertial mass="3.587895" pos="-5.317e-2 1.04419e-1 2.7454e-2"
                 fullinertia="2.5853e-2 1.9552e-2 2.8323e-2 7.796e-3 -1.332e-3 8.641e-3"/>
@@ -220,7 +217,6 @@
                       <geom mesh="hand_3" material="white" class="visual"/>
                       <geom mesh="hand_4" material="off_white" class="visual"/>
                       <geom mesh="hand_c" class="collision"/>
-                      <!-- <site name="debug_hand" type="sphere" pos="0 0 0.04" size="0.025" group="0" rgba="1 0.9 0.1 1"/> -->
                       <body name="left_finger" pos="0 0 0.0584">
                         <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
                         <joint name="finger_joint1" class="finger"/>
