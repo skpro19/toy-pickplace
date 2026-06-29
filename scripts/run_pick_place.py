@@ -1,4 +1,4 @@
-"""Run a scripted pick-place demo: approach cube, descend, close gripper."""
+"""Run a scripted pick-place demo: approach cube, close gripper."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ GRIPPER_OPEN = 255.0
 GRIPPER_CLOSE = 0.0
 
 HOVER_TOL = 0.02
-GRASP_TOL = 0.05
 GRASP_SETTLE_STEPS = 150
 DAMPING = 0.05
 IK_GAIN = 0.5
@@ -32,7 +31,6 @@ TRAY_DROP_OFFSET = np.array([0.0, 0.0, 0.05])
 
 class Phase(Enum):
     MOVE_ABOVE_CUBE = auto()
-    DESCEND_TO_GRASP = auto()
     CLOSE_GRIPPER = auto()
     DONE = auto()
 
@@ -102,14 +100,11 @@ class PickPlaceController:
         self.phase = Phase.MOVE_ABOVE_CUBE
         self.settle_steps = 0
         self.grasp_id = model.site("grasp").id
-        self.cube_center_id = model.site("cube_center").id
         self.cube_hover_id = model.site("cube_hover").id
 
     def target_for_phase(self) -> np.ndarray | None:
-        if self.phase in (Phase.MOVE_ABOVE_CUBE,):
+        if self.phase in (Phase.MOVE_ABOVE_CUBE, Phase.CLOSE_GRIPPER):
             return self.data.site_xpos[self.cube_hover_id].copy()
-        if self.phase in (Phase.DESCEND_TO_GRASP, Phase.CLOSE_GRIPPER):
-            return site_target(self.data, self.cube_center_id, CUBE_GRASP_OFFSET)
         return None
 
     def step(self) -> None:
@@ -133,8 +128,6 @@ class PickPlaceController:
 
         err_norm = ik_toward(self.model, self.data, self.grasp_id, target)
         if self.phase == Phase.MOVE_ABOVE_CUBE and err_norm < HOVER_TOL:
-            self.phase = Phase.DESCEND_TO_GRASP
-        elif self.phase == Phase.DESCEND_TO_GRASP and err_norm < GRASP_TOL:
             self.phase = Phase.CLOSE_GRIPPER
             self.settle_steps = 0
 
