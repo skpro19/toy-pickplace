@@ -23,7 +23,7 @@
   <default>
     <geom solref="0.004 1" solimp="0.95 0.99 0.001" condim="3" friction="0.9 0.05 0.01"/>
     <default class="marker">
-      <site type="sphere" size="0.0001" rgba="1 1 1 0" group="1"/>
+      <site type="sphere" size="0.0001" rgba="1 1 1 1" group="1"/>
     </default>
   </default>
 
@@ -33,13 +33,14 @@
 
     <body name="table" pos="0.52 0 0.73">
       <geom name="table_top" type="box" size="0.58 0.34 0.02" material="table_mat"/>
+      <site name="table_center" class="marker" pos="0 0 0.02"/>
     </body>
 
     <body name="cube" pos="0.54 -0.12 0.7825">
       <freejoint/>
       <inertial pos="0 0 0" mass="0.08" diaginertia="8.333e-06 8.333e-06 8.333e-06"/>
       <geom name="cube_geom" type="box" size="0.0125 0.0125 0.0125" material="cube_mat" friction="1.1 0.05 0.01"/>
-      <site name="cube_center" class="marker" rgba="0.95 0.1 0.1 0.9"/>
+      <!-- <site name="cube_center" class="marker" rgba="0.95 0.1 0.1 0.9"/> -->
       <!-- <site name="cube_hover" class="marker" pos="0 0 0.10" rgba="1 0.65 0.1 0.9"/> -->
     </body>
 
@@ -49,7 +50,7 @@
       <geom name="tray_wall_south" type="box" pos="0 -0.045 0.015" size="0.05 0.005 0.01" material="tray_mat"/>
       <geom name="tray_wall_east" type="box" pos="0.045 0 0.015" size="0.005 0.04 0.01" material="tray_mat"/>
       <geom name="tray_wall_west" type="box" pos="-0.045 0 0.015" size="0.005 0.04 0.01" material="tray_mat"/>
-      <site name="tray_center" class="marker" pos="0 0 0.015" rgba="0.15 0.9 0.25 0.9"/>
+      <!-- <site name="tray_center" class="marker" pos="0 0 0.015" rgba="0.15 0.9 0.25 0.9"/> -->
       <!-- <site name="tray_hover" class="marker" pos="0 0 0.115" rgba="0.1 0.8 1 0.9"/> -->
     </body>
   </worldbody>
