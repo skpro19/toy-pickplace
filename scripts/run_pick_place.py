@@ -9,6 +9,7 @@ from pathlib import Path
 
 import mujoco
 import mujoco.viewer
+import mink
 import numpy as np
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "panda_pick_place.xml"
@@ -18,10 +19,12 @@ GRIPPER_ACTUATOR = 7
 GRIPPER_OPEN = 255.0
 GRIPPER_CLOSE = 0.0
 
-HOVER_TOL = 0.02
+POS_TOL = 0.02
+ORI_TOL = 0.15
 GRASP_SETTLE_STEPS = 150
-DAMPING = 0.05
-IK_GAIN = 0.5
+IK_SOLVER = "daqp"
+IK_DAMPING = 1e-3
+MAX_IK_ITERS = 20
 
 # Offsets in the parent site/body local frame (cube_center / tray_center).
 CUBE_GRASP_OFFSET = np.array([0.0, 0.0, 0.03])
@@ -54,43 +57,34 @@ def reset_home(model: mujoco.MjModel, data: mujoco.MjData) -> None:
     mujoco.mj_forward(model, data)
 
 
+def site_pose(data: mujoco.MjData, site_id: int) -> mink.SE3:
+    pos = data.site_xpos[site_id].copy()
+    rot = mink.SO3.from_matrix(data.site_xmat[site_id].reshape(3, 3))
+    return mink.SE3.from_rotation_and_translation(rot, pos)
+
+
 def site_target(data: mujoco.MjData, site_id: int, local_offset: np.ndarray) -> np.ndarray:
     site_rot = data.site_xmat[site_id].reshape(3, 3)
     return data.site_xpos[site_id] + site_rot @ local_offset
 
 
-def clip_arm_ctrl(model: mujoco.MjModel, data: mujoco.MjData) -> None:
-    for i in range(ARM_DOF):
-        lo, hi = model.actuator_ctrlrange[i]
-        data.ctrl[i] = np.clip(data.ctrl[i], lo, hi)
-
-
-def ik_toward(
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    grasp_id: int,
-    target_pos: np.ndarray,
-) -> float:
-    mujoco.mj_kinematics(model, data)
-    mujoco.mj_comPos(model, data)
-
-    err = target_pos - data.site_xpos[grasp_id]
-    err_norm = float(np.linalg.norm(err))
-    if err_norm < 1e-9:
-        return err_norm
-
-    jacp = np.zeros((3, model.nv))
-    jacr = np.zeros((3, model.nv))
-    mujoco.mj_jacSite(model, data, jacp, jacr, grasp_id)
-
-    j_arm = jacp[:, :ARM_DOF]
-    dq = j_arm.T @ np.linalg.solve(
-        j_arm @ j_arm.T + DAMPING**2 * np.eye(3),
-        err,
-    )
-    data.ctrl[:ARM_DOF] = data.qpos[:ARM_DOF] + IK_GAIN * dq
-    clip_arm_ctrl(model, data)
-    return err_norm
+def converge_ik(
+    configuration: mink.Configuration,
+    grasp_task: mink.FrameTask,
+    tasks: list[mink.Task],
+    dt: float,
+) -> tuple[float, float]:
+    """Run IK substeps on configuration; return final position/orientation error norms."""
+    pos_err = ori_err = 0.0
+    for _ in range(MAX_IK_ITERS):
+        vel = mink.solve_ik(configuration, tasks, dt, IK_SOLVER, damping=IK_DAMPING)
+        configuration.integrate_inplace(vel, dt)
+        err = grasp_task.compute_error(configuration)
+        pos_err = float(np.linalg.norm(err[:3]))
+        ori_err = float(np.linalg.norm(err[3:]))
+        if pos_err <= POS_TOL and ori_err <= ORI_TOL:
+            break
+    return pos_err, ori_err
 
 
 class PickPlaceController:
@@ -99,13 +93,39 @@ class PickPlaceController:
         self.data = data
         self.phase = Phase.MOVE_ABOVE_CUBE
         self.settle_steps = 0
-        self.grasp_id = model.site("grasp").id
         self.cube_hover_id = model.site("cube_hover").id
+        self.dt = model.opt.timestep
+        self.last_pos_err = float("inf")
+        self.last_ori_err = float("inf")
 
-    def target_for_phase(self) -> np.ndarray | None:
+        self.configuration = mink.Configuration(model)
+        self.configuration.update(data.qpos)
+        self.grasp_task = mink.FrameTask(
+            frame_name="grasp",
+            frame_type="site",
+            position_cost=1.0,
+            orientation_cost=1.0,
+            lm_damping=1.0,
+        )
+        self.posture_task = mink.PostureTask(model, cost=1e-2)
+        self.posture_task.set_target_from_configuration(self.configuration)
+        self.ik_tasks: list[mink.Task] = [self.grasp_task, self.posture_task]
+
+    def target_for_phase(self) -> mink.SE3 | None:
         if self.phase in (Phase.MOVE_ABOVE_CUBE, Phase.CLOSE_GRIPPER):
-            return self.data.site_xpos[self.cube_hover_id].copy()
+            return site_pose(self.data, self.cube_hover_id)
         return None
+
+    def run_ik(self, target: mink.SE3) -> tuple[float, float]:
+        self.grasp_task.set_target(target)
+        pos_err, ori_err = converge_ik(
+            self.configuration,
+            self.grasp_task,
+            self.ik_tasks,
+            self.dt,
+        )
+        self.data.ctrl[:ARM_DOF] = self.configuration.q[:ARM_DOF]
+        return pos_err, ori_err
 
     def step(self) -> None:
         if self.phase == Phase.DONE:
@@ -115,7 +135,7 @@ class PickPlaceController:
             self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
             target = self.target_for_phase()
             if target is not None:
-                ik_toward(self.model, self.data, self.grasp_id, target)
+                self.last_pos_err, self.last_ori_err = self.run_ik(target)
             self.settle_steps += 1
             if self.settle_steps >= GRASP_SETTLE_STEPS:
                 self.phase = Phase.DONE
@@ -126,20 +146,28 @@ class PickPlaceController:
         if target is None:
             return
 
-        err_norm = ik_toward(self.model, self.data, self.grasp_id, target)
-        if self.phase == Phase.MOVE_ABOVE_CUBE and err_norm < HOVER_TOL:
+        self.last_pos_err, self.last_ori_err = self.run_ik(target)
+        if (
+            self.phase == Phase.MOVE_ABOVE_CUBE
+            and self.last_pos_err <= POS_TOL
+            and self.last_ori_err <= ORI_TOL
+        ):
             self.phase = Phase.CLOSE_GRIPPER
             self.settle_steps = 0
 
 
-def run_headless(model: mujoco.MjModel, data: mujoco.MjData, max_steps: int) -> Phase:
+def run_headless(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    max_steps: int,
+) -> tuple[Phase, PickPlaceController]:
     controller = PickPlaceController(model, data)
     for _ in range(max_steps):
         controller.step()
         mujoco.mj_step(model, data)
         if controller.phase == Phase.DONE:
             break
-    return controller.phase
+    return controller.phase, controller
 
 
 def run_viewer(model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -192,11 +220,15 @@ def main() -> None:
     reset_home(model, data)
 
     if args.headless:
-        final_phase = run_headless(model, data, args.max_steps)
+        final_phase, controller = run_headless(model, data, args.max_steps)
         grasp_pos = data.site_xpos[model.site("grasp").id]
         print(f"Final phase: {final_phase.name}")
         print(f"Grasp site: {grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f}")
         print(f"Gripper ctrl: {data.ctrl[GRIPPER_ACTUATOR]:.1f}")
+        print(
+            f"IK error: pos={controller.last_pos_err:.4f} m, "
+            f"ori={controller.last_ori_err:.4f} rad"
+        )
         if final_phase != Phase.DONE:
             raise SystemExit(f"Controller did not finish within {args.max_steps} steps.")
         print("Pick-place demo slice completed.")
