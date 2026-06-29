@@ -23,7 +23,7 @@
   <default>
     <geom solref="0.004 1" solimp="0.95 0.99 0.001" condim="3" friction="0.9 0.05 0.01"/>
     <default class="marker">
-      <site type="sphere" size="0.008" group="1"/>
+      <site type="sphere" size="0.0001" rgba="1 1 1 0" group="1"/>
     </default>
   </default>
 
