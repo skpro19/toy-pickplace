@@ -25,7 +25,6 @@ DAMPING = 0.05
 IK_GAIN = 0.5
 
 # Offsets in the parent site/body local frame (cube_center / tray_center).
-CUBE_HOVER_OFFSET = np.array([0.0, 0.0, 0.10])
 CUBE_GRASP_OFFSET = np.array([0.0, 0.0, 0.03])
 TRAY_HOVER_OFFSET = np.array([0.0, 0.0, 0.085])
 TRAY_DROP_OFFSET = np.array([0.0, 0.0, 0.05])
@@ -104,10 +103,11 @@ class PickPlaceController:
         self.settle_steps = 0
         self.grasp_id = model.site("grasp").id
         self.cube_center_id = model.site("cube_center").id
+        self.cube_hover_id = model.site("cube_hover").id
 
     def target_for_phase(self) -> np.ndarray | None:
         if self.phase in (Phase.MOVE_ABOVE_CUBE,):
-            return site_target(self.data, self.cube_center_id, CUBE_HOVER_OFFSET)
+            return self.data.site_xpos[self.cube_hover_id].copy()
         if self.phase in (Phase.DESCEND_TO_GRASP, Phase.CLOSE_GRIPPER):
             return site_target(self.data, self.cube_center_id, CUBE_GRASP_OFFSET)
         return None
