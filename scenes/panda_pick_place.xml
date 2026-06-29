@@ -8,7 +8,7 @@
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
     <rgba haze="0.15 0.25 0.35 1"/>
     <global azimuth="145" elevation="-25"/>
-    <scale framelength="0.4" framewidth="0.04"/>
+    <scale framelength="0.4" framewidth="0.01"/>
   </visual>
 
   <asset>
@@ -33,32 +33,32 @@
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
     <body name="table" pos="0.52 0 0.73">
-      <geom name="table_top" type="box" size="0.58 0.34 0.02" material="table_mat"/>
-      <site name="table_center" class="marker" pos="0 0 0.02"/>
+      <geom name="table_top" type="box" size="1.16 0.68 0.04" material="table_mat"/>
+      <site name="table_center" class="marker" pos="0 0 0.04"/>
     </body>
 
-    <body name="cube" pos="0.54 -0.12 0.7825">
+    <body name="cube" pos="0.54 -0.12 0.815">
       <freejoint/>
-      <inertial pos="0 0 0" mass="0.08" diaginertia="8.333e-06 8.333e-06 8.333e-06"/>
-      <geom name="cube_geom" type="box" size="0.0125 0.0125 0.0125" material="cube_mat" friction="1.1 0.05 0.01"/>
-      <!-- <site name="cube_center" class="marker" rgba="0.95 0.1 0.1 0.9"/> -->
+      <inertial pos="0 0 0" mass="0.64" diaginertia="2.667e-04 2.667e-04 2.667e-04"/>
+      <geom name="cube_geom" type="box" size="0.025 0.025 0.025" material="cube_mat" friction="1.1 0.05 0.01"/>
+      <site name="cube_center" class="marker" rgba="0.95 0.1 0.1 0.9"/>
       <!-- <site name="cube_hover" class="marker" pos="0 0 0.10" rgba="1 0.65 0.1 0.9"/> -->
     </body>
 
-    <body name="tray" pos="0.68 0.14 0.755">
-      <geom name="tray_base" type="box" size="0.05 0.05 0.005" material="tray_mat" friction="0.8 0.05 0.01"/>
-      <geom name="tray_wall_north" type="box" pos="0 0.045 0.015" size="0.05 0.005 0.01" material="tray_mat"/>
-      <geom name="tray_wall_south" type="box" pos="0 -0.045 0.015" size="0.05 0.005 0.01" material="tray_mat"/>
-      <geom name="tray_wall_east" type="box" pos="0.045 0 0.015" size="0.005 0.04 0.01" material="tray_mat"/>
-      <geom name="tray_wall_west" type="box" pos="-0.045 0 0.015" size="0.005 0.04 0.01" material="tray_mat"/>
-      <!-- <site name="tray_center" class="marker" pos="0 0 0.015" rgba="0.15 0.9 0.25 0.9"/> -->
+    <body name="tray" pos="0.68 0.14 0.78">
+      <geom name="tray_base" type="box" size="0.1 0.1 0.01" material="tray_mat" friction="0.8 0.05 0.01"/>
+      <geom name="tray_wall_north" type="box" pos="0 0.09 0.03" size="0.1 0.01 0.02" material="tray_mat"/>
+      <geom name="tray_wall_south" type="box" pos="0 -0.09 0.03" size="0.1 0.01 0.02" material="tray_mat"/>
+      <geom name="tray_wall_east" type="box" pos="0.09 0 0.03" size="0.01 0.08 0.02" material="tray_mat"/>
+      <geom name="tray_wall_west" type="box" pos="-0.09 0 0.03" size="0.01 0.08 0.02" material="tray_mat"/>
+      <site name="tray_center" class="marker" pos="0 0 0.03" rgba="0.15 0.9 0.25 0.9"/>
       <!-- <site name="tray_hover" class="marker" pos="0 0 0.115" rgba="0.1 0.8 1 0.9"/> -->
     </body>
   </worldbody>
 
   <keyframe>
     <key name="task_home"
-      qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04 0.54 -0.12 0.7825 1 0 0 0"
+      qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04 0.54 -0.12 0.815 1 0 0 0"
       ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
   </keyframe>
 </mujoco>
