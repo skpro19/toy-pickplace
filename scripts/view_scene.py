@@ -31,8 +31,20 @@ def main() -> None:
     data = mujoco.MjData(model)
     reset_home(model, data)
     home_id = find_reset_key(model)
+    viewer_handle: mujoco.viewer.Handle | None = None
 
-    with mujoco.viewer.launch_passive(model, data, show_left_ui=True, show_right_ui=True) as viewer:
+    def key_callback(keycode: int) -> None:
+        if chr(keycode).lower() == "q" and viewer_handle is not None:
+            viewer_handle.close()
+
+    with mujoco.viewer.launch_passive(
+        model,
+        data,
+        key_callback=key_callback,
+        show_left_ui=True,
+        show_right_ui=True,
+    ) as viewer:
+        viewer_handle = viewer
         viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
         viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
         viewer.cam.lookat[:] = (0.45, 0.0, 0.78)
