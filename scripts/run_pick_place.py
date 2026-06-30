@@ -21,6 +21,7 @@ GRIPPER_CLOSE = 0.0
 
 POS_TOL = 0.02
 ORI_TOL = 0.15
+ARRIVAL_SETTLE_STEPS = 15
 GRASP_SETTLE_STEPS = 150
 VIEWER_SLOWDOWN = 10.0
 IK_SOLVER = "daqp"
@@ -35,6 +36,7 @@ TRAY_DROP_OFFSET = np.array([0.0, 0.0, 0.05])
 
 class Phase(Enum):
     MOVE_ABOVE_CUBE = auto()
+    MOVE_TO_CUBE_GRASP = auto()
     CLOSE_GRIPPER = auto()
     DONE = auto()
 
@@ -69,6 +71,13 @@ def site_target(data: mujoco.MjData, site_id: int, local_offset: np.ndarray) -> 
     return data.site_xpos[site_id] + site_rot @ local_offset
 
 
+def rotation_error(rot_a: np.ndarray, rot_b: np.ndarray) -> float:
+    """Angle in radians between two 3x3 rotation matrices."""
+    rot_err = rot_a.T @ rot_b
+    cos_angle = (np.trace(rot_err) - 1.0) / 2.0
+    return float(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+
+
 def converge_ik(
     configuration: mink.Configuration,
     grasp_task: mink.FrameTask,
@@ -94,7 +103,9 @@ class PickPlaceController:
         self.data = data
         self.phase = Phase.MOVE_ABOVE_CUBE
         self.settle_steps = 0
+        self.grasp_id = model.site("grasp").id
         self.cube_hover_id = model.site("cube_hover").id
+        self.cube_grasp_id = model.site("cube_grasp").id
         self.dt = model.opt.timestep
         self.last_pos_err = float("inf")
         self.last_ori_err = float("inf")
@@ -112,47 +123,86 @@ class PickPlaceController:
         self.posture_task.set_target_from_configuration(self.configuration)
         self.ik_tasks: list[mink.Task] = [self.grasp_task, self.posture_task]
 
-    def target_for_phase(self) -> mink.SE3 | None:
-        if self.phase in (Phase.MOVE_ABOVE_CUBE, Phase.CLOSE_GRIPPER):
-            return site_pose(self.data, self.cube_hover_id)
+    def target_site_id_for_phase(self) -> int | None:
+        if self.phase == Phase.MOVE_ABOVE_CUBE:
+            return self.cube_hover_id
+        if self.phase in (Phase.MOVE_TO_CUBE_GRASP, Phase.CLOSE_GRIPPER):
+            return self.cube_grasp_id
         return None
 
-    def run_ik(self, target: mink.SE3) -> tuple[float, float]:
+    def target_for_phase(self) -> mink.SE3 | None:
+        target_id = self.target_site_id_for_phase()
+        if target_id is None:
+            return None
+        return site_pose(self.data, target_id)
+
+    def sim_tracking_error(self) -> tuple[float, float]:
+        target_id = self.target_site_id_for_phase()
+        if target_id is None:
+            return float("inf"), float("inf")
+        pos_err = float(
+            np.linalg.norm(
+                self.data.site_xpos[self.grasp_id] - self.data.site_xpos[target_id]
+            )
+        )
+        grasp_rot = self.data.site_xmat[self.grasp_id].reshape(3, 3)
+        target_rot = self.data.site_xmat[target_id].reshape(3, 3)
+        ori_err = rotation_error(target_rot, grasp_rot)
+        return pos_err, ori_err
+
+    def run_ik(self, target: mink.SE3) -> None:
         self.grasp_task.set_target(target)
-        pos_err, ori_err = converge_ik(
+        converge_ik(
             self.configuration,
             self.grasp_task,
             self.ik_tasks,
             self.dt,
         )
         self.data.ctrl[:ARM_DOF] = self.configuration.q[:ARM_DOF]
-        return pos_err, ori_err
 
-    def step(self) -> None:
+    def control(self) -> None:
         if self.phase == Phase.DONE:
             return
 
-        # if self.phase == Phase.CLOSE_GRIPPER:
-        #     self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
-        #     target = self.target_for_phase()
-        #     if target is not None:
-        #         self.last_pos_err, self.last_ori_err = self.run_ik(target)
-        #     self.settle_steps += 1
-        #     if self.settle_steps >= GRASP_SETTLE_STEPS:
-        #         self.phase = Phase.DONE
-        #     return
+        if self.phase == Phase.CLOSE_GRIPPER:
+            self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
+            target = self.target_for_phase()
+            if target is not None:
+                self.configuration.update(self.data.qpos)
+                self.run_ik(target)
+            return
 
         self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_OPEN
         target = self.target_for_phase()
         if target is None:
             return
 
-        self.last_pos_err, self.last_ori_err = self.run_ik(target)
-        if (
-            self.phase == Phase.MOVE_ABOVE_CUBE
-            and self.last_pos_err <= POS_TOL
-            and self.last_ori_err <= ORI_TOL
-        ):
+        self.configuration.update(self.data.qpos)
+        self.run_ik(target)
+
+    def update_phase(self) -> None:
+        if self.phase == Phase.DONE:
+            return
+
+        if self.phase == Phase.CLOSE_GRIPPER:
+            self.settle_steps += 1
+            if self.settle_steps >= GRASP_SETTLE_STEPS:
+                self.phase = Phase.DONE
+            return
+
+        self.last_pos_err, self.last_ori_err = self.sim_tracking_error()
+        if self.last_pos_err <= POS_TOL and self.last_ori_err <= ORI_TOL:
+            self.settle_steps += 1
+        else:
+            self.settle_steps = 0
+
+        if self.settle_steps < ARRIVAL_SETTLE_STEPS:
+            return
+
+        if self.phase == Phase.MOVE_ABOVE_CUBE:
+            self.phase = Phase.MOVE_TO_CUBE_GRASP
+            self.settle_steps = 0
+        elif self.phase == Phase.MOVE_TO_CUBE_GRASP:
             self.phase = Phase.CLOSE_GRIPPER
             self.settle_steps = 0
 
@@ -164,8 +214,9 @@ def run_headless(
 ) -> tuple[Phase, PickPlaceController]:
     controller = PickPlaceController(model, data)
     for _ in range(max_steps):
-        controller.step()
+        controller.control()
         mujoco.mj_step(model, data)
+        controller.update_phase()
         if controller.phase == Phase.DONE:
             break
     return controller.phase, controller
@@ -199,8 +250,9 @@ def run_viewer(
         viewer.cam.elevation = -25
 
         while viewer.is_running():
-            controller.step()
+            controller.control()
             mujoco.mj_step(model, data)
+            controller.update_phase()
             viewer.sync()
             time.sleep(model.opt.timestep * slowdown)
 
@@ -237,7 +289,7 @@ def main() -> None:
         print(f"Grasp site: {grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f}")
         print(f"Gripper ctrl: {data.ctrl[GRIPPER_ACTUATOR]:.1f}")
         print(
-            f"IK error: pos={controller.last_pos_err:.4f} m, "
+            f"Sim tracking error: pos={controller.last_pos_err:.4f} m, "
             f"ori={controller.last_ori_err:.4f} rad"
         )
         if final_phase != Phase.DONE:
