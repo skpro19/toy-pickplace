@@ -30,6 +30,7 @@ IK_DAMPING = 1e-3
 MAX_IK_ITERS = 20
 CUBE_LIFT_MIN_DELTA = 0.05
 TRAY_PLACE_TOL = 0.08
+HOME_JOINT_TOL = 0.03
 
 # Offsets in the parent site/body local frame (cube_center / tray_center).
 CUBE_GRASP_OFFSET = np.array([0.0, 0.0, 0.03])
@@ -46,6 +47,7 @@ class Phase(Enum):
     LOWER_TO_TRAY = auto()
     RELEASE = auto()
     RETREAT = auto()
+    HOME = auto()
     DONE = auto()
 
 
@@ -136,6 +138,12 @@ class PickPlaceController:
         self.lift_target: mink.SE3 | None = None
         self.tray_hover_target: mink.SE3 | None = None
         self.tray_drop_target: mink.SE3 | None = None
+        self.home_qpos = data.qpos.copy()
+        self.home_ctrl = data.ctrl.copy()
+        home_key_id = find_reset_key(model)
+        if home_key_id >= 0:
+            self.home_qpos = model.key_qpos[home_key_id].copy()
+            self.home_ctrl = model.key_ctrl[home_key_id].copy()
 
         self.configuration = mink.Configuration(model)
         self.configuration.update(data.qpos)
@@ -217,6 +225,11 @@ class PickPlaceController:
         if self.phase == Phase.DONE:
             return
 
+        if self.phase == Phase.HOME:
+            self.data.ctrl[: self.model.nu] = self.home_ctrl[: self.model.nu]
+            self.configuration.update(self.data.qpos)
+            return
+
         if self.phase in (
             Phase.CLOSE_GRIPPER,
             Phase.LIFT_CUBE,
@@ -255,6 +268,21 @@ class PickPlaceController:
             self.settle_steps += 1
             if self.settle_steps >= RELEASE_SETTLE_STEPS:
                 self.phase = Phase.RETREAT
+                self.settle_steps = 0
+            return
+
+        if self.phase == Phase.HOME:
+            joint_err = float(
+                np.max(np.abs(self.data.qpos[:ARM_DOF] - self.home_qpos[:ARM_DOF]))
+            )
+            self.last_pos_err = joint_err
+            self.last_ori_err = 0.0
+            if joint_err <= HOME_JOINT_TOL:
+                self.settle_steps += 1
+            else:
+                self.settle_steps = 0
+            if self.settle_steps >= ARRIVAL_SETTLE_STEPS:
+                self.phase = Phase.DONE
                 self.settle_steps = 0
             return
 
@@ -305,7 +333,7 @@ class PickPlaceController:
             self.phase = Phase.RELEASE
             self.settle_steps = 0
         elif self.phase == Phase.RETREAT:
-            self.phase = Phase.DONE
+            self.phase = Phase.HOME
             self.settle_steps = 0
 
 
