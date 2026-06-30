@@ -38,6 +38,7 @@ class Phase(Enum):
     MOVE_ABOVE_CUBE = auto()
     MOVE_TO_CUBE_GRASP = auto()
     CLOSE_GRIPPER = auto()
+    LIFT_CUBE = auto()
     DONE = auto()
 
 
@@ -106,6 +107,9 @@ class PickPlaceController:
         self.grasp_id = model.site("grasp").id
         self.cube_hover_id = model.site("cube_hover").id
         self.cube_grasp_id = model.site("cube_grasp").id
+        
+        self.cube_lift_id = model.site("cube_lift").id
+        
         self.dt = model.opt.timestep
         self.last_pos_err = float("inf")
         self.last_ori_err = float("inf")
@@ -128,6 +132,8 @@ class PickPlaceController:
             return self.cube_hover_id
         if self.phase in (Phase.MOVE_TO_CUBE_GRASP, Phase.CLOSE_GRIPPER):
             return self.cube_grasp_id
+        if self.phase == Phase.LIFT_CUBE:
+            return self.cube_lift_id
         return None
 
     def target_for_phase(self) -> mink.SE3 | None:
@@ -164,7 +170,15 @@ class PickPlaceController:
         if self.phase == Phase.DONE:
             return
 
-        if self.phase == Phase.CLOSE_GRIPPER:
+        # if self.phase == Phase.LIFT_CUBE:
+        #     self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
+        #     target = self.target_for_phase()
+        #     if target is not None:
+        #         self.configuration.update(self.data.qpos)
+        #         self.run_ik(target)
+        #     return
+
+        if self.phase in (Phase.CLOSE_GRIPPER, Phase.LIFT_CUBE):
             self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
             target = self.target_for_phase()
             if target is not None:
@@ -187,7 +201,9 @@ class PickPlaceController:
         if self.phase == Phase.CLOSE_GRIPPER:
             self.settle_steps += 1
             if self.settle_steps >= GRASP_SETTLE_STEPS:
-                self.phase = Phase.DONE
+                self.phase = Phase.LIFT_CUBE
+                self.settle_steps = 0
+
             return
 
         self.last_pos_err, self.last_ori_err = self.sim_tracking_error()
@@ -204,6 +220,9 @@ class PickPlaceController:
             self.settle_steps = 0
         elif self.phase == Phase.MOVE_TO_CUBE_GRASP:
             self.phase = Phase.CLOSE_GRIPPER
+            self.settle_steps = 0
+        elif self.phase == Phase.LIFT_CUBE:
+            self.phase = Phase.DONE
             self.settle_steps = 0
 
 
@@ -250,6 +269,7 @@ def run_viewer(
         viewer.cam.elevation = -25
 
         while viewer.is_running():
+            print(f"Phase: {controller.phase}")
             controller.control()
             mujoco.mj_step(model, data)
             controller.update_phase()
