@@ -39,11 +39,11 @@
 
     <body name="cube" pos="0.54 -0.12 0.815">
       <freejoint/>
-      <inertial pos="0 0 0" mass="0.64" diaginertia="2.667e-04 2.667e-04 2.667e-04"/>
+      <inertial pos="0 0 0" mass="0.10" diaginertia="2.667e-04 2.667e-04 2.667e-04"/>
       <geom name="cube_geom" type="box" size="0.025 0.025 0.025" material="cube_mat" friction="3.0 0.2 0.05"/>
       <site name="cube_center" class="marker" rgba="0.95 0.1 0.1 0.9"/>
       <site name="cube_hover" class="marker" pos="0 0 0.15" quat="0 1 0 0" rgba="1 0.65 0.1 0.9"/>
-      <site name="cube_grasp" class="marker" pos="0 0 0.05" quat="0 1 0 0" rgba="0.95 0.2 0.2 0.9"/>
+      <site name="cube_grasp" class="marker" pos="0 0 0.04" quat="0 1 0 0" rgba="0.95 0.2 0.2 0.9"/>
       <site name="cube_lift" class="marker" pos="0 0 0.18" quat="0 1 0 0" rgba="0.1 0.8 1 0.9"/>
     </body>
 

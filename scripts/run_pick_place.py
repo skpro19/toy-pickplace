@@ -1,4 +1,4 @@
-"""Run a scripted pick-place demo: approach cube, close gripper."""
+"""Run a scripted pick-place demo from cube grasp to tray release."""
 
 from __future__ import annotations
 
@@ -23,15 +23,17 @@ POS_TOL = 0.02
 ORI_TOL = 0.15
 ARRIVAL_SETTLE_STEPS = 15
 GRASP_SETTLE_STEPS = 150
+RELEASE_SETTLE_STEPS = 100
 VIEWER_SLOWDOWN = 10.0
 IK_SOLVER = "daqp"
 IK_DAMPING = 1e-3
 MAX_IK_ITERS = 20
 CUBE_LIFT_MIN_DELTA = 0.05
+TRAY_PLACE_TOL = 0.08
 
 # Offsets in the parent site/body local frame (cube_center / tray_center).
 CUBE_GRASP_OFFSET = np.array([0.0, 0.0, 0.03])
-TRAY_HOVER_OFFSET = np.array([0.0, 0.0, 0.085])
+TRAY_HOVER_OFFSET = np.array([0.0, 0.0, 0.11])
 TRAY_DROP_OFFSET = np.array([0.0, 0.0, 0.05])
 
 
@@ -40,6 +42,10 @@ class Phase(Enum):
     MOVE_TO_CUBE_GRASP = auto()
     CLOSE_GRIPPER = auto()
     LIFT_CUBE = auto()
+    MOVE_TO_TRAY = auto()
+    LOWER_TO_TRAY = auto()
+    RELEASE = auto()
+    RETREAT = auto()
     DONE = auto()
 
 
@@ -71,6 +77,18 @@ def site_pose(data: mujoco.MjData, site_id: int) -> mink.SE3:
 def site_target(data: mujoco.MjData, site_id: int, local_offset: np.ndarray) -> np.ndarray:
     site_rot = data.site_xmat[site_id].reshape(3, 3)
     return data.site_xpos[site_id] + site_rot @ local_offset
+
+
+def offset_site_pose(
+    data: mujoco.MjData,
+    site_id: int,
+    local_offset: np.ndarray,
+    rotation: mink.SO3,
+) -> mink.SE3:
+    return mink.SE3.from_rotation_and_translation(
+        rotation,
+        site_target(data, site_id, local_offset),
+    )
 
 
 def rotation_error(rot_a: np.ndarray, rot_b: np.ndarray) -> float:
@@ -108,13 +126,16 @@ class PickPlaceController:
         self.grasp_id = model.site("grasp").id
         self.cube_hover_id = model.site("cube_hover").id
         self.cube_grasp_id = model.site("cube_grasp").id
-        
         self.cube_lift_id = model.site("cube_lift").id
-        
+        self.tray_center_id = model.site("tray_center").id
+
         self.dt = model.opt.timestep
         self.last_pos_err = float("inf")
         self.last_ori_err = float("inf")
+        self.max_cube_z = float(data.body("cube").xpos[2])
         self.lift_target: mink.SE3 | None = None
+        self.tray_hover_target: mink.SE3 | None = None
+        self.tray_drop_target: mink.SE3 | None = None
 
         self.configuration = mink.Configuration(model)
         self.configuration.update(data.qpos)
@@ -138,20 +159,33 @@ class PickPlaceController:
             return self.cube_lift_id
         return None
 
-    def target_for_phase(self) -> mink.SE3 | None:
-        if self.phase == Phase.LIFT_CUBE and self.lift_target is not None:
+    def fixed_target_for_phase(self) -> mink.SE3 | None:
+        if self.phase == Phase.LIFT_CUBE:
             return self.lift_target
+        if self.phase == Phase.MOVE_TO_TRAY:
+            return self.tray_hover_target
+        if self.phase in (Phase.LOWER_TO_TRAY, Phase.RELEASE):
+            return self.tray_drop_target
+        if self.phase == Phase.RETREAT:
+            return self.tray_hover_target
+        return None
+
+    def target_for_phase(self) -> mink.SE3 | None:
+        fixed_target = self.fixed_target_for_phase()
+        if fixed_target is not None:
+            return fixed_target
         target_id = self.target_site_id_for_phase()
         if target_id is None:
             return None
         return site_pose(self.data, target_id)
 
     def sim_tracking_error(self) -> tuple[float, float]:
-        if self.phase == Phase.LIFT_CUBE and self.lift_target is not None:
+        fixed_target = self.fixed_target_for_phase()
+        if fixed_target is not None:
             grasp_pos = self.data.site_xpos[self.grasp_id]
             grasp_rot = self.data.site_xmat[self.grasp_id].reshape(3, 3)
-            target_pos = self.lift_target.translation()
-            target_rot = self.lift_target.rotation().as_matrix()
+            target_pos = fixed_target.translation()
+            target_rot = fixed_target.rotation().as_matrix()
             pos_err = float(np.linalg.norm(grasp_pos - target_pos))
             ori_err = rotation_error(target_rot, grasp_rot)
             return pos_err, ori_err
@@ -183,15 +217,12 @@ class PickPlaceController:
         if self.phase == Phase.DONE:
             return
 
-        # if self.phase == Phase.LIFT_CUBE:
-        #     self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
-        #     target = self.target_for_phase()
-        #     if target is not None:
-        #         self.configuration.update(self.data.qpos)
-        #         self.run_ik(target)
-        #     return
-
-        if self.phase in (Phase.CLOSE_GRIPPER, Phase.LIFT_CUBE):
+        if self.phase in (
+            Phase.CLOSE_GRIPPER,
+            Phase.LIFT_CUBE,
+            Phase.MOVE_TO_TRAY,
+            Phase.LOWER_TO_TRAY,
+        ):
             self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
             target = self.target_for_phase()
             if target is not None:
@@ -220,6 +251,13 @@ class PickPlaceController:
 
             return
 
+        if self.phase == Phase.RELEASE:
+            self.settle_steps += 1
+            if self.settle_steps >= RELEASE_SETTLE_STEPS:
+                self.phase = Phase.RETREAT
+                self.settle_steps = 0
+            return
+
         self.last_pos_err, self.last_ori_err = self.sim_tracking_error()
         if self.last_pos_err <= POS_TOL and self.last_ori_err <= ORI_TOL:
             self.settle_steps += 1
@@ -236,6 +274,37 @@ class PickPlaceController:
             self.phase = Phase.CLOSE_GRIPPER
             self.settle_steps = 0
         elif self.phase == Phase.LIFT_CUBE:
+            lift_rotation = (
+                self.lift_target.rotation()
+                if self.lift_target
+                else site_pose(self.data, self.cube_lift_id).rotation()
+            )
+            self.tray_hover_target = offset_site_pose(
+                self.data,
+                self.tray_center_id,
+                TRAY_HOVER_OFFSET,
+                lift_rotation,
+            )
+            self.phase = Phase.MOVE_TO_TRAY
+            self.settle_steps = 0
+        elif self.phase == Phase.MOVE_TO_TRAY:
+            tray_rotation = (
+                self.tray_hover_target.rotation()
+                if self.tray_hover_target
+                else site_pose(self.data, self.grasp_id).rotation()
+            )
+            self.tray_drop_target = offset_site_pose(
+                self.data,
+                self.tray_center_id,
+                TRAY_DROP_OFFSET,
+                tray_rotation,
+            )
+            self.phase = Phase.LOWER_TO_TRAY
+            self.settle_steps = 0
+        elif self.phase == Phase.LOWER_TO_TRAY:
+            self.phase = Phase.RELEASE
+            self.settle_steps = 0
+        elif self.phase == Phase.RETREAT:
             self.phase = Phase.DONE
             self.settle_steps = 0
 
@@ -249,6 +318,10 @@ def run_headless(
     for _ in range(max_steps):
         controller.control()
         mujoco.mj_step(model, data)
+        controller.max_cube_z = max(
+            controller.max_cube_z,
+            float(data.body("cube").xpos[2]),
+        )
         controller.update_phase()
         if controller.phase == Phase.DONE:
             break
@@ -321,10 +394,14 @@ def main() -> None:
         final_phase, controller = run_headless(model, data, args.max_steps)
         grasp_pos = data.site_xpos[model.site("grasp").id]
         cube_pos = data.body("cube").xpos
+        tray_pos = data.site_xpos[model.site("tray_center").id]
+        cube_lift = controller.max_cube_z - initial_cube_z
+        tray_error = float(np.linalg.norm(cube_pos[:2] - tray_pos[:2]))
         print(f"Final phase: {final_phase.name}")
         print(f"Grasp site: {grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f}")
         print(f"Cube center: {cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f}")
-        print(f"Cube lift: {cube_pos[2] - initial_cube_z:.3f} m")
+        print(f"Max cube lift: {cube_lift:.3f} m")
+        print(f"Tray XY error: {tray_error:.3f} m")
         print(f"Gripper ctrl: {data.ctrl[GRIPPER_ACTUATOR]:.1f}")
         print(
             f"Sim tracking error: pos={controller.last_pos_err:.4f} m, "
@@ -332,8 +409,10 @@ def main() -> None:
         )
         if final_phase != Phase.DONE:
             raise SystemExit(f"Controller did not finish within {args.max_steps} steps.")
-        if cube_pos[2] - initial_cube_z < CUBE_LIFT_MIN_DELTA:
+        if cube_lift < CUBE_LIFT_MIN_DELTA:
             raise SystemExit("Cube was not lifted by the gripper.")
+        if tray_error > TRAY_PLACE_TOL:
+            raise SystemExit("Cube was not placed inside the tray.")
         print("Pick-place demo slice completed.")
     else:
         run_viewer(model, data, slowdown=args.slowdown)

@@ -7,5 +7,5 @@
 | `MOVE_TO_TRAY` | Move above tray           | EE is above tray               |
 | `LOWER`        | Move down into tray       | Cube is inside tray height     |
 | `RELEASE`      | Open gripper              | Gripper opened for N steps     |
-    | `RETREAT`      | Move upward               | EE has moved away              |
+| `RETREAT`      | Move upward               | EE has moved away              |
 | `DONE`         | Stop                      | Cube is stable in tray         |
