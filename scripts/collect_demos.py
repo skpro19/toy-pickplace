@@ -1,243 +1,166 @@
-"""Collect expert pick-place demonstrations for behaviour cloning."""
+"""Collect scripted pick-place demonstrations for behaviour cloning.
+
+This is intentionally a high-level scaffold. Fill in the TODOs as an exercise:
+define the observation vector, record actions, decide success, and save episodes.
+"""
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 
 import mujoco
-import numpy as np
 
-from expert import (
-    CUBE_LIFT_MIN_DELTA,
-    Phase,
-    PickPlaceController,
-    SCENE_PATH,
-    TRAY_PLACE_TOL,
-    reset_home,
-)
+from expert import Phase, PickPlaceController
+from sim import SimEnv
 
 
-
-class EpisodeBuffers:
-    """Per-episode trajectory storage (lists grow each sim step)."""
-
-    def __init__(self) -> None:
-        self.qpos: list[np.ndarray] = []
-        self.qvel: list[np.ndarray] = []
-        self.ctrl: list[np.ndarray] = []
-        self.obs: list[np.ndarray] = []
-        self.actions: list[np.ndarray] = []
-        self.phase: list[int] = []
-        self.ee_pos: list[np.ndarray] = []
-        self.cube_pos: list[np.ndarray] = []
-        self.tray_pos: list[np.ndarray] = []
-
-    def append_step(
-        self,
-        *,
-        obs: np.ndarray,
-        action: np.ndarray,
-        data: mujoco.MjData,
-        phase: Phase,
-        model: mujoco.MjModel,
-    ) -> None:
-        """Record one timestep."""
-        self.obs.append(obs)
-        self.actions.append(action)
-        self.qpos.append(data.qpos.copy())
-        self.qvel.append(data.qvel.copy())
-        self.ctrl.append(data.ctrl.copy())
-        self.phase.append(phase.value)
-
-        # TODO: log ee_pos, cube_pos, tray_pos from MuJoCo data
-        _ = model
-        self.ee_pos.append(np.zeros(3))
-        self.cube_pos.append(np.zeros(3))
-        self.tray_pos.append(np.zeros(3))
-
-    def as_dict(self, *, success: bool) -> dict[str, np.ndarray]:
-        """Stack lists into arrays for np.savez_compressed."""
-        return {
-            "obs": np.stack(self.obs),
-            "actions": np.stack(self.actions),
-            "qpos": np.stack(self.qpos),
-            "qvel": np.stack(self.qvel),
-            "ctrl": np.stack(self.ctrl),
-            "phase": np.array(self.phase, dtype=np.int32),
-            "ee_pos": np.stack(self.ee_pos),
-            "cube_pos": np.stack(self.cube_pos),
-            "tray_pos": np.stack(self.tray_pos),
-            "success": np.array(success),
-        }
+DEFAULT_OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "demos"
 
 
-class EpisodeResult:
-    
-    def __init__(self) -> None:
-        self.buffers: EpisodeBuffers = EpisodeBuffers()
-        self.final_phase: Phase = Phase.INIT
-        self.max_cube_z: float = 0.0
-        self.initial_cube_z: float = 0.0
-        self.success: bool = False
-
-
-def build_obs(model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
-    """
-    Build the BC observation vector.
-
-    Target: [qpos, qvel, gripper, cube pose, tray pose, ee pose]
-
-    TODO: choose a fixed layout and document dim order in a comment.
-    """
-    _ = model, data
+def build_observation(*, model: mujoco.MjModel, data: mujoco.MjData) -> object:
+    """Return one low-dimensional observation for the current simulator state."""
+    # TODO: Build the Stage 1 observation vector:
+    # qpos, qvel, gripper state, cube pose, tray pose, and end-effector pose.
+    # Returning object keeps this scaffold importable before you choose an array format.
     raise NotImplementedError
 
 
-def reset_episode(model: mujoco.MjModel, data: mujoco.MjData) -> float:
-    """
-    Reset sim to a new episode start. Returns initial_cube_z for lift metric.
-
-    TODO:
-      1. Call reset_home(model, data)
-      2. Call mujoco.mj_forward(model, data) if needed after qpos edits
-      3. Return float(data.body("cube").xpos[2])
-    """
-    reset_home(model, data)
-    return float(data.body("cube").xpos[2])
+def build_action(*, model: mujoco.MjModel, data: mujoco.MjData) -> object:
+    """Return the expert action for the current simulator state."""
+    # TODO: Record the full MuJoCo control vector, usually data.ctrl[: model.nu].copy().
+    raise NotImplementedError
 
 
-# def evaluate_success(
-#     *,
-#     final_phase: Phase,
-#     cube_pos: np.ndarray,
-#     tray_pos: np.ndarray,
-#     initial_cube_z: float,
-#     max_cube_z: float,
-# ) -> bool:
-#     """
-#     Same criteria as run_pick_place headless checks.
-
-#     TODO:
-#       - final_phase == Phase.DONE
-#       - (max_cube_z - initial_cube_z) >= CUBE_LIFT_MIN_DELTA
-#       - ||cube_xy - tray_xy|| <= TRAY_PLACE_TOL
-#     """
-#     _ = final_phase, cube_pos, tray_pos, initial_cube_z, max_cube_z
-#     _ = CUBE_LIFT_MIN_DELTA, TRAY_PLACE_TOL
-#     raise NotImplementedError
-
-
-def rollout_episode(
+def is_successful_episode(
+    *,
     model: mujoco.MjModel,
     data: mujoco.MjData,
-    *,
-    max_steps: int,
-) -> EpisodeResult:
-    """Run one expert episode and record trajectories."""
-    initial_cube_z = reset_episode(model, data)
+    controller: PickPlaceController,
+    initial_cube_z: float,
+) -> bool:
+    """Decide whether an episode should be kept for behaviour cloning."""
+    # TODO: Match the checks used by scripts/run_pick_place.py:
+    # final phase DONE, enough cube lift, and small tray XY placement error.
+    raise NotImplementedError
 
+
+def save_episode(
+    *,
+    out_dir: Path,
+    episode_idx: int,
+    observations: list[object],
+    actions: list[object],
+    phases: list[str],
+    success: bool,
+    seed: int,
+) -> None:
+    """Persist one episode to disk."""
+    # TODO: Create out_dir and save a compressed .npz file.
+    # Suggested arrays: obs, actions, phase, success, seed.
+    # Suggested filename: pick_place_000001.npz.
+    raise NotImplementedError
+
+
+def collect_episode(
+    *,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    max_steps: int,
+) -> tuple[list[object], list[object], list[str], bool, PickPlaceController]:
+    """Run one scripted expert episode and return trajectory buffers."""
+    # initial_cube_z = float(data.body("cube").xpos[2])
     controller = PickPlaceController(model, data)
-    buffers = EpisodeBuffers()
-    max_cube_z = initial_cube_z
+
+    observations: list[object] = []
+    actions: list[object] = []
+    phases: list[str] = []
 
     for _ in range(max_steps):
-        obs = build_obs(model, data)
+        # TODO: Decide whether to record before or after controller.control().
+        # For BC, a common choice is obs_t before control and action_t after control.
+        observations.append(build_observation(model=model, data=data))
 
         controller.control()
-        action = data.ctrl.copy()
-
-        buffers.append_step(
-            obs=obs,
-            action=action,
-            data=data,
-            phase=controller.phase,
-            model=model,
-        )
+        actions.append(build_action(model=model, data=data))
+        # phases.append(controller.phase.name)
 
         mujoco.mj_step(model, data)
-
-        max_cube_z = max(max_cube_z, float(data.body("cube").xpos[2]))
-        controller.max_cube_z = max_cube_z
+        controller.max_cube_z = max(
+            controller.max_cube_z,
+            float(data.body("cube").xpos[2]),
+        )
         controller.update_phase()
 
         if controller.phase == Phase.DONE:
             break
 
-    success = evaluate_success(
-        final_phase=controller.phase,
-        cube_pos=data.body("cube").xpos,
-        tray_pos=data.site_xpos[model.site("tray_center").id],
+    success = is_successful_episode(
+        model=model,
+        data=data,
+        controller=controller,
         initial_cube_z=initial_cube_z,
-        max_cube_z=max_cube_z,
     )
-
-    return EpisodeResult(
-        buffers=buffers,
-        final_phase=controller.phase,
-        max_cube_z=max_cube_z,
-        initial_cube_z=initial_cube_z,
-        success=success,
-    )
-
-
-def episode_path(out_dir: Path, episode_index: int, success: bool) -> Path:
-    """TODO: choose naming scheme, e.g. success/ vs failures/ subdirs."""
-    sub = "success" if success else "failures"
-    return out_dir / sub / f"pick_place_{episode_index:06d}.npz"
-
-
-def save_episode(path: Path, result: EpisodeResult) -> None:
-    """Write one compressed npz file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = result.buffers.as_dict(success=result.success)
-    np.savez_compressed(path, **payload)
+    return observations, actions, phases, success, controller
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Collect expert pick-place demos.")
+    parser = argparse.ArgumentParser(
+        description="Collect scripted pick-place demonstrations for BC."
+    )
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--out-dir", type=Path, default=Path("data/demos"))
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=8000)
-    parser.add_argument("--save-failures", action="store_true")
+    parser.add_argument(
+        "--save-failures",
+        action="store_true",
+        help="Also save failed episodes for debugging.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    sim = SimEnv()
 
-    model = mujoco.MjModel.from_xml_path(str(SCENE_PATH))
-    data = mujoco.MjData(model)
-
+    successes = 0
     saved = 0
-    attempted = 0
 
-    while saved < args.episodes:
-        attempted += 1
+    for episode_idx in range(args.episodes):
+        # TODO: Use args.seed + episode_idx once you add episode randomization.
+        episode_seed = args.seed + episode_idx
+        sim.reset_episode()
 
-        result = rollout_episode(
-            model,
-            data,
+        observations, actions, phases, success, _controller = collect_episode(
+            model=sim.model,
+            data=sim.data,
             max_steps=args.max_steps,
         )
 
-        # if result.success or args.save_failures:
-        #     path = episode_path(
-        #         args.out_dir,
-        #         saved if result.success else attempted,
-        #         result.success,
-        #     )
-        #     save_episode(path, result)
-        #     if result.success:
-        #         saved += 1
+        if success:
+            successes += 1
 
-        # print(
-        #     f"attempt={attempted} saved={saved}/{args.episodes} "
-        #     f"phase={result.final_phase.name} success={result.success}"
-        # )
+        if success or args.save_failures:
+            save_episode(
+                out_dir=args.out_dir,
+                episode_idx=episode_idx,
+                observations=observations,
+                actions=actions,
+                phases=phases,
+                success=success,
+                seed=episode_seed,
+            )
+            saved += 1
 
-    print(f"Done. Saved {saved} successful demos to {args.out_dir}")
+        print(
+            f"episode={episode_idx:04d} "
+            f"steps={len(actions)} "
+            f"success={success} "
+            f"saved={success or args.save_failures}"
+        )
+
+    print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
 
 
 if __name__ == "__main__":

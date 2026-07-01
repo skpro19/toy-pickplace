@@ -16,7 +16,7 @@ from expert import (
     PickPlaceController,
     TRAY_PLACE_TOL,
 )
-from sim_setup import SimEnv
+from sim import SimEnv
 
 VIEWER_SLOWDOWN = 10.0
 

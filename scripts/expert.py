@@ -8,7 +8,7 @@ import mujoco
 import mink
 import numpy as np
 
-from sim_setup import SimEnv
+from sim import SimEnv
 
 ARM_DOF = 7
 GRIPPER_ACTUATOR = 7
