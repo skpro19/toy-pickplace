@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from pathlib import Path
 
 import mujoco
 import mink
 import numpy as np
 
-
-SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "panda_pick_place.xml"
+from sim_setup import find_reset_key
 
 ARM_DOF = 7
 GRIPPER_ACTUATOR = 7
@@ -45,25 +43,6 @@ class Phase(Enum):
     RETREAT = auto()
     HOME = auto()
     DONE = auto()
-
-
-def find_reset_key(model: mujoco.MjModel) -> int:
-    for name in ("task_home", "home"):
-        key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, name)
-        if key_id >= 0:
-            return key_id
-    return -1
-
-
-def reset_home(model: mujoco.MjModel, data: mujoco.MjData) -> None:
-    key_id = find_reset_key(model)
-    if key_id >= 0:
-        mujoco.mj_resetDataKeyframe(model, data, key_id)
-        if model.nu:
-            data.ctrl[: model.nu] = model.key_ctrl[key_id, : model.nu]
-    else:
-        mujoco.mj_resetData(model, data)
-    mujoco.mj_forward(model, data)
 
 
 def site_pose(data: mujoco.MjData, site_id: int) -> mink.SE3:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import time
-from pathlib import Path
 
 import mujoco
 import mujoco.viewer
@@ -15,10 +14,9 @@ from expert import (
     GRIPPER_ACTUATOR,
     Phase,
     PickPlaceController,
-    SCENE_PATH,
     TRAY_PLACE_TOL,
-    reset_home,
 )
+from sim_setup import SimEnv
 
 VIEWER_SLOWDOWN = 10.0
 
@@ -99,10 +97,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    model = mujoco.MjModel.from_xml_path(str(SCENE_PATH))
-    data = mujoco.MjData(model)
-    reset_home(model, data)
-    initial_cube_z = float(data.body("cube").xpos[2])
+    sim = SimEnv()
+    model = sim.model
+    data = sim.data
+    initial_cube_z = sim.reset_episode()
 
     if args.headless:
         final_phase, controller = run_headless(model, data, args.max_steps)
