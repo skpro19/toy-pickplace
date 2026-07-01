@@ -38,8 +38,7 @@ class SimEnv:
             mujoco.mj_resetData(self.model, self.data)
         mujoco.mj_forward(self.model, self.data)
 
-    def reset_episode(self) -> float:
+    def reset_episode(self) -> None:
         """Reset robot, cube, and tray to the episode start state."""
         self.reset_home()
         self.initial_cube_z = float(self.data.body("cube").xpos[2])
-        return self.initial_cube_z

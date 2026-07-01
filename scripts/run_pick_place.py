@@ -100,7 +100,8 @@ def main() -> None:
     sim = SimEnv()
     model = sim.model
     data = sim.data
-    initial_cube_z = sim.reset_episode()
+    sim.reset_episode()
+    initial_cube_z = sim.initial_cube_z
 
     if args.headless:
         final_phase, controller = run_headless(model, data, args.max_steps)
