@@ -52,7 +52,7 @@ Why this fits this repo:
 
 - `scenes/panda_pick_place.xml`
 - new controller script under `scripts/`
-- likely one new test script, or extend `scripts/smoke_test_scene.py`
+- likely one new test script, or extend `tests/smoke_test_scene.py`
 
 ## Verification
 

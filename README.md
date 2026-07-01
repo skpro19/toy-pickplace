@@ -25,5 +25,5 @@ The scene defines two fixed cameras named `overview` and `workspace`.
 ## Run a smoke test
 
 ```bash
-uv run python scripts/smoke_test_scene.py
+uv run python tests/smoke_test_scene.py
 ```
