@@ -45,53 +45,6 @@ class Phase(Enum):
     DONE = auto()
 
 
-def site_pose(data: mujoco.MjData, site_id: int) -> mink.SE3:
-    pos = data.site_xpos[site_id].copy()
-    rot = mink.SO3.from_matrix(data.site_xmat[site_id].reshape(3, 3))
-    return mink.SE3.from_rotation_and_translation(rot, pos)
-
-
-def site_target(data: mujoco.MjData, site_id: int, local_offset: np.ndarray) -> np.ndarray:
-    site_rot = data.site_xmat[site_id].reshape(3, 3)
-    return data.site_xpos[site_id] + site_rot @ local_offset
-
-
-def offset_site_pose(
-    data: mujoco.MjData,
-    site_id: int,
-    local_offset: np.ndarray,
-    rotation: mink.SO3,
-) -> mink.SE3:
-    return mink.SE3.from_rotation_and_translation(
-        rotation,
-        site_target(data, site_id, local_offset),
-    )
-
-
-def rotation_error(rot_a: np.ndarray, rot_b: np.ndarray) -> float:
-    rot_err = rot_a.T @ rot_b
-    cos_angle = (np.trace(rot_err) - 1.0) / 2.0
-    return float(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
-
-
-def converge_ik(
-    configuration: mink.Configuration,
-    grasp_task: mink.FrameTask,
-    tasks: list[mink.Task],
-    dt: float,
-) -> tuple[float, float]:
-    pos_err = ori_err = 0.0
-    for _ in range(MAX_IK_ITERS):
-        vel = mink.solve_ik(configuration, tasks, dt, IK_SOLVER, damping=IK_DAMPING)
-        configuration.integrate_inplace(vel, dt)
-        err = grasp_task.compute_error(configuration)
-        pos_err = float(np.linalg.norm(err[:3]))
-        ori_err = float(np.linalg.norm(err[3:]))
-        if pos_err <= POS_TOL and ori_err <= ORI_TOL:
-            break
-    return pos_err, ori_err
-
-
 class PickPlaceController:
     def __init__(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         self.model = model
@@ -131,6 +84,50 @@ class PickPlaceController:
         self.posture_task.set_target_from_configuration(self.configuration)
         self.ik_tasks: list[mink.Task] = [self.grasp_task, self.posture_task]
 
+    def site_pose(self, site_id: int) -> mink.SE3:
+        pos = self.data.site_xpos[site_id].copy()
+        rot = mink.SO3.from_matrix(self.data.site_xmat[site_id].reshape(3, 3))
+        return mink.SE3.from_rotation_and_translation(rot, pos)
+
+    def site_target(self, site_id: int, local_offset: np.ndarray) -> np.ndarray:
+        site_rot = self.data.site_xmat[site_id].reshape(3, 3)
+        return self.data.site_xpos[site_id] + site_rot @ local_offset
+
+    def offset_site_pose(
+        self,
+        site_id: int,
+        local_offset: np.ndarray,
+        rotation: mink.SO3,
+    ) -> mink.SE3:
+        return mink.SE3.from_rotation_and_translation(
+            rotation,
+            self.site_target(site_id, local_offset),
+        )
+
+    @staticmethod
+    def rotation_error(rot_a: np.ndarray, rot_b: np.ndarray) -> float:
+        rot_err = rot_a.T @ rot_b
+        cos_angle = (np.trace(rot_err) - 1.0) / 2.0
+        return float(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+
+    def converge_ik(self) -> tuple[float, float]:
+        pos_err = ori_err = 0.0
+        for _ in range(MAX_IK_ITERS):
+            vel = mink.solve_ik(
+                self.configuration,
+                self.ik_tasks,
+                self.dt,
+                IK_SOLVER,
+                damping=IK_DAMPING,
+            )
+            self.configuration.integrate_inplace(vel, self.dt)
+            err = self.grasp_task.compute_error(self.configuration)
+            pos_err = float(np.linalg.norm(err[:3]))
+            ori_err = float(np.linalg.norm(err[3:]))
+            if pos_err <= POS_TOL and ori_err <= ORI_TOL:
+                break
+        return pos_err, ori_err
+
     def target_site_id_for_phase(self) -> int | None:
         if self.phase == Phase.MOVE_ABOVE_CUBE:
             return self.cube_hover_id
@@ -158,7 +155,7 @@ class PickPlaceController:
         target_id = self.target_site_id_for_phase()
         if target_id is None:
             return None
-        return site_pose(self.data, target_id)
+        return self.site_pose(target_id)
 
     def sim_tracking_error(self) -> tuple[float, float]:
         fixed_target = self.fixed_target_for_phase()
@@ -168,7 +165,7 @@ class PickPlaceController:
             target_pos = fixed_target.translation()
             target_rot = fixed_target.rotation().as_matrix()
             pos_err = float(np.linalg.norm(grasp_pos - target_pos))
-            ori_err = rotation_error(target_rot, grasp_rot)
+            ori_err = self.rotation_error(target_rot, grasp_rot)
             return pos_err, ori_err
 
         target_id = self.target_site_id_for_phase()
@@ -181,17 +178,12 @@ class PickPlaceController:
         )
         grasp_rot = self.data.site_xmat[self.grasp_id].reshape(3, 3)
         target_rot = self.data.site_xmat[target_id].reshape(3, 3)
-        ori_err = rotation_error(target_rot, grasp_rot)
+        ori_err = self.rotation_error(target_rot, grasp_rot)
         return pos_err, ori_err
 
     def run_ik(self, target: mink.SE3) -> None:
         self.grasp_task.set_target(target)
-        converge_ik(
-            self.configuration,
-            self.grasp_task,
-            self.ik_tasks,
-            self.dt,
-        )
+        self.converge_ik()
         self.data.ctrl[:ARM_DOF] = self.configuration.q[:ARM_DOF]
 
     def control(self) -> None:
@@ -231,7 +223,7 @@ class PickPlaceController:
         if self.phase == Phase.CLOSE_GRIPPER:
             self.settle_steps += 1
             if self.settle_steps >= GRASP_SETTLE_STEPS:
-                self.lift_target = site_pose(self.data, self.cube_lift_id)
+                self.lift_target = self.site_pose(self.cube_lift_id)
                 self.phase = Phase.LIFT_CUBE
                 self.settle_steps = 0
 
@@ -278,10 +270,9 @@ class PickPlaceController:
             lift_rotation = (
                 self.lift_target.rotation()
                 if self.lift_target
-                else site_pose(self.data, self.cube_lift_id).rotation()
+                else self.site_pose(self.cube_lift_id).rotation()
             )
-            self.tray_hover_target = offset_site_pose(
-                self.data,
+            self.tray_hover_target = self.offset_site_pose(
                 self.tray_center_id,
                 TRAY_HOVER_OFFSET,
                 lift_rotation,
@@ -292,10 +283,9 @@ class PickPlaceController:
             tray_rotation = (
                 self.tray_hover_target.rotation()
                 if self.tray_hover_target
-                else site_pose(self.data, self.grasp_id).rotation()
+                else self.site_pose(self.grasp_id).rotation()
             )
-            self.tray_drop_target = offset_site_pose(
-                self.data,
+            self.tray_drop_target = self.offset_site_pose(
                 self.tray_center_id,
                 TRAY_DROP_OFFSET,
                 tray_rotation,
