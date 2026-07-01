@@ -8,7 +8,7 @@ import mujoco
 import mink
 import numpy as np
 
-from sim_setup import find_reset_key
+from sim_setup import SimEnv
 
 ARM_DOF = 7
 GRIPPER_ACTUATOR = 7
@@ -113,7 +113,7 @@ class PickPlaceController:
         self.tray_drop_target: mink.SE3 | None = None
         self.home_qpos = data.qpos.copy()
         self.home_ctrl = data.ctrl.copy()
-        home_key_id = find_reset_key(model)
+        home_key_id = SimEnv.find_reset_key(model)
         if home_key_id >= 0:
             self.home_qpos = model.key_qpos[home_key_id].copy()
             self.home_ctrl = model.key_ctrl[home_key_id].copy()
