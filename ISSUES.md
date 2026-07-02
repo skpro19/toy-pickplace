@@ -1,17 +1,32 @@
-# What? 
+# WHAT? 
 List of issues and tasks to be done.
 
-## Keys 
+## KEYS
  * -> IGNORED 
  + -> DONE
  - -> PENDING
 
-## Issues
+## ISSUES 
 
 * make site poses calculation consistent
 * arm should stop moving before gripper closes
 
-- consolidate the `control() → mj_step() → update_phase()` loop into a `step()` method on `PickPlaceController` to avoid duplication between `run_viewer()` and `run_headless()`
-- refactor `pick_place_controller.py` to carve out the expert
+- move `control_loop` in `run_pick_place.py` to `PickPlaceController`
 - add rollout.py
 - fix collect_demos.py
+
+- remove success checks from `run_pick_place.py`
++ refactor `sim.py` -> fix cube reset duplication logic
+
+
+**`expert.py`**
+- add `step` method in PickPlaceController
+
+**`data.py`**
+- test with/without velocity observations
+- test `build_observation` implementation 
+- test `build_action` implementation 
+- normalization? 
+- integrate episode success check
+- add replay mechanism / logging / bag mechanism
+

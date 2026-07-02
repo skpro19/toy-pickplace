@@ -1,10 +1,12 @@
 # Behaviour Cloning Data Collection Plan
 
+
 1. Refactor scripted controller
    - Keep `PickPlaceController` as the expert policy.
    - Add a separate data collection script, e.g. `scripts/collect_pick_place_demos.py`.
    - Reuse `reset_home`, `run_headless`, phase logic, and MuJoCo scene loading.
 
+**[IGNORE]**
 2. Randomize initial conditions
    - Randomize cube pose within the reachable workspace.
    - Optionally randomize tray pose slightly.
@@ -25,6 +27,7 @@
    - Action: full MuJoCo `ctrl`, i.e. 7 arm position targets plus gripper command.
    - This matches the existing controller and is the simplest baseline for behaviour cloning.
 
+**[IGNORE]**
 5. Filter successful episodes
    - Run each episode headless.
    - Initially save only successful episodes for training.
