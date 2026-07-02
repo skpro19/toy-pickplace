@@ -59,3 +59,11 @@ Breakdown:
 ```
 
 The tray and table do not appear in `qpos` because they have no joints in the XML. Their `pos` attributes define fixed offsets from the world body.
+
+### `nq`, `nv`, and `nu`
+
+| Field | Runtime array | Current size | Meaning | Current layout / use |
+|---|---|---:|---|---|
+| `model.nq` | `data.qpos` | 16 | Generalized position coordinates | 7 arm joints, 2 gripper joints, 7 cube freejoint coordinates |
+| `model.nv` | `data.qvel` | 15 | Generalized velocity coordinates | 7 arm velocities, 2 gripper velocities, 6 cube freejoint velocities |
+| `model.nu` | `data.ctrl` | 8 | Actuator control inputs | `ctrl[0:7]` arm commands, `ctrl[7]` gripper command; record full actions with `data.ctrl[: model.nu].copy()` |

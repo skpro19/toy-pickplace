@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 
 import mujoco
+import numpy as np
 
 from expert import Phase, PickPlaceController
 from sim import SimEnv
@@ -18,15 +19,36 @@ from sim import SimEnv
 DEFAULT_OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "demos"
 
 
-def build_observation(*, model: mujoco.MjModel, data: mujoco.MjData) -> object:
+def build_observation(*, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
     """Return one low-dimensional observation for the current simulator state."""
-    # TODO: Build the Stage 1 observation vector:
-    # qpos, qvel, gripper state, cube pose, tray pose, and end-effector pose.
-    # Returning object keeps this scaffold importable before you choose an array format.
-    raise NotImplementedError
+    tray_center_id = model.site("tray_center").id
+    grasp_id = model.site("grasp").id
+
+    arm_qpos = data.qpos[:7].copy()
+    gripper_qpos = data.qpos[7:9].copy()
+    cube_xpos = data.body("cube").xpos.copy()
+    cube_xquat = data.body("cube").xquat.copy()
+    tray_xpos = data.site_xpos[tray_center_id].copy()
+    tray_xmat = data.site_xmat[tray_center_id].copy()
+    grasp_xpos = data.site_xpos[grasp_id].copy()
+    grasp_xmat = data.site_xmat[grasp_id].copy()
+
+    obs = np.concatenate(
+        [
+            arm_qpos,
+            gripper_qpos,
+            cube_xpos,
+            cube_xquat,
+            tray_xpos,
+            tray_xmat,
+            grasp_xpos,
+            grasp_xmat,
+        ]
+    ).astype(np.float32)
+    return obs
 
 
-def build_action(*, model: mujoco.MjModel, data: mujoco.MjData) -> object:
+def build_action(*, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
     """Return the expert action for the current simulator state."""
     # TODO: Record the full MuJoCo control vector, usually data.ctrl[: model.nu].copy().
     raise NotImplementedError
@@ -67,7 +89,7 @@ def collect_episode(
     model: mujoco.MjModel,
     data: mujoco.MjData,
     max_steps: int,
-) -> tuple[list[object], list[object], list[str], bool, PickPlaceController]:
+) -> tuple[list[object], list[object], list[str], PickPlaceController]:
     """Run one scripted expert episode and return trajectory buffers."""
     # initial_cube_z = float(data.body("cube").xpos[2])
     controller = PickPlaceController(model, data)
@@ -86,22 +108,23 @@ def collect_episode(
         # phases.append(controller.phase.name)
 
         mujoco.mj_step(model, data)
-        controller.max_cube_z = max(
-            controller.max_cube_z,
-            float(data.body("cube").xpos[2]),
-        )
+        # controller.max_cube_z = max(
+        #     controller.max_cube_z,
+        #     float(data.body("cube").xpos[2]),
+        # )
         controller.update_phase()
 
         if controller.phase == Phase.DONE:
             break
 
-    success = is_successful_episode(
-        model=model,
-        data=data,
-        controller=controller,
-        initial_cube_z=initial_cube_z,
-    )
-    return observations, actions, phases, success, controller
+    # success = is_successful_episode(
+    #     model=model,
+    #     data=data,
+    #     controller=controller,
+    #     initial_cube_z=initial_cube_z,
+    # )
+    # return observations, actions, phases, controller
+    return observations, actions, phases, controller
 
 
 def parse_args() -> argparse.Namespace:
