@@ -15,3 +15,8 @@ package = false
 
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cu124"
+
+[dependency-groups]
+dev = [
+    "ipython>=8.39.0",
+]
