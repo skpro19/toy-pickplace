@@ -50,8 +50,16 @@ def build_observation(*, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarr
 
 def build_action(*, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
     """Return the expert action for the current simulator state."""
-    # TODO: Record the full MuJoCo control vector, usually data.ctrl[: model.nu].copy().
-    raise NotImplementedError
+    arm_ctrl = data.ctrl[:7].copy()
+    gripper_ctrl = data.ctrl[7:8].copy()
+
+    action = np.concatenate(
+        [
+            arm_ctrl,
+            gripper_ctrl,
+        ]
+    ).astype(np.float32)
+    return action
 
 
 def is_successful_episode(
