@@ -13,10 +13,14 @@ Use `mj_step` only when you want physics to advance. Calling it in reset code wo
 
 ### `qpos` vs `xpos`
 
+Both `qpos` and `xpos` live in `mjData`, not `mjModel`.
+
+`mjModel` stores the static compiled model: body definitions, joint definitions, sizes like `nq`/`nbody`, geometry, masses, limits, and other parameters loaded from XML. `mjData` stores the mutable simulation state and derived runtime quantities.
+
 | Field | Size | Meaning | Writable? |
 |---|---|---|---|
-| `qpos` | `nq` | Generalized positions: joint angles, sliders, free-body poses | Yes - set state here |
-| `xpos` | `(nbody, 3)` | Cartesian world-frame position of each body | No - derived from `qpos` via kinematics; overwritten every call |
+| `data.qpos` | `model.nq` | Generalized positions: joint angles, sliders, free-body poses | Yes - set state here |
+| `data.xpos` | `(model.nbody, 3)` | Cartesian world-frame position of each body | No - derived from `qpos` via kinematics; overwritten every call |
 
 `qpos` is the source position state. `xpos` is a computed world-space body position. After changing `qpos`, call `mj_forward` before reading `xpos`.
 
