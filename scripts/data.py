@@ -7,6 +7,7 @@ define the observation vector, record actions, decide success, and save episodes
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import mujoco
@@ -19,120 +20,128 @@ from sim import SimEnv
 DEFAULT_OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "demos"
 
 
-def build_observation(*, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
-    """Return one low-dimensional observation for the current simulator state."""
-    tray_center_id = model.site("tray_center").id
-    grasp_id = model.site("grasp").id
+class DataCollector:
+    def __init__(self, *, sim: SimEnv) -> None:
+        self.sim = sim
+        self.model = sim.model
+        self.data = sim.data
+        self.tray_center_id = self.model.site("tray_center").id
+        self.grasp_id = self.model.site("grasp").id
 
-    arm_qpos = data.qpos[:7].copy()
-    gripper_qpos = data.qpos[7:9].copy()
-    cube_xpos = data.body("cube").xpos.copy()
-    cube_xquat = data.body("cube").xquat.copy()
-    tray_xpos = data.site_xpos[tray_center_id].copy()
-    tray_xmat = data.site_xmat[tray_center_id].copy()
-    grasp_xpos = data.site_xpos[grasp_id].copy()
-    grasp_xmat = data.site_xmat[grasp_id].copy()
+    def build_observation(self) -> np.ndarray:
+        """Return one low-dimensional observation for the current simulator state."""
+        arm_qpos = self.data.qpos[:7].copy()
+        gripper_qpos = self.data.qpos[7:9].copy()
+        cube_xpos = self.data.body("cube").xpos.copy()
+        cube_xquat = self.data.body("cube").xquat.copy()
+        tray_xpos = self.data.site_xpos[self.tray_center_id].copy()
+        tray_xmat = self.data.site_xmat[self.tray_center_id].copy()
+        grasp_xpos = self.data.site_xpos[self.grasp_id].copy()
+        grasp_xmat = self.data.site_xmat[self.grasp_id].copy()
 
-    obs = np.concatenate(
-        [
-            arm_qpos,
-            gripper_qpos,
-            cube_xpos,
-            cube_xquat,
-            tray_xpos,
-            tray_xmat,
-            grasp_xpos,
-            grasp_xmat,
-        ]
-    ).astype(np.float32)
-    return obs
+        obs = np.concatenate(
+            [
+                arm_qpos,
+                gripper_qpos,
+                cube_xpos,
+                cube_xquat,
+                tray_xpos,
+                tray_xmat,
+                grasp_xpos,
+                grasp_xmat,
+            ]
+        ).astype(np.float32)
+        return obs
 
+    def build_action(self) -> np.ndarray:
+        """Return the expert action for the current simulator state."""
+        arm_ctrl = self.data.ctrl[:7].copy()
+        gripper_ctrl = self.data.ctrl[7:8].copy()
 
-def build_action(*, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
-    """Return the expert action for the current simulator state."""
-    arm_ctrl = data.ctrl[:7].copy()
-    gripper_ctrl = data.ctrl[7:8].copy()
+        action = np.concatenate(
+            [
+                arm_ctrl,
+                gripper_ctrl,
+            ]
+        ).astype(np.float32)
+        return action
 
-    action = np.concatenate(
-        [
-            arm_ctrl,
-            gripper_ctrl,
-        ]
-    ).astype(np.float32)
-    return action
+    @staticmethod
+    def save_episode(
+        *,
+        out_dir: Path,
+        episode_idx: int,
+        observations: list[object],
+        actions: list[object],
+    ) -> None:
+        """Persist one episode to disk."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        episode_path = out_dir / f"pick_place_{episode_idx:06d}.npz"
 
+        np.savez_compressed(
+            episode_path,
+            obs=np.asarray(observations, dtype=np.float32),
+            actions=np.asarray(actions, dtype=np.float32),
+        )
 
-def is_successful_episode(
-    *,
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    controller: PickPlaceController,
-    initial_cube_z: float,
-) -> bool:
-    """Decide whether an episode should be kept for behaviour cloning."""
-    # TODO: Match the checks used by scripts/run_pick_place.py:
-    # final phase DONE, enough cube lift, and small tray XY placement error.
-    raise NotImplementedError
+    def collect_episode(
+        self,
+        *,
+        max_steps: int,
+    ) -> dict[str, list[np.ndarray]]:
+        """Run one scripted expert episode and return trajectory buffers."""
+        controller = PickPlaceController(self.model, self.data)
 
+        observations: list[np.ndarray] = []
+        actions: list[np.ndarray] = []
 
-def save_episode(
-    *,
-    out_dir: Path,
-    episode_idx: int,
-    observations: list[object],
-    actions: list[object],
-    phases: list[str],
-    success: bool,
-    seed: int,
-) -> None:
-    """Persist one episode to disk."""
-    # TODO: Create out_dir and save a compressed .npz file.
-    # Suggested arrays: obs, actions, phase, success, seed.
-    # Suggested filename: pick_place_000001.npz.
-    raise NotImplementedError
+        for _ in range(max_steps):
+            observations.append(self.build_observation())
 
+            controller.control()
+            actions.append(self.build_action())
 
-def collect_episode(
-    *,
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    max_steps: int,
-) -> tuple[list[object], list[object], list[str], PickPlaceController]:
-    """Run one scripted expert episode and return trajectory buffers."""
-    # initial_cube_z = float(data.body("cube").xpos[2])
-    controller = PickPlaceController(model, data)
+            mujoco.mj_step(self.model, self.data)
+            controller.update_phase()
 
-    observations: list[object] = []
-    actions: list[object] = []
-    phases: list[str] = []
+            if controller.phase == Phase.DONE:
+                break
 
-    for _ in range(max_steps):
-        # TODO: Decide whether to record before or after controller.control().
-        # For BC, a common choice is obs_t before control and action_t after control.
-        observations.append(build_observation(model=model, data=data))
+        return {"observations": observations, "actions": actions}
 
-        controller.control()
-        actions.append(build_action(model=model, data=data))
-        # phases.append(controller.phase.name)
+    def collect_episodes(
+        self,
+        *,
+        episodes: int,
+        out_dir: Path,
+        seed: int,
+        max_steps: int,
+        save_failures: bool,
+    ) -> tuple[int, int]:
+        """Collect and optionally save multiple scripted expert episodes."""
+        run_out_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        processed = 0
+        saved = 0
 
-        mujoco.mj_step(model, data)
-        # controller.max_cube_z = max(
-        #     controller.max_cube_z,
-        #     float(data.body("cube").xpos[2]),
-        # )
-        controller.update_phase()
+        for episode_idx in range(episodes):
+            self.sim.reset_episode()
 
-        if controller.phase == Phase.DONE:
-            break
+            data = self.collect_episode(
+                max_steps=max_steps,
+            )
 
-    # success = is_successful_episode(
-    #     model=model,
-    #     data=data,
-    #     controller=controller,
-    #     initial_cube_z=initial_cube_z,
-    # )
-    # return observations, actions, phases, controller
-    return observations, actions, phases, controller
+            DataCollector.save_episode(
+                out_dir=run_out_dir,
+                episode_idx=episode_idx,
+                observations=data["observations"],
+                actions=data["actions"],
+            )
+            processed += 1
+            saved += 1
+
+            print(f"Processed episode {episode_idx}/{episodes}")
+
+        return processed, saved
 
 
 def parse_args() -> argparse.Namespace:
@@ -154,44 +163,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     sim = SimEnv()
+    collector = DataCollector(sim=sim)
+    processed, saved = collector.collect_episodes(
+        episodes=args.episodes,
+        out_dir=args.out_dir,
+        seed=args.seed,
+        max_steps=args.max_steps,
+        save_failures=args.save_failures,
+    )
 
-    successes = 0
-    saved = 0
-
-    for episode_idx in range(args.episodes):
-        # TODO: Use args.seed + episode_idx once you add episode randomization.
-        episode_seed = args.seed + episode_idx
-        sim.reset_episode()
-
-        observations, actions, phases, success, _controller = collect_episode(
-            model=sim.model,
-            data=sim.data,
-            max_steps=args.max_steps,
-        )
-
-        if success:
-            successes += 1
-
-        if success or args.save_failures:
-            save_episode(
-                out_dir=args.out_dir,
-                episode_idx=episode_idx,
-                observations=observations,
-                actions=actions,
-                phases=phases,
-                success=success,
-                seed=episode_seed,
-            )
-            saved += 1
-
-        print(
-            f"episode={episode_idx:04d} "
-            f"steps={len(actions)} "
-            f"success={success} "
-            f"saved={success or args.save_failures}"
-        )
-
-    print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
+    print(f"Collected {processed}/{args.episodes} episodes; saved {saved}.")
 
 
 if __name__ == "__main__":
