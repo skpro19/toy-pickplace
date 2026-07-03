@@ -51,6 +51,19 @@ class SimEnv:
         ).astype(np.float32)
         return obs
 
+    def build_action(self) -> np.ndarray:
+        """Return the expert action for the current simulator state."""
+        arm_ctrl = self.data.ctrl[:7].copy()
+        gripper_ctrl = self.data.ctrl[7:8].copy()
+
+        action = np.concatenate(
+            [
+                arm_ctrl,
+                gripper_ctrl,
+            ]
+        ).astype(np.float32)
+        return action
+
     @staticmethod
     def find_reset_key(model: mujoco.MjModel) -> int:
         for name in ("task_home", "home"):
