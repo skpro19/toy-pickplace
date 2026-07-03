@@ -99,7 +99,7 @@ def train(
     checkpoint_dir: str) -> None: 
     train_dataloader = DataLoader(
         # dataset=PickPlaceDataset(data_dir="data/demos/2026-07-02_14-04-52"),
-        dataset=PickPlaceDataset(data_dir="data/demos/test/"),
+        dataset=PickPlaceDataset(data_dir="data/test/"),
         batch_size=1000,
         shuffle=True,
     )
@@ -125,7 +125,7 @@ def train(
             obs = obs.to(device)
             actions = actions.to(device)
 
-            print(f"batch_idx=>{batch_idx} (obs)=>{type(obs)} obs.shape => {obs.shape}")
+            # print(f"batch_idx=>{batch_idx} (obs)=>{type(obs)} obs.shape => {obs.shape}")
             
             pred = model(obs)
             loss = loss_fn(pred, actions)
@@ -157,7 +157,7 @@ def parse_args():
         description="Training params for simple MLP policy"
     )
     
-    parser.add_argument("--num_epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=1)
 
     # timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     # parser.add_argument("--checkpoint_dir", type=str, default=f"checkpoints/{timestamp}")
@@ -170,7 +170,7 @@ def main():
     args = parse_args()
 
     train(
-        num_epochs=args.num_epochs, 
+        num_epochs=args.epochs, 
         checkpoint_dir=args.checkpoint_dir
     )
 
