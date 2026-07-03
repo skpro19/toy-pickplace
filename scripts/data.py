@@ -27,31 +27,7 @@ class DataCollector:
         self.tray_center_id = self.model.site("tray_center").id
         self.grasp_id = self.model.site("grasp").id
 
-    def build_observation(self) -> np.ndarray:
-        """Return one low-dimensional observation for the current simulator state."""
-        arm_qpos = self.data.qpos[:7].copy()
-        gripper_qpos = self.data.qpos[7:9].copy()
-        cube_xpos = self.data.body("cube").xpos.copy()
-        cube_xquat = self.data.body("cube").xquat.copy()
-        tray_xpos = self.data.site_xpos[self.tray_center_id].copy()
-        tray_xmat = self.data.site_xmat[self.tray_center_id].copy()
-        grasp_xpos = self.data.site_xpos[self.grasp_id].copy()
-        grasp_xmat = self.data.site_xmat[self.grasp_id].copy()
-
-        obs = np.concatenate(
-            [
-                arm_qpos,
-                gripper_qpos,
-                cube_xpos,
-                cube_xquat,
-                tray_xpos,
-                tray_xmat,
-                grasp_xpos,
-                grasp_xmat,
-            ]
-        ).astype(np.float32)
-        return obs
-
+    
     def build_action(self) -> np.ndarray:
         """Return the expert action for the current simulator state."""
         arm_ctrl = self.data.ctrl[:7].copy()
