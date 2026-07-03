@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import mujoco
+import numpy as np
 
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "panda_pick_place.xml"
@@ -17,6 +18,38 @@ class SimEnv:
         self.data = mujoco.MjData(self.model)
         self.initial_cube_z = 0.0
         self.reset_episode()
+
+    def build_observation(self) -> np.ndarray:
+        """Return one low-dimensional observation for the current simulator state."""
+        arm_qpos = self.data.qpos[:7].copy()
+        gripper_qpos = self.data.qpos[7:9].copy()
+        cube_xpos = self.data.body("cube").xpos.copy()
+        cube_xquat = self.data.body("cube").xquat.copy()
+        # tray_xpos = self.data.site_xpos[self.tray_center_id].copy()
+        # tray_xmat = self.data.site_xmat[self.tray_center_id].copy()
+        # grasp_xpos = self.data.site_xpos[self.grasp_id].copy()
+        # grasp_xmat = self.data.site_xmat[self.grasp_id].copy()
+
+        tray_xpos = self.data.site("tray_center").xpos.copy()
+        tray_xmat = self.data.site("tray_center").xmat.copy()
+        grasp_xpos = self.data.site("grasp").xpos.copy()
+        grasp_xmat = self.data.site("grasp").xmat.copy()
+
+        # print(f"type(arm_qpos) => {type(arm_qpos)} arm_qpos.shape=>{arm_qpos.shape}")
+
+        obs = np.concatenate(
+            [
+                arm_qpos,
+                gripper_qpos,
+                cube_xpos,
+                cube_xquat,
+                tray_xpos,
+                tray_xmat,
+                grasp_xpos,
+                grasp_xmat,
+            ]
+        ).astype(np.float32)
+        return obs
 
     @staticmethod
     def find_reset_key(model: mujoco.MjModel) -> int:
