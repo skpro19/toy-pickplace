@@ -35,7 +35,7 @@ def replay_actions(*, file:str) -> None:
                 # print(f"action.shape=>{action.shape}")
                 sim.data.ctrl[:sim.model.nu] = action
                 mujoco.mj_step(sim.model, sim.data)
-                # time.sleep(sim.model.opt.timestep * 1)
+                time.sleep(sim.model.opt.timestep * 1)
                 viewer.sync()
                 
 
