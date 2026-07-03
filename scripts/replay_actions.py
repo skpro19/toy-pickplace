@@ -2,6 +2,7 @@
 import numpy as np 
 import mujoco, mujoco.viewer
 import time
+import argparse
 
 from sim import SimEnv
 
@@ -38,12 +39,15 @@ def replay_actions(*, file:str) -> None:
                 time.sleep(sim.model.opt.timestep * 1)
                 viewer.sync()
                 
-
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--file", type=str, default="data/test/pick_place_000000.npz")
+    return parser.parse_args()
 
 
 def main():
-    file = "data/demos/test/test.npz"
-    replay_actions(file=file)
+    args = parse_args()
+    replay_actions(file=args.file)
 
 
 if __name__ == "__main__":
