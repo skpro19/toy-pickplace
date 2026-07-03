@@ -7,13 +7,12 @@ define the observation vector, record actions, decide success, and save episodes
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 
-import mujoco
 import numpy as np
+import mujoco
 
-from expert import Phase, PickPlaceController
+from expert import CUBE_LIFT_MIN_DELTA, Phase, PickPlaceController, TRAY_PLACE_TOL
 from sim import SimEnv
 
 
@@ -72,8 +71,7 @@ class DataCollector:
         out_dir: Path,
         episode_idx: int,
         observations: list[object],
-        actions: list[object],
-    ) -> None:
+        actions: list[object]) -> None:
         """Persist one episode to disk."""
         out_dir.mkdir(parents=True, exist_ok=True)
         episode_path = out_dir / f"pick_place_{episode_idx:06d}.npz"
@@ -87,9 +85,9 @@ class DataCollector:
     def collect_episode(
         self,
         *,
-        max_steps: int,
-    ) -> dict[str, list[np.ndarray]]:
+        max_steps: int) -> dict[str, list[np.ndarray]]:
         """Run one scripted expert episode and return trajectory buffers."""
+        initial_cube_z = float(self.data.body("cube").xpos[2])
         controller = PickPlaceController(self.model, self.data)
 
         observations: list[np.ndarray] = []
@@ -102,6 +100,11 @@ class DataCollector:
             actions.append(self.build_action())
 
             mujoco.mj_step(self.model, self.data)
+
+            controller.max_cube_z = max(
+                controller.max_cube_z,
+                float(self.data.body("cube").xpos[2]),
+            )
             controller.update_phase()
 
             if controller.phase == Phase.DONE:
@@ -119,9 +122,6 @@ class DataCollector:
         save_failures: bool,
     ) -> tuple[int, int]:
         """Collect and optionally save multiple scripted expert episodes."""
-        run_out_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        processed = 0
-        saved = 0
 
         for episode_idx in range(episodes):
             self.sim.reset_episode()
@@ -131,17 +131,13 @@ class DataCollector:
             )
 
             DataCollector.save_episode(
-                out_dir=run_out_dir,
+                out_dir=out_dir,
                 episode_idx=episode_idx,
                 observations=data["observations"],
                 actions=data["actions"],
             )
-            processed += 1
-            saved += 1
 
             print(f"Processed episode {episode_idx}/{episodes}")
-
-        return processed, saved
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,7 +160,7 @@ def main() -> None:
     args = parse_args()
     sim = SimEnv()
     collector = DataCollector(sim=sim)
-    processed, saved = collector.collect_episodes(
+    successes, saved = collector.collect_episodes(
         episodes=args.episodes,
         out_dir=args.out_dir,
         seed=args.seed,
@@ -172,7 +168,7 @@ def main() -> None:
         save_failures=args.save_failures,
     )
 
-    print(f"Collected {processed}/{args.episodes} episodes; saved {saved}.")
+    print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
 
 
 if __name__ == "__main__":
