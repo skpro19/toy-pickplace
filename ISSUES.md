@@ -29,4 +29,8 @@ List of issues and tasks to be done.
 - normalization? 
 - integrate episode success check
 - add replay mechanism / logging / bag mechanism
+- would slowing down walltime/sim-time effect the num frames in the dataset? 
 
+** `infer.py` **
+- actuator range clamping
+- give time for sim to settle down

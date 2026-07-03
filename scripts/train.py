@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 import argparse
-
+from datetime import datetime
 
 class MLP(nn.Module):
 
@@ -43,7 +43,7 @@ class MLP(nn.Module):
         return x
 
 class PickPlaceDataset(Dataset):
-    def __init__(self, *, data_dir: str):
+    def __init__(self, *, data_dir: str = "data/demos/2026-07-02_14-04-52"):
         # self.files = []
         self.obs = []
         self.actions = []
@@ -93,10 +93,14 @@ class PickPlaceDataset(Dataset):
         )
         
 
-def train(*, num_epochs: int=10): 
+def train(
+    *, 
+    num_epochs: int=10,
+    checkpoint_dir: str) -> None: 
     train_dataloader = DataLoader(
-        dataset=PickPlaceDataset(data_dir="data/demos/2026-07-02_14-04-52"),
-        batch_size=32,
+        # dataset=PickPlaceDataset(data_dir="data/demos/2026-07-02_14-04-52"),
+        dataset=PickPlaceDataset(data_dir="data/demos/test/"),
+        batch_size=1000,
         shuffle=True,
     )
 
@@ -120,6 +124,9 @@ def train(*, num_epochs: int=10):
         for batch_idx, (obs, actions) in enumerate(train_dataloader):
             obs = obs.to(device)
             actions = actions.to(device)
+
+            print(f"batch_idx=>{batch_idx} (obs)=>{type(obs)} obs.shape => {obs.shape}")
+            
             pred = model(obs)
             loss = loss_fn(pred, actions)
 
@@ -135,19 +142,37 @@ def train(*, num_epochs: int=10):
 
         avg_loss = epoch_loss / num_batches
         writer.add_scalar("Loss/train", avg_loss, epoch)
-
+        
+    
     writer.close()
 
+    # checkpointing
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), checkpoint_path / "model.pt")
+
+
 def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--num_epochs", type=int, default=500)
+    parser = argparse.ArgumentParser(
+        description="Training params for simple MLP policy"
+    )
+    
+    parser.add_argument("--num_epochs", type=int, default=1)
+
+    # timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # parser.add_argument("--checkpoint_dir", type=str, default=f"checkpoints/{timestamp}")
+    parser.add_argument("--checkpoint_dir", type=str, default=f"checkpoints/test")
+    
     return parser.parse_args()
 
 def main():
 
     args = parse_args()
 
-    train(num_epochs=args.num_epochs)
+    train(
+        num_epochs=args.num_epochs, 
+        checkpoint_dir=args.checkpoint_dir
+    )
 
 if __name__ == "__main__":
     main()
