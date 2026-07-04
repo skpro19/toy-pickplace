@@ -36,6 +36,7 @@ List of issues and tasks to be done.
 - give time for sim to settle down
 
 ** fix MLP ** 
+- just test with gripper.action/255, instead of complete normalization
 - normalization 
 - does `time `effect train/inferece in `data.py` or `infer.py`
 - gripper action can be 0 / 255 ?

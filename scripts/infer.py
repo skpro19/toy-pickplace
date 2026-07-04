@@ -38,8 +38,8 @@ def infer(*, model_path: str):
     model.eval() 
     
 
-    # max_steps = 100 * 100 * 100
-    max_steps = 1
+    max_steps = 100 * 100 * 100
+    # max_steps = 1
 
     with mujoco.viewer.launch_passive(
         sim.model,
