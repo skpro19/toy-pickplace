@@ -103,6 +103,9 @@ def train(
         shuffle=True,
     )
 
+    arm_actions_mean =  None
+    arm_actions_std = None
+    
     if normalize_actions:
         # print(f"[before normzalization] type(dataset_.targets)=>{type(dataset_.targets)}")
         # print(f"[before normzalization] dataset_.targets.shape=>{dataset_.targets.shape}")
@@ -166,10 +169,19 @@ def train(
     writer.close()
 
     # checkpointing
+    # model_path = checkpoint_dir / "model.pt"
+    # torch.save(model.state_dict(), model_path)
+    # print(f"Saved model: {model_path}")
+    checkpoint = {
+        "model_dict" : model.state_dict(), 
+        "normalize_actions": normalize_actions, 
+        "arm_actions_mean" : arm_actions_mean, 
+        "arm_actions_std" : arm_actions_std
+    }
+    
     model_path = checkpoint_dir / "model.pt"
-    torch.save(model.state_dict(), model_path)
+    torch.save(checkpoint, model_path)
     print(f"Saved model: {model_path}")
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
