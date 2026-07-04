@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 import argparse
-from datetime import datetime
+import re
 
 class MLP(nn.Module):
 
@@ -93,10 +93,57 @@ class PickPlaceDataset(Dataset):
         )
         
 
+def next_run_name(
+    *,
+    base_name: str,
+    checkpoint_root: str,
+    log_root: str,
+) -> str:
+    existing_indices = []
+    pattern = re.compile(rf"^(\d+)_({re.escape(base_name)})$")
+
+    for root in (Path(checkpoint_root), Path(log_root)):
+        if not root.exists():
+            continue
+        for path in root.iterdir():
+            if not path.is_dir():
+                continue
+            match = pattern.match(path.name)
+            if match is not None:
+                existing_indices.append(int(match.group(1)))
+
+    next_idx = max(existing_indices, default=0) + 1
+    return f"{next_idx:03d}_{base_name}"
+
+
+def make_run_dirs(
+    *,
+    base_name: str,
+    checkpoint_root: str,
+    log_root: str,
+) -> tuple[str, Path, Path]:
+    while True:
+        run_name = next_run_name(
+            base_name=base_name,
+            checkpoint_root=checkpoint_root,
+            log_root=log_root,
+        )
+        checkpoint_dir = Path(checkpoint_root) / run_name
+        log_dir = Path(log_root) / run_name
+        if checkpoint_dir.exists() or log_dir.exists():
+            continue
+
+        checkpoint_dir.mkdir(parents=True, exist_ok=False)
+        log_dir.mkdir(parents=True, exist_ok=False)
+        return run_name, checkpoint_dir, log_dir
+
+
 def train(
     *, 
     num_epochs: int=10,
-    checkpoint_dir: str) -> None: 
+    run_name: str,
+    checkpoint_dir: Path,
+    log_dir: Path) -> None: 
     train_dataloader = DataLoader(
         # dataset=PickPlaceDataset(data_dir="data/demos/2026-07-02_14-04-52"),
         dataset=PickPlaceDataset(data_dir="data/test/"),
@@ -106,6 +153,9 @@ def train(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Run name: {run_name}")
+    print(f"TensorBoard log dir: {log_dir}")
+    print(f"Checkpoint dir: {checkpoint_dir}")
 
     loss_fn = nn.MSELoss()
     
@@ -115,7 +165,7 @@ def train(
 
     # epochs = 10
 
-    writer = SummaryWriter()
+    writer = SummaryWriter(log_dir=str(log_dir))
    
     for epoch in tqdm(range(num_epochs)):
         epoch_loss = 0.0
@@ -147,9 +197,9 @@ def train(
     writer.close()
 
     # checkpointing
-    checkpoint_path = Path(checkpoint_dir)
-    checkpoint_path.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), checkpoint_path / "model.pt")
+    model_path = checkpoint_dir / "model.pt"
+    torch.save(model.state_dict(), model_path)
+    print(f"Saved model: {model_path}")
 
 
 def parse_args():
@@ -159,9 +209,9 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=1)
 
-    # timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # parser.add_argument("--checkpoint_dir", type=str, default=f"checkpoints/{timestamp}")
-    parser.add_argument("--checkpoint_dir", type=str, default=f"checkpoints/test")
+    parser.add_argument("--base_name", type=str, default="mlp")
+    parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
+    parser.add_argument("--log_root", type=str, default="runs")
     
     return parser.parse_args()
 
@@ -169,9 +219,17 @@ def main():
 
     args = parse_args()
 
+    run_name, checkpoint_dir, log_dir = make_run_dirs(
+        base_name=args.base_name,
+        checkpoint_root=args.checkpoint_root,
+        log_root=args.log_root,
+    )
+
     train(
         num_epochs=args.epochs, 
-        checkpoint_dir=args.checkpoint_dir
+        run_name=run_name,
+        checkpoint_dir=checkpoint_dir,
+        log_dir=log_dir,
     )
 
 if __name__ == "__main__":
