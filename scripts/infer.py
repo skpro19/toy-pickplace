@@ -3,7 +3,8 @@ import argparse
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from train import PickPlaceDataset, MLP
+from dataset import PickPlaceDataset
+from train import MLP
 from sim import SimEnv
 from data import DataCollector
 from formatters import print_1d_array, print_1d_tensor
@@ -25,11 +26,20 @@ def infer(*, model_path: str):
     
     model_path = Path(model_path)
     model = MLP().to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    
+    ckpt = torch.load(model_path, weights_only=False)
+
+    model.load_state_dict(ckpt["model_dict"])
+    
+    NORMALIZE_ACTIONS = ckpt["normalize_actions"]
+    ARM_ACTIONS_MEAN = ckpt["arm_actions_mean"]
+    ARM_ACTIONS_STD = ckpt["arm_actions_std"]
+
     model.eval() 
     
 
-    max_steps = 100 * 100 * 100
+    # max_steps = 100 * 100 * 100
+    max_steps = 1
 
     with mujoco.viewer.launch_passive(
         sim.model,
@@ -61,6 +71,20 @@ def infer(*, model_path: str):
 
                 pred = model(obs_tensor)
 
+                if NORMALIZE_ACTIONS: 
+                    # torch.from
+                    ARM_ACTIONS_STD_tensor = torch.from_numpy(ARM_ACTIONS_STD).to(device)
+                    ARM_ACTIONS_MEAN_tensor = torch.from_numpy(ARM_ACTIONS_MEAN).to(device)
+
+                    print(f"type(ARM_ACTIONS_STD_tensor)=>{type(ARM_ACTIONS_STD_tensor)} ARM_ACTIONS_STD_tensor.shape=>{ARM_ACTIONS_STD_tensor.shape} ARM_ACTIONS_STD_tensor.device=>{ARM_ACTIONS_STD_tensor.device}")
+                    print(f"type(ARM_ACTIONS_MEAN_tensor)=>{type(ARM_ACTIONS_MEAN_tensor)} ARM_ACTIONS_MEAN_tensor.shape=>{ARM_ACTIONS_MEAN_tensor.shape} ARM_ACTIONS_MEAN_tensor.device=>{ARM_ACTIONS_MEAN_tensor.device}")
+                    
+
+                    pred[:7] = pred[:7] * (ARM_ACTIONS_STD_tensor + 1e-6) + ARM_ACTIONS_MEAN_tensor
+                    pred[7] = (255.0 if pred[7] >= 0.5 else 0)
+                    print(f"type(pred)=>{type(pred)} pred.shape=>{pred.shape} pred.device=>{pred.device}")
+                    # print(f"pred[7]=>{pred[7]}")
+                    print(f"type(ARM_ACTIONS_MEAN)=>{type(ARM_ACTIONS_MEAN)} ARM_ACTIONS_MEAN.shape=>{ARM_ACTIONS_MEAN.shape}")
                 # print(f"type(pred)=>{type(pred)} pred.shape=>{pred.shape} pred.dtype=>{pred.dtype}")
                 # print_1d_tensor(tensor=pred, label="pred")
 
