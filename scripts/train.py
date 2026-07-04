@@ -1,12 +1,15 @@
 import torch 
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 import argparse
 import re
+
+from dataset import PickPlaceDataset
+
 
 class MLP(nn.Module):
 
@@ -42,63 +45,11 @@ class MLP(nn.Module):
         x = self.output_layer(x)
         return x
 
-class PickPlaceDataset(Dataset):
-    def __init__(self, *, data_dir: str = "data/demos/2026-07-02_14-04-52"):
-        # self.files = []
-        self.obs = []
-        self.actions = []
-
-        for file in sorted(Path(data_dir).glob("*.npz")):
-            with np.load(file) as data:
-                obs = data["obs"]
-                actions = data["actions"]
-
-                # print(f"obs.shape: {obs.shape}")
-                # print(f"actions.shape: {actions.shape}")
-
-                # validation checks
-                if obs.shape[0] != actions.shape[0]:
-                    raise ValueError(f"{file} obs/actions length mismatch: {obs.shape[0]} vs {actions.shape[0]}")
-                if obs.ndim != 2: 
-                    raise ValueError(f"{file} obs must have shape (T,obs_dim), got {obs.shape}")
-                if actions.ndim != 2:
-                    raise ValueError(f"{file} actions must have shape (T,action_dim), got {actions.shape}")
-                if obs.shape[1] != 40:
-                    raise ValueError(f"{file} expected obs_dim=40 got {obs.shape[1]}")
-                if actions.shape[1] != 8:
-                    raise ValueError(f"{file} expected action_dim=8 got {actions.shape[1]}")
-
-
-                self.obs.append(obs)
-                self.actions.append(actions)
-                # break
-        
-        # print(f"self.obs.shape: {len(self.obs)}")
-        # print(f"self.actions.shape: {len(self.actions)}")
-
-        self.obs = np.concatenate(self.obs, axis=0)
-        self.actions = np.concatenate(self.actions, axis=0)
-
-        # print(f"self.obs.shape: {self.obs.shape}")
-        # print(f"self.actions.shape: {self.actions.shape}")
-
-    def __len__(self):
-        return self.obs.shape[0]
-
-
-    def __getitem__(self, idx):
-        return (
-            torch.from_numpy(self.obs[idx]), 
-            torch.from_numpy(self.actions[idx]),
-        )
-        
-
 def next_run_name(
     *,
     base_name: str,
     checkpoint_root: str,
-    log_root: str,
-) -> str:
+    log_root: str,) -> str:
     existing_indices = []
     pattern = re.compile(rf"^(\d+)_({re.escape(base_name)})$")
 
@@ -120,8 +71,7 @@ def make_run_dirs(
     *,
     base_name: str,
     checkpoint_root: str,
-    log_root: str,
-) -> tuple[str, Path, Path]:
+    log_root: str) -> tuple[str, Path, Path]:
     while True:
         run_name = next_run_name(
             base_name=base_name,
@@ -145,13 +95,33 @@ def train(
     checkpoint_dir: Path,
     log_dir: Path,
     normalize_actions:bool=True) -> None: 
+    
+    dataset_ = PickPlaceDataset(data_dir="data/test/")
     train_dataloader = DataLoader(
-        # dataset=PickPlaceDataset(data_dir="data/demos/2026-07-02_14-04-52"),
-        dataset=PickPlaceDataset(data_dir="data/test/"),
-        batch_size=32,
+        dataset=dataset_,
+        batch_size=200,
         shuffle=True,
     )
 
+    if normalize_actions:
+        # print(f"[before normzalization] type(dataset_.targets)=>{type(dataset_.targets)}")
+        # print(f"[before normzalization] dataset_.targets.shape=>{dataset_.targets.shape}")
+        
+        arm_actions_mean = np.mean(dataset_.actions[:, 0:7], axis=0, keepdims=True) # (1, 7)
+        arm_actions_std = np.std(dataset_.actions[: , 0:7], axis=0, keepdims=True) # (1, 7)
+
+        # print(f"arm_actions_mean.shape=>{arm_actions_mean.shape} arm_actions_std.shape=>{arm_actions_std.shape}")
+        # print(f"arm_actions_mean=>{arm_actions_mean}")
+        
+        # normalizae 
+        dataset_.targets[:, 0:7] = (dataset_.actions[:, 0:7] - arm_actions_mean) / (arm_actions_std + 1e-6)
+
+        # print(f"actions.shape=>{actions.shape}")
+        dataset_.targets[:,7] = dataset_.actions[:,7] / 255.0
+
+        # print(f"[after normzalization] type(dataset_.actions)=>{type(dataset_.actions)}")
+        # print(f"[after normzalization] dataset_.actions.shape=>{dataset_.actions.shape}")
+        
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     print(f"Run name: {run_name}")
@@ -174,28 +144,13 @@ def train(
         epoch_loss = 0.0
         num_batches = 0
 
-        for batch_idx, (obs, actions) in enumerate(train_dataloader):
-            if batch_idx > 0:
-                break
-            # print(f"[before] obs.device=>{obs.device} type(obs)=>{type(obs)}")
+        for batch_idx, (obs, targets) in enumerate(train_dataloader):
+         
             obs = obs.to(device)
-            # print(f"[after] obs.device=>{obs.device} type(obs)=>{type(obs)}")
-            actions = actions.to(device)
-
-            if normalize_actions: 
-                print(f"type(actions)=>{type(actions)} actions.shape=>{actions.shape}")
-                arm_actions_mean = torch.mean(actions[:, 0:7], dim=0)
-                arm_actions_std = torch.std(actions[: , 0:7], dim=0)
-
-                print(f"arm_actions_mean.shape=>{arm_actions_mean.shape} arm_actions_std.shape=>{arm_actions_std.shape}")
-                print(f"arm_actions_mean=>{arm_actions_mean}")
-            
-            # break
-
-            # print(f"batch_idx=>{batch_idx} (obs)=>{type(obs)} obs.shape => {obs.shape}")
-            
+            targets = targets.to(device)
+  
             pred = model(obs)
-            loss = loss_fn(pred, actions)
+            loss = loss_fn(pred, targets)
 
             optimizer.zero_grad()
             loss.backward()
@@ -203,10 +158,7 @@ def train(
 
             epoch_loss += loss.item()
             num_batches += 1
-
-            # if batch_idx % 20 == 0:
-            #     print(f"Epoch {epoch} Batch {batch_idx} Loss: {loss.item()}")
-
+            
         avg_loss = epoch_loss / num_batches
         writer.add_scalar("Loss/train", avg_loss, epoch)
         
