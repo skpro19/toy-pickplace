@@ -143,11 +143,12 @@ def train(
     num_epochs: int=10,
     run_name: str,
     checkpoint_dir: Path,
-    log_dir: Path) -> None: 
+    log_dir: Path,
+    normalize_actions:bool=True) -> None: 
     train_dataloader = DataLoader(
         # dataset=PickPlaceDataset(data_dir="data/demos/2026-07-02_14-04-52"),
         dataset=PickPlaceDataset(data_dir="data/test/"),
-        batch_size=1000,
+        batch_size=32,
         shuffle=True,
     )
 
@@ -156,6 +157,8 @@ def train(
     print(f"Run name: {run_name}")
     print(f"TensorBoard log dir: {log_dir}")
     print(f"Checkpoint dir: {checkpoint_dir}")
+
+   
 
     loss_fn = nn.MSELoss()
     
@@ -172,8 +175,22 @@ def train(
         num_batches = 0
 
         for batch_idx, (obs, actions) in enumerate(train_dataloader):
+            if batch_idx > 0:
+                break
+            # print(f"[before] obs.device=>{obs.device} type(obs)=>{type(obs)}")
             obs = obs.to(device)
+            # print(f"[after] obs.device=>{obs.device} type(obs)=>{type(obs)}")
             actions = actions.to(device)
+
+            if normalize_actions: 
+                print(f"type(actions)=>{type(actions)} actions.shape=>{actions.shape}")
+                arm_actions_mean = torch.mean(actions[:, 0:7], dim=0)
+                arm_actions_std = torch.std(actions[: , 0:7], dim=0)
+
+                print(f"arm_actions_mean.shape=>{arm_actions_mean.shape} arm_actions_std.shape=>{arm_actions_std.shape}")
+                print(f"arm_actions_mean=>{arm_actions_mean}")
+            
+            # break
 
             # print(f"batch_idx=>{batch_idx} (obs)=>{type(obs)} obs.shape => {obs.shape}")
             
@@ -209,7 +226,7 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=1)
 
-    parser.add_argument("--base_name", type=str, default="mlp")
+    parser.add_argument("--base_name", type=str, default="mlp_action_norm")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
     
