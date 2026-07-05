@@ -102,6 +102,11 @@ def infer(*, model_path: str):
                     actions[7] = (255.0 if pred[7] >= 0.5 else 0)
                 else:
                     actions = pred
+ 
+                # ctrl_mn = torch.from_numpy(sim.model.actuator_ctrlrange[:sim.model.nu,0]).to(device, dtype=torch.float32)
+                # ctrl_mx = torch.from_numpy(sim.model.actuator_ctrlrange[:sim.model.nu,1]).to(device, dtype=torch.float32)
+                
+                # actions = torch.clamp(actions, ctrl_mn, ctrl_mx)
 
                 sim.data.ctrl[:sim.model.nu] = actions.detach().cpu().numpy()
                 

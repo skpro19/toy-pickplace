@@ -19,10 +19,10 @@ List of issues and tasks to be done.
 + refactor `sim.py` -> fix cube reset duplication logic
 
 
-**`expert.py`**
+**expert.py**
 - add `step` method in PickPlaceController
 
-**`data.py`**
+**data.py**
 - test with/without velocity observations
 + test `build_observation` implementation 
 + test `build_action` implementation 
@@ -31,14 +31,24 @@ List of issues and tasks to be done.
 - add replay mechanism / logging / bag mechanism
 - would slowing down walltime/sim-time effect the num frames in the dataset? 
 
-** `infer.py` **
+**infer.py**
 - actuator range clamping
 - give time for sim to settle down
 
-** fix MLP ** 
+**tensorboard logging** 
+- logging model predictions
+
+**MLP** 
 - just test with gripper.action/255, instead of complete normalization
 - normalization 
-- does `time `effect train/inferece in `data.py` or `infer.py`
+- does `time.sleep` effect train/inferece in `data.py` or `infer.py`
 - gripper action can be 0 / 255 ?
 - tensorboard logging
 - [abalation] figure the network depth and width
+- threshold criteria for gripper action
+
+**ablation/experiments**
+- add `abalation.py`
+- normalize actions
+- normalize observations
+- add noise to create more data
