@@ -36,21 +36,12 @@ def infer(*, model_path: str):
     arm_actions_mean: np.ndarray = ckpt["arm_actions_mean"]
     arm_actions_std: np.ndarray = ckpt["arm_actions_std"]
 
-    arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device)
-    arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device)
+    if normalize_actions:
+        arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device)
+        arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device)
 
-    # print(f"--------------------------------")
-    # print(f"[before] arm_actions_mean.shape=>{arm_actions_mean.shape}")
-    # print(f"[before] arm_actions_std.shape=>{arm_actions_std.shape}")
-    # print(f"--------------------------------")
-
-    arm_actions_mean = arm_actions_mean.squeeze(0)
-    arm_actions_std = arm_actions_std.squeeze(0)
-
-    # print(f"--------------------------------")
-    # print(f"[after] arm_actions_mean.shape=>{arm_actions_mean.shape}")
-    # print(f"[after] arm_actions_std.shape=>{arm_actions_std.shape}")
-    # print(f"--------------------------------")
+        arm_actions_mean = arm_actions_mean.squeeze(0)
+        arm_actions_std = arm_actions_std.squeeze(0)
 
     model.eval() 
     
