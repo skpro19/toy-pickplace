@@ -21,17 +21,20 @@ class SimEnv:
 
     def build_observation(self) -> np.ndarray:
         """Return one low-dimensional observation for the current simulator state."""
+        # arm joints
         arm_qpos = self.data.qpos[:7].copy()
         gripper_qpos = self.data.qpos[7:9].copy()
+        
+        # cube body
         cube_xpos = self.data.body("cube").xpos.copy()
-        cube_xquat = self.data.body("cube").xquat.copy()
-        # tray_xpos = self.data.site_xpos[self.tray_center_id].copy()
-        # tray_xmat = self.data.site_xmat[self.tray_center_id].copy()
-        # grasp_xpos = self.data.site_xpos[self.grasp_id].copy()
-        # grasp_xmat = self.data.site_xmat[self.grasp_id].copy()
-
+        # cube_xquat = self.data.body("cube").xquat.copy()
+        cube_xmat = self.data.body("cube").xmat.copy()
+        
+        # tray center site
         tray_xpos = self.data.site("tray_center").xpos.copy()
         tray_xmat = self.data.site("tray_center").xmat.copy()
+        
+        # ee site
         grasp_xpos = self.data.site("grasp").xpos.copy()
         grasp_xmat = self.data.site("grasp").xmat.copy()
 
@@ -42,7 +45,7 @@ class SimEnv:
                 arm_qpos,
                 gripper_qpos,
                 cube_xpos,
-                cube_xquat,
+                cube_xmat,
                 tray_xpos,
                 tray_xmat,
                 grasp_xpos,
