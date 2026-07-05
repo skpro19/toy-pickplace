@@ -92,7 +92,7 @@ def infer(*, model_path: str):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default ="checkpoints/test/model.pt")
+    parser.add_argument("--model", type=str, required=True, help="model path e.g. checkpoints/026_mlp_action_norm")
     return parser.parse_args()
 
 def main(): 
