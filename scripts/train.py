@@ -7,43 +7,10 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import re
+import os
 
+from mlp import MLP
 from dataset import PickPlaceDataset
-
-
-class MLP(nn.Module):
-
-    def __init__(self, *, 
-                obs_dim: int=40, 
-                action_dim: int=8, 
-                ): 
-        super().__init__()
-
-        # layers
-        self.input_layer = nn.Linear(obs_dim, 128)
-        # hidden layers
-        self.h1 = nn.Linear(128, 128)
-        self.h2 = nn.Linear(128, 128)
-        self.h3 = nn.Linear(128, 128)
-        self.output_layer = nn.Linear(128, action_dim) 
-        self.relu = nn.ReLU()
-    
-
-    def forward(self, x):
-        x = self.input_layer(x)
-        x = self.relu(x)
-        
-        x = self.h1(x)
-        x = self.relu(x)
-
-        x = self.h2(x)
-        x = self.relu(x)
-
-        x = self.h3(x)
-        x = self.relu(x)
-
-        x = self.output_layer(x)
-        return x
 
 def next_run_name(
     *,
@@ -92,11 +59,15 @@ def train(
     *, 
     num_epochs: int=10,
     run_name: str,
+    npz_folder: str,
     checkpoint_dir: Path,
     log_dir: Path,
     normalize_actions:bool=True) -> None: 
     
-    dataset_ = PickPlaceDataset(data_dir="data/test/")
+    assert os.path.exists(npz_folder), f"npz_folder=>{npz_folder} does not exist"
+    assert os.path.isdir(npz_folder), f"npz_folder=>{npz_folder} is not a directory"
+
+    dataset_ = PickPlaceDataset(data_dir=npz_folder)
     train_dataloader = DataLoader(
         dataset=dataset_,
         batch_size=200,
@@ -135,7 +106,9 @@ def train(
 
     loss_fn = nn.MSELoss()
     
-    model = MLP(obs_dim=40, action_dim=8).to(device)
+    model = MLP(obs_dim=45, action_dim=8).to(device)
+
+    print(f"model created!")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
@@ -148,7 +121,10 @@ def train(
         num_batches = 0
 
         for batch_idx, (obs, targets) in enumerate(train_dataloader):
-         
+            # print(f"--------------------------------")
+            # print(f"[batch_idx]=>{batch_idx}")
+            # print(f"--------------------------------")
+
             obs = obs.to(device)
             targets = targets.to(device)
   
@@ -190,16 +166,21 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=1)
 
+    # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
+    # and `runs/<idx>_<base_name>` respectively
     parser.add_argument("--base_name", type=str, default="mlp_action_norm")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
-    
+    parser.add_argument("--npz", type=str, required=True, help="npz folder path")
     return parser.parse_args()
 
 def main():
 
     args = parse_args()
 
+    # checkpoint and runs folder are created at `checkpoints/idx_base_name 
+    # and `runs/idx_base_name respectively
+    # idx is auto incremented
     run_name, checkpoint_dir, log_dir = make_run_dirs(
         base_name=args.base_name,
         checkpoint_root=args.checkpoint_root,
@@ -209,6 +190,7 @@ def main():
     train(
         num_epochs=args.epochs, 
         run_name=run_name,
+        npz_folder=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
     )
