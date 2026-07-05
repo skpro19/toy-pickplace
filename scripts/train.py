@@ -12,6 +12,8 @@ import os
 from mlp import MLP
 from dataset import PickPlaceDataset
 
+EPSILON = 1e-6
+
 def next_run_name(
     *,
     base_name: str,
@@ -62,7 +64,8 @@ def train(
     npz_folder: str,
     checkpoint_dir: Path,
     log_dir: Path,
-    normalize_actions:bool=True) -> None: 
+    normalize_actions:bool=True,
+    normalize_obs:bool=True) -> None: 
     
     assert os.path.exists(npz_folder), f"npz_folder=>{npz_folder} does not exist"
     assert os.path.isdir(npz_folder), f"npz_folder=>{npz_folder} is not a directory"
@@ -74,28 +77,31 @@ def train(
         shuffle=True,
     )
 
+    # normalization stats for checkpointing
     arm_actions_mean =  None
     arm_actions_std = None
+    arm_obs_mean = None
+    arm_obs_std = None
     
     if normalize_actions:
-        # print(f"[before normzalization] type(dataset_.targets)=>{type(dataset_.targets)}")
-        # print(f"[before normzalization] dataset_.targets.shape=>{dataset_.targets.shape}")
-        
         arm_actions_mean = np.mean(dataset_.actions[:, 0:7], axis=0, keepdims=True) # (1, 7)
         arm_actions_std = np.std(dataset_.actions[: , 0:7], axis=0, keepdims=True) # (1, 7)
-
-        # print(f"arm_actions_mean.shape=>{arm_actions_mean.shape} arm_actions_std.shape=>{arm_actions_std.shape}")
-        # print(f"arm_actions_mean=>{arm_actions_mean}")
-        
         # normalizae 
-        dataset_.targets[:, 0:7] = (dataset_.actions[:, 0:7] - arm_actions_mean) / (arm_actions_std + 1e-6)
-
-        # print(f"actions.shape=>{actions.shape}")
-        dataset_.targets[:,7] = dataset_.actions[:,7] / 255.0
-
-        # print(f"[after normzalization] type(dataset_.actions)=>{type(dataset_.actions)}")
-        # print(f"[after normzalization] dataset_.actions.shape=>{dataset_.actions.shape}")
+        dataset_.action_targets[:, 0:7] = (dataset_.actions[:, 0:7] - arm_actions_mean) / (arm_actions_std + EPSILON)
+        dataset_.action_targets[:,7] = dataset_.actions[:,7] / 255.0
+    else: 
+        dataset_.action_targets = dataset_.actions
         
+    if normalize_obs: 
+        arm_obs_mean = np.mean(dataset_.obs, axis=0, keepdims=True) # (1,45)
+        arm_obs_std = np.std(dataset_.obs, axis=0, keepdims=True) # (1,45)
+
+        #normalize
+        dataset_.obs_targets = (dataset_.obs - arm_obs_mean) / (arm_obs_std + EPSILON)
+    else: 
+        dataset_.obs_targets = dataset_.obs
+
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     print(f"Run name: {run_name}")
@@ -120,16 +126,16 @@ def train(
         epoch_loss = 0.0
         num_batches = 0
 
-        for batch_idx, (obs, targets) in enumerate(train_dataloader):
+        for _, (obs_target, action_target) in enumerate(train_dataloader):
             # print(f"--------------------------------")
             # print(f"[batch_idx]=>{batch_idx}")
             # print(f"--------------------------------")
 
-            obs = obs.to(device)
-            targets = targets.to(device)
+            obs_target = obs_target.to(device)
+            action_target = action_target.to(device)
   
-            pred = model(obs)
-            loss = loss_fn(pred, targets)
+            pred = model(obs_target)
+            loss = loss_fn(pred, action_target)
 
             optimizer.zero_grad()
             loss.backward()
@@ -151,8 +157,11 @@ def train(
     checkpoint = {
         "model_dict" : model.state_dict(), 
         "normalize_actions": normalize_actions, 
+        "normalize_obs": normalize_obs,
         "arm_actions_mean" : arm_actions_mean, 
-        "arm_actions_std" : arm_actions_std
+        "arm_actions_std" : arm_actions_std, 
+        "arm_obs_mean": arm_obs_mean, 
+        "arm_obs_std": arm_obs_std
     }
     
     model_path = checkpoint_dir / "model.pt"
@@ -168,7 +177,7 @@ def parse_args():
 
     # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
     # and `runs/<idx>_<base_name>` respectively
-    parser.add_argument("--base_name", type=str, default="mlp_action_norm")
+    parser.add_argument("--base_name", type=str, default="mlp_action+obs_norm")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
     parser.add_argument("--npz", type=str, required=True, help="npz folder path")

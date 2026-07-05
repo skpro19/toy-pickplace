@@ -31,13 +31,16 @@ class PickPlaceDataset(Dataset):
                 
         self.obs = np.concatenate(self.obs, axis=0)
         self.actions = np.concatenate(self.actions, axis=0)
-        self.targets = self.actions.copy()
+        
+        # values that would be used by the model
+        self.action_targets = np.empty_like(self.actions)
+        self.obs_targets = np.empty_like(self.obs)
 
     def __len__(self):
         return self.obs.shape[0]
 
     def __getitem__(self, idx):
         return (
-            torch.from_numpy(self.obs[idx]),
-            torch.from_numpy(self.targets[idx]),
+            torch.from_numpy(self.obs_targets[idx]),
+            torch.from_numpy(self.action_targets[idx]),
         )

@@ -17,6 +17,8 @@ import numpy as np
 #     if chr(keycode).lower() == "q" and viewer_handle is not None:
 #         viewer_handle.close()
 
+EPSILON = 1e-6
+
 def infer(*, model_path: str):
     
    
@@ -32,9 +34,14 @@ def infer(*, model_path: str):
 
     model.load_state_dict(ckpt["model_dict"])
     
+    
     normalize_actions: bool = ckpt["normalize_actions"]
     arm_actions_mean: np.ndarray = ckpt["arm_actions_mean"]
     arm_actions_std: np.ndarray = ckpt["arm_actions_std"]
+
+    normalize_obs: bool = ckpt["normalize_obs"]
+    arm_obs_mean: np.ndarray = ckpt["arm_obs_mean"]
+    arm_obs_std: np.ndarray = ckpt["arm_obs_std"]
 
     if normalize_actions:
         arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device)
@@ -42,6 +49,13 @@ def infer(*, model_path: str):
 
         arm_actions_mean = arm_actions_mean.squeeze(0)
         arm_actions_std = arm_actions_std.squeeze(0)
+
+    if normalize_obs:
+        arm_obs_mean: torch.Tensor = torch.from_numpy(arm_obs_mean).to(device)
+        arm_obs_std: torch.Tensor = torch.from_numpy(arm_obs_std).to(device)
+
+        arm_obs_mean = arm_obs_mean.squeeze(0)
+        arm_obs_std = arm_obs_std.squeeze(0)
 
     model.eval() 
     
@@ -71,11 +85,20 @@ def infer(*, model_path: str):
                 obs = sim.build_observation()
                 obs = torch.from_numpy(obs).to(device)
                 
-                pred = model(obs)
+                obs_norm = torch.empty_like(obs)
+                # normalize obs
+                if normalize_obs: 
+                    obs_norm = obs - arm_obs_mean
+                    obs_norm = obs_norm / (arm_obs_std + EPSILON)
+                else: 
+                    obs_norm = obs
+                    
+
+                pred = model(obs_norm)
                 actions = torch.empty_like(pred)
 
                 if normalize_actions: 
-                    actions[:7] = pred[:7] * (arm_actions_std + 1e-6) + arm_actions_mean
+                    actions[:7] = pred[:7] * (arm_actions_std + EPSILON) + arm_actions_mean
                     actions[7] = (255.0 if pred[7] >= 0.5 else 0)
                 else:
                     actions = pred
