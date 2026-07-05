@@ -11,6 +11,7 @@ from formatters import print_1d_array, print_1d_tensor
 import mujoco
 import mujoco.viewer
 import time
+import numpy as np
 
 # def key_callback(keycode: int) -> None:
 #     if chr(keycode).lower() == "q" and viewer_handle is not None:
@@ -31,9 +32,25 @@ def infer(*, model_path: str):
 
     model.load_state_dict(ckpt["model_dict"])
     
-    NORMALIZE_ACTIONS = ckpt["normalize_actions"]
-    ARM_ACTIONS_MEAN = ckpt["arm_actions_mean"]
-    ARM_ACTIONS_STD = ckpt["arm_actions_std"]
+    normalize_actions: bool = ckpt["normalize_actions"]
+    arm_actions_mean: np.ndarray = ckpt["arm_actions_mean"]
+    arm_actions_std: np.ndarray = ckpt["arm_actions_std"]
+
+    arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device)
+    arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device)
+
+    # print(f"--------------------------------")
+    # print(f"[before] arm_actions_mean.shape=>{arm_actions_mean.shape}")
+    # print(f"[before] arm_actions_std.shape=>{arm_actions_std.shape}")
+    # print(f"--------------------------------")
+
+    arm_actions_mean = arm_actions_mean.squeeze(0)
+    arm_actions_std = arm_actions_std.squeeze(0)
+
+    # print(f"--------------------------------")
+    # print(f"[after] arm_actions_mean.shape=>{arm_actions_mean.shape}")
+    # print(f"[after] arm_actions_std.shape=>{arm_actions_std.shape}")
+    # print(f"--------------------------------")
 
     model.eval() 
     
@@ -61,38 +78,19 @@ def infer(*, model_path: str):
             for steps in range(0,max_steps):
                 # print(f"steps=>{steps}")
                 obs = sim.build_observation()
+                obs = torch.from_numpy(obs).to(device)
+                
+                pred = model(obs)
+                actions = torch.empty_like(pred)
 
-                # print(f"type(obs)=>{type(obs)} obs.shape=>{obs.shape} obs.dtype=>{obs.dtype}")
+                if normalize_actions: 
+                    actions[:7] = pred[:7] * (arm_actions_std + 1e-6) + arm_actions_mean
+                    actions[7] = (255.0 if pred[7] >= 0.5 else 0)
+                else:
+                    actions = pred
 
-                obs_tensor = torch.from_numpy(obs)
-                obs_tensor = obs_tensor.to(device)
-
-                # print(f"type(obs_tensor)=>{type(obs_tensor)} obs_tensor.shape=>{obs_tensor.shape} obs_tensor.dtype=>{obs_tensor.dtype}")
-
-                pred = model(obs_tensor)
-
-                if NORMALIZE_ACTIONS: 
-                    # torch.from
-                    ARM_ACTIONS_STD_tensor = torch.from_numpy(ARM_ACTIONS_STD).to(device)
-                    ARM_ACTIONS_MEAN_tensor = torch.from_numpy(ARM_ACTIONS_MEAN).to(device)
-
-                    print(f"type(ARM_ACTIONS_STD_tensor)=>{type(ARM_ACTIONS_STD_tensor)} ARM_ACTIONS_STD_tensor.shape=>{ARM_ACTIONS_STD_tensor.shape} ARM_ACTIONS_STD_tensor.device=>{ARM_ACTIONS_STD_tensor.device}")
-                    print(f"type(ARM_ACTIONS_MEAN_tensor)=>{type(ARM_ACTIONS_MEAN_tensor)} ARM_ACTIONS_MEAN_tensor.shape=>{ARM_ACTIONS_MEAN_tensor.shape} ARM_ACTIONS_MEAN_tensor.device=>{ARM_ACTIONS_MEAN_tensor.device}")
-                    
-
-                    pred[:7] = pred[:7] * (ARM_ACTIONS_STD_tensor + 1e-6) + ARM_ACTIONS_MEAN_tensor
-                    pred[7] = (255.0 if pred[7] >= 0.5 else 0)
-                    print(f"type(pred)=>{type(pred)} pred.shape=>{pred.shape} pred.device=>{pred.device}")
-                    # print(f"pred[7]=>{pred[7]}")
-                    print(f"type(ARM_ACTIONS_MEAN)=>{type(ARM_ACTIONS_MEAN)} ARM_ACTIONS_MEAN.shape=>{ARM_ACTIONS_MEAN.shape}")
-                # print(f"type(pred)=>{type(pred)} pred.shape=>{pred.shape} pred.dtype=>{pred.dtype}")
-                # print_1d_tensor(tensor=pred, label="pred")
-
-                # update mujoco data
-                # print_1d_array(array=sim.data.ctrl, length=sim.model.nu, label="[Before update] sim.data.ctrl")
-                sim.data.ctrl[:sim.model.nu] = pred.detach().cpu().numpy()
-                # print_1d_array(array=sim.data.ctrl, length=sim.model.nu, label="[after update] sim.data.ctrl")
-
+                sim.data.ctrl[:sim.model.nu] = actions.detach().cpu().numpy()
+                
                 mujoco.mj_step(sim.model, sim.data)
                 time.sleep(sim.model.opt.timestep * 10)
 
