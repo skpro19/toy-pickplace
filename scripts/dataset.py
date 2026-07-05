@@ -21,7 +21,7 @@ class PickPlaceDataset(Dataset):
                     raise ValueError(f"{file} obs must have shape (T,obs_dim), got {obs.shape}")
                 if actions.ndim != 2:
                     raise ValueError(f"{file} actions must have shape (T,action_dim), got {actions.shape}")
-                if obs.shape[1] != 40:
+                if obs.shape[1] != 45:
                     raise ValueError(f"{file} expected obs_dim=40 got {obs.shape[1]}")
                 if actions.shape[1] != 8:
                     raise ValueError(f"{file} expected action_dim=8 got {actions.shape[1]}")
