@@ -13,11 +13,10 @@ import mujoco.viewer
 import time
 import numpy as np
 
-# def key_callback(keycode: int) -> None:
-#     if chr(keycode).lower() == "q" and viewer_handle is not None:
-#         viewer_handle.close()
-
-EPSILON = 1e-6
+from constant import (
+        EPSILON, 
+        ACTION_DIMS
+        )
 
 def infer(*, model_path: str):
     
@@ -42,6 +41,10 @@ def infer(*, model_path: str):
     normalize_obs: bool = ckpt["normalize_obs"]
     arm_obs_mean: np.ndarray = ckpt["arm_obs_mean"]
     arm_obs_std: np.ndarray = ckpt["arm_obs_std"]
+
+    # debug
+    assert normalize_actions, "normalize_actions must be True"
+    assert normalize_obs, "normalize_obs must be True"
 
     if normalize_actions:
         arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device)
@@ -80,10 +83,10 @@ def infer(*, model_path: str):
     
         with torch.no_grad():  
 
-            for steps in range(0,max_steps):
+            for _ in range(0,max_steps):
                 # print(f"steps=>{steps}")
                 obs = sim.build_observation()
-                obs = torch.from_numpy(obs).to(device)
+                obs = torch.from_numpy(obs).to(device).unsqueeze(0)
                 
                 obs_norm = torch.empty_like(obs)
                 # normalize obs
@@ -92,21 +95,33 @@ def infer(*, model_path: str):
                     obs_norm = obs_norm / (arm_obs_std + EPSILON)
                 else: 
                     obs_norm = obs
+
+                # print(f"type(obs_norm)=>{type(obs_norm)}")
+                # print(f"obs_norm.shape=>{obs_norm.shape}")
                     
 
-                pred = model(obs_norm)
-                actions = torch.empty_like(pred)
+                # pred = model(obs_norm)
+                actions = torch.empty(obs_norm.shape[0], ACTION_DIMS)
 
-                if normalize_actions: 
-                    actions[:7] = pred[:7] * (arm_actions_std + EPSILON) + arm_actions_mean
-                    actions[7] = (255.0 if pred[7] >= 0.5 else 0)
-                else:
-                    actions = pred
- 
-                # ctrl_mn = torch.from_numpy(sim.model.actuator_ctrlrange[:sim.model.nu,0]).to(device, dtype=torch.float32)
-                # ctrl_mx = torch.from_numpy(sim.model.actuator_ctrlrange[:sim.model.nu,1]).to(device, dtype=torch.float32)
+                (joints_pred, gripper_pred) = model(obs_norm)
                 
-                # actions = torch.clamp(actions, ctrl_mn, ctrl_mx)
+                # print(f"joints_pred.shape=>{joints_pred.shape}")
+                # print(f"gripper_pred.shape=>{gripper_pred.shape}")
+                
+                joints_actions = torch.empty_like(joints_pred)
+                gripper_actions = torch.empty_like(gripper_pred)
+
+
+                # unnormalize actions
+                if normalize_actions: 
+                    joints_actions = joints_pred * (arm_actions_std + EPSILON) + arm_actions_mean
+                    # gripper_actions = (255.0 if gripper_pred >= 0.5 else 0)
+                    gripper_actions = torch.where(torch.sigmoid(gripper_pred) >= 0.5, 255.0, 0.0)
+
+                # print(f"type(joints_actions)=>{type(joints_actions)}")
+                # print(f"type(gripper_actions)=>{type(gripper_actions)}")
+                actions = torch.concat([joints_actions, gripper_actions], dim=1)
+                
 
                 sim.data.ctrl[:sim.model.nu] = actions.detach().cpu().numpy()
                 

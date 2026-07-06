@@ -13,8 +13,8 @@ from mlp import MLP
 from dataset import PickPlaceDataset
 
 from constant import (
-    OBS_DIM, 
-    ACTION_DIM, 
+    OBS_DIMS, 
+    ACTION_DIMS, 
     EPSILON,
     JOINTS_LOSS_WEIGHT,
     GRIPPER_LOSS_WEIGHT
@@ -90,11 +90,11 @@ def train(
     arm_obs_std = None
     
     if normalize_actions:
-        arm_actions_mean = np.mean(dataset_.actions[:, 0:ACTION_DIM-1], axis=0, keepdims=True) # (1, 7)
-        arm_actions_std = np.std(dataset_.actions[: , 0:ACTION_DIM-1], axis=0, keepdims=True) # (1, 7)
+        arm_actions_mean = np.mean(dataset_.actions[:, 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
+        arm_actions_std = np.std(dataset_.actions[: , 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
         # normalizae 
-        dataset_.action_targets[:, 0:ACTION_DIM-1] = (dataset_.actions[:, 0:ACTION_DIM-1] - arm_actions_mean) / (arm_actions_std + EPSILON)
-        dataset_.action_targets[:,ACTION_DIM-1] = dataset_.actions[:,ACTION_DIM-1] / 255.0
+        dataset_.action_targets[:, 0:ACTION_DIMS-1] = (dataset_.actions[:, 0:ACTION_DIMS-1] - arm_actions_mean) / (arm_actions_std + EPSILON)
+        dataset_.action_targets[:,ACTION_DIMS-1] = dataset_.actions[:,ACTION_DIMS-1] / 255.0
     else: 
         dataset_.action_targets = dataset_.actions
         
@@ -120,7 +120,7 @@ def train(
     joint_loss_fn = nn.MSELoss()
     gripper_loss_fn = nn.BCEWithLogitsLoss()
 
-    model = MLP(obs_dim=OBS_DIM, action_dim=ACTION_DIM).to(device)
+    model = MLP(obs_dim=OBS_DIMS, action_dim=ACTION_DIMS).to(device)
 
     print(f"model created!")
 
@@ -147,8 +147,8 @@ def train(
             # print(f"--------------------------------")
 
             # break  
-            joints_target = action_target[:, :ACTION_DIM-1]
-            gripper_target = action_target[:, ACTION_DIM-1].unsqueeze(1)
+            joints_target = action_target[:, :ACTION_DIMS-1]
+            gripper_target = action_target[:, ACTION_DIMS-1].unsqueeze(1)
 
             # print(f"action_target.shape=>{action_target.shape}")
             # print(f"joints_target.shape=>{joints_target.shape}")
