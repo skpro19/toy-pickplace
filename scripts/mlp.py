@@ -14,13 +14,19 @@ class MLP(nn.Module):
         # print(f"obs_dim=>{obs_dim} action_dim=>{action_dim}")
         # layers
         self.input_layer = nn.Linear(obs_dim, 128)
-        # hidden layers
+        self.relu = nn.ReLU()
+        
+        # [backbone] hidden layers
         self.h1 = nn.Linear(128, 128)
         self.h2 = nn.Linear(128, 128)
         self.h3 = nn.Linear(128, 128)
-        self.output_layer = nn.Linear(128, action_dim) 
-        self.relu = nn.ReLU()
-    
+        
+        #relu
+
+        # [heads]
+        self.joints_head = nn.Linear(128, action_dim - 1)
+        self.gripper_head = nn.Linear(128, 1) 
+        
 
     def forward(self, x):
 
@@ -42,5 +48,7 @@ class MLP(nn.Module):
         x = self.relu(x)
         # print(f"M8")
 
-        x = self.output_layer(x)
-        return x
+        joints_logits = self.joints_head(x)
+        gripper_logits = self.gripper_head(x)
+
+        return (joints_logits, gripper_logits)

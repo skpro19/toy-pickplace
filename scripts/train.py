@@ -12,7 +12,13 @@ import os
 from mlp import MLP
 from dataset import PickPlaceDataset
 
-EPSILON = 1e-6
+from constant import (
+    OBS_DIM, 
+    ACTION_DIM, 
+    EPSILON,
+    JOINTS_LOSS_WEIGHT,
+    GRIPPER_LOSS_WEIGHT
+    )
 
 def next_run_name(
     *,
@@ -84,11 +90,11 @@ def train(
     arm_obs_std = None
     
     if normalize_actions:
-        arm_actions_mean = np.mean(dataset_.actions[:, 0:7], axis=0, keepdims=True) # (1, 7)
-        arm_actions_std = np.std(dataset_.actions[: , 0:7], axis=0, keepdims=True) # (1, 7)
+        arm_actions_mean = np.mean(dataset_.actions[:, 0:ACTION_DIM-1], axis=0, keepdims=True) # (1, 7)
+        arm_actions_std = np.std(dataset_.actions[: , 0:ACTION_DIM-1], axis=0, keepdims=True) # (1, 7)
         # normalizae 
-        dataset_.action_targets[:, 0:7] = (dataset_.actions[:, 0:7] - arm_actions_mean) / (arm_actions_std + EPSILON)
-        dataset_.action_targets[:,7] = dataset_.actions[:,7] / 255.0
+        dataset_.action_targets[:, 0:ACTION_DIM-1] = (dataset_.actions[:, 0:ACTION_DIM-1] - arm_actions_mean) / (arm_actions_std + EPSILON)
+        dataset_.action_targets[:,ACTION_DIM-1] = dataset_.actions[:,ACTION_DIM-1] / 255.0
     else: 
         dataset_.action_targets = dataset_.actions
         
@@ -110,9 +116,11 @@ def train(
 
    
 
-    loss_fn = nn.MSELoss()
-    
-    model = MLP(obs_dim=45, action_dim=8).to(device)
+    # loss_fn = nn.MSELoss()
+    joint_loss_fn = nn.MSELoss()
+    gripper_loss_fn = nn.BCEWithLogitsLoss()
+
+    model = MLP(obs_dim=OBS_DIM, action_dim=ACTION_DIM).to(device)
 
     print(f"model created!")
 
@@ -126,17 +134,38 @@ def train(
         epoch_loss = 0.0
         num_batches = 0
 
-        for _, (obs_target, action_target) in enumerate(train_dataloader):
-            # print(f"--------------------------------")
-            # print(f"[batch_idx]=>{batch_idx}")
-            # print(f"--------------------------------")
-
+        for batch_idx, (obs_target, action_target) in enumerate(train_dataloader):
+            # print(f"BATCH_IDX=>{batch_idx}")
+            # continue 
+        
             obs_target = obs_target.to(device)
             action_target = action_target.to(device)
-  
-            pred = model(obs_target)
-            loss = loss_fn(pred, action_target)
 
+            # print(f"--------------------------------")
+            # print(f"obs_target.shape=>{obs_target.shape}")
+            # print(f"action_target.shape=>{action_target.shape}")
+            # print(f"--------------------------------")
+
+            # break  
+            joints_target = action_target[:, :ACTION_DIM-1]
+            gripper_target = action_target[:, ACTION_DIM-1].unsqueeze(1)
+
+            # print(f"action_target.shape=>{action_target.shape}")
+            # print(f"joints_target.shape=>{joints_target.shape}")
+            # print(f"gripper_target.shape=>{gripper_target.shape}")
+
+            # break
+            # loss = loss_fn(pred, action_target)``
+
+            # print(f"joints_target.shape=>{joints_target.shape} joints_pred.shape=>{joints_pred.shape}") 
+            # print(f"gripper_target.shape=>{gripper_target.shape} gripper_pred.shape=>{gripper_pred.shape}")
+
+            (joints_pred, gripper_pred) = model(obs_target)
+                
+            joints_loss = joint_loss_fn(joints_pred, joints_target)
+            gripper_loss = gripper_loss_fn(gripper_pred, gripper_target)
+            loss = JOINTS_LOSS_WEIGHT * joints_loss + GRIPPER_LOSS_WEIGHT * gripper_loss
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -177,7 +206,7 @@ def parse_args():
 
     # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
     # and `runs/<idx>_<base_name>` respectively
-    parser.add_argument("--base_name", type=str, default="mlp_action+obs_norm")
+    parser.add_argument("--base", type=str, default="mlp-joint-gripper-head")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
     parser.add_argument("--npz", type=str, required=True, help="npz folder path")
@@ -191,7 +220,7 @@ def main():
     # and `runs/idx_base_name respectively
     # idx is auto incremented
     run_name, checkpoint_dir, log_dir = make_run_dirs(
-        base_name=args.base_name,
+        base_name=args.base,
         checkpoint_root=args.checkpoint_root,
         log_root=args.log_root,
     )
