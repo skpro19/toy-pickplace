@@ -66,10 +66,17 @@ def infer(*, model_path: str):
     max_steps = 100 * 100 * 100
     # max_steps = 1
 
+    quit_requested = False
+
+    def key_callback(keycode: int) -> None:
+        nonlocal quit_requested
+        if chr(keycode).lower() == "q":
+            quit_requested = True
+
     with mujoco.viewer.launch_passive(
         sim.model,
         sim.data,
-        # key_callback=key_callback,
+        key_callback=key_callback,
         show_left_ui=True,
         show_right_ui=True,
     ) as viewer:
@@ -83,7 +90,8 @@ def infer(*, model_path: str):
     
         with torch.no_grad():  
 
-            for _ in range(0,max_steps):
+            steps = 0
+            while viewer.is_running() and not quit_requested and steps < max_steps:
                 # print(f"steps=>{steps}")
                 obs = sim.build_observation()
                 obs = torch.from_numpy(obs).to(device).unsqueeze(0)
@@ -129,6 +137,7 @@ def infer(*, model_path: str):
                 time.sleep(sim.model.opt.timestep * 10)
 
                 viewer.sync()
+                steps += 1
 
                 # break
 
