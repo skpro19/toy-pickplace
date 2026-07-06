@@ -132,6 +132,8 @@ def train(
    
     for epoch in tqdm(range(num_epochs)):
         epoch_loss = 0.0
+        epoch_joints_loss = 0.0
+        epoch_gripper_loss = 0.0
         num_batches = 0
 
         for batch_idx, (obs_target, action_target) in enumerate(train_dataloader):
@@ -171,10 +173,16 @@ def train(
             optimizer.step()
 
             epoch_loss += loss.item()
+            epoch_joints_loss += joints_loss.item()
+            epoch_gripper_loss += gripper_loss.item()
             num_batches += 1
             
         avg_loss = epoch_loss / num_batches
+        avg_joints_loss = epoch_joints_loss / num_batches
+        avg_gripper_loss = epoch_gripper_loss / num_batches
         writer.add_scalar("Loss/train", avg_loss, epoch)
+        writer.add_scalar("Loss/joints", avg_joints_loss, epoch)
+        writer.add_scalar("Loss/gripper", avg_gripper_loss, epoch)
         
     
     writer.close()
@@ -206,7 +214,7 @@ def parse_args():
 
     # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
     # and `runs/<idx>_<base_name>` respectively
-    parser.add_argument("--base", type=str, default="mlp-joint-gripper-head")
+    parser.add_argument("--base", type=str, default="mlp-joint-gripper-tuning")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
     parser.add_argument("--npz", type=str, required=True, help="npz folder path")
