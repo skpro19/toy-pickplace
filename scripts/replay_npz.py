@@ -21,9 +21,17 @@ def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True)
     selected = npz_files[:episodes]
     print(f"Replaying {len(selected)} / {len(npz_files)} episodes from {npz_path.resolve()}")
 
+    quit_requested = False
+
+    def key_callback(keycode: int) -> None:
+        nonlocal quit_requested
+        if chr(keycode).lower() == "q":
+            quit_requested = True
+
     with mujoco.viewer.launch_passive(
         sim.model,
         sim.data,
+        key_callback=key_callback,
         show_left_ui=True,
         show_right_ui=True,
     ) as viewer:
@@ -35,6 +43,9 @@ def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True)
         viewer.cam.elevation = -25
 
         for i, fpath in enumerate(selected):
+            if quit_requested:
+                break
+
             print(f"\nEpisode {i + 1}/{len(selected)}: {fpath.name}")
             sim.reset_episode()
 
@@ -43,6 +54,8 @@ def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True)
                 print(f"  actions.shape => {actions.shape}")
 
                 for action in actions:
+                    if quit_requested or not viewer.is_running():
+                        break
                     sim.data.ctrl[: sim.model.nu] = action
                     mujoco.mj_step(sim.model, sim.data)
                     time.sleep(sim.model.opt.timestep * 1)
