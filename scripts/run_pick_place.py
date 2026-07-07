@@ -19,6 +19,7 @@ from expert import (
 from sim import SimEnv
 
 VIEWER_SLOWDOWN = 10.0
+EPISODE_PAUSE_SECONDS = 1.0
 
 
 def run_headless(
@@ -40,13 +41,53 @@ def run_headless(
     return controller.phase, controller
 
 
-def run_viewer(
+def print_episode_summary(
+    *,
     model: mujoco.MjModel,
     data: mujoco.MjData,
-    slowdown: float = VIEWER_SLOWDOWN,
+    controller: PickPlaceController,
+    final_phase: Phase,
+    initial_cube_z: float,
+    episode_idx: int,
 ) -> None:
-    controller = PickPlaceController(model, data)
+    grasp_pos = data.site_xpos[model.site("grasp").id]
+    cube_pos = data.body("cube").xpos
+    tray_pos = data.site_xpos[model.site("tray_center").id]
+    cube_lift = controller.max_cube_z - initial_cube_z
+    tray_error = float(np.linalg.norm(cube_pos[:2] - tray_pos[:2]))
+
+    print(f"Episode {episode_idx}: final phase: {final_phase.name}")
+    print(f"Grasp site: {grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f}")
+    print(f"Cube center: {cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f}")
+    print(f"Max cube lift: {cube_lift:.3f} m")
+    print(f"Tray XY error: {tray_error:.3f} m")
+    print(f"Gripper ctrl: {data.ctrl[GRIPPER_ACTUATOR]:.1f}")
+    print(
+        f"Sim tracking error: pos={controller.last_pos_err:.4f} m, "
+        f"ori={controller.last_ori_err:.4f} rad"
+    )
+
+    if final_phase != Phase.DONE:
+        raise SystemExit(f"Controller did not finish within episode {episode_idx}.")
+    if cube_lift < CUBE_LIFT_MIN_DELTA:
+        raise SystemExit(f"Cube was not lifted by the gripper in episode {episode_idx}.")
+    if tray_error > TRAY_PLACE_TOL:
+        raise SystemExit(f"Cube was not placed inside the tray in episode {episode_idx}.")
+
+
+def run_viewer(
+    *,
+    sim: SimEnv,
+    rng: np.random.Generator,
+    episodes: int,
+    max_steps: int,
+    randomize_scene: bool,
+    slowdown: float,
+    episode_pause: float,
+) -> None:
     viewer_handle: mujoco.viewer.Handle | None = None
+    model = sim.model
+    data = sim.data
 
     def key_callback(keycode: int) -> None:
         if chr(keycode).lower() == "q" and viewer_handle is not None:
@@ -67,13 +108,47 @@ def run_viewer(
         viewer.cam.azimuth = 145
         viewer.cam.elevation = -25
 
-        while viewer.is_running():
-            print(f"Phase: {controller.phase}")
-            controller.control()
-            mujoco.mj_step(model, data)
-            controller.update_phase()
+        for episode_idx in range(1, episodes + 1):
+            if not viewer.is_running():
+                break
+
+            sim.reset_episode(randomize=randomize_scene, rng=rng)
+            initial_cube_z = sim.initial_cube_z
+            controller = PickPlaceController(model, data)
+            print(f"Starting episode {episode_idx}/{episodes}")
             viewer.sync()
-            time.sleep(model.opt.timestep * slowdown)
+
+            final_phase = controller.phase
+            for _ in range(max_steps):
+                if not viewer.is_running():
+                    return
+
+                controller.control()
+                mujoco.mj_step(model, data)
+                controller.max_cube_z = max(
+                    controller.max_cube_z,
+                    float(data.body("cube").xpos[2]),
+                )
+                controller.update_phase()
+                final_phase = controller.phase
+                viewer.sync()
+                time.sleep(model.opt.timestep * slowdown)
+
+                if final_phase == Phase.DONE:
+                    break
+
+            print_episode_summary(
+                model=model,
+                data=data,
+                controller=controller,
+                final_phase=final_phase,
+                initial_cube_z=initial_cube_z,
+                episode_idx=episode_idx,
+            )
+            if episode_idx < episodes and episode_pause > 0.0:
+                time.sleep(episode_pause)
+
+        viewer.close()
 
 
 def main() -> None:
@@ -87,7 +162,7 @@ def main() -> None:
         "--max-steps",
         type=int,
         default=8000,
-        help="Step limit for headless runs.",
+        help="Step limit for each episode.",
     )
     parser.add_argument(
         "--slowdown",
@@ -95,40 +170,46 @@ def main() -> None:
         default=VIEWER_SLOWDOWN,
         help="Viewer pacing multiplier (>1 runs slower than real time).",
     )
+    parser.add_argument("--episodes", type=int, default=1)
+    parser.add_argument(
+        "--episode-pause",
+        type=float,
+        default=EPISODE_PAUSE_SECONDS,
+        help="Viewer pause between automatically advanced episodes.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--randomize-scene", action="store_true")
     args = parser.parse_args()
 
     sim = SimEnv()
     model = sim.model
     data = sim.data
-    sim.reset_episode()
-    initial_cube_z = sim.initial_cube_z
+    rng = np.random.default_rng(args.seed)
 
     if args.headless:
-        final_phase, controller = run_headless(model, data, args.max_steps)
-        grasp_pos = data.site_xpos[model.site("grasp").id]
-        cube_pos = data.body("cube").xpos
-        tray_pos = data.site_xpos[model.site("tray_center").id]
-        cube_lift = controller.max_cube_z - initial_cube_z
-        tray_error = float(np.linalg.norm(cube_pos[:2] - tray_pos[:2]))
-        print(f"Final phase: {final_phase.name}")
-        print(f"Grasp site: {grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f}")
-        print(f"Cube center: {cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f}")
-        print(f"Max cube lift: {cube_lift:.3f} m")
-        print(f"Tray XY error: {tray_error:.3f} m")
-        print(f"Gripper ctrl: {data.ctrl[GRIPPER_ACTUATOR]:.1f}")
-        print(
-            f"Sim tracking error: pos={controller.last_pos_err:.4f} m, "
-            f"ori={controller.last_ori_err:.4f} rad"
-        )
-        if final_phase != Phase.DONE:
-            raise SystemExit(f"Controller did not finish within {args.max_steps} steps.")
-        if cube_lift < CUBE_LIFT_MIN_DELTA:
-            raise SystemExit("Cube was not lifted by the gripper.")
-        if tray_error > TRAY_PLACE_TOL:
-            raise SystemExit("Cube was not placed inside the tray.")
-        print("Pick-place demo slice completed.")
+        for episode_idx in range(1, args.episodes + 1):
+            sim.reset_episode(randomize=args.randomize_scene, rng=rng)
+            initial_cube_z = sim.initial_cube_z
+            final_phase, controller = run_headless(model, data, args.max_steps)
+            print_episode_summary(
+                model=model,
+                data=data,
+                controller=controller,
+                final_phase=final_phase,
+                initial_cube_z=initial_cube_z,
+                episode_idx=episode_idx,
+            )
+        print(f"Completed {args.episodes} pick-place episode(s).")
     else:
-        run_viewer(model, data, slowdown=args.slowdown)
+        run_viewer(
+            sim=sim,
+            rng=rng,
+            episodes=args.episodes,
+            max_steps=args.max_steps,
+            randomize_scene=args.randomize_scene,
+            slowdown=args.slowdown,
+            episode_pause=args.episode_pause,
+        )
 
 
 if __name__ == "__main__":

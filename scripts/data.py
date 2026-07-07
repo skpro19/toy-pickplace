@@ -34,13 +34,16 @@ class DataCollector:
     @staticmethod
     def save_episode(
         *,
-        out_dir: str,
+        out_dir: str | Path,
         episode_idx: int,
         observations: list[object],
-        actions: list[object]) -> None:
+        actions: list[object],
+        cube_init_pos: np.ndarray,
+        tray_init_pos: np.ndarray,
+    ) -> None:
         """Persist one episode to disk."""
 
-        out_dir =  Path(out_dir)
+        out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         episode_path = out_dir / f"pick_place_{episode_idx:06d}.npz"
 
@@ -48,12 +51,16 @@ class DataCollector:
             episode_path,
             obs=np.asarray(observations, dtype=np.float32),
             actions=np.asarray(actions, dtype=np.float32),
+            cube_init_pos=np.asarray(cube_init_pos, dtype=np.float32),
+            tray_init_pos=np.asarray(tray_init_pos, dtype=np.float32),
         )
 
     def collect_episode(
         self,
         *,
-        max_steps: int) -> dict[str, list[np.ndarray]]:
+        max_steps: int,
+        episode_idx: int,
+    ) -> dict[str, object]:
         """Run one scripted expert episode and return trajectory buffers."""
         initial_cube_z = float(self.data.body("cube").xpos[2])
         controller = PickPlaceController(self.model, self.data)
@@ -61,7 +68,14 @@ class DataCollector:
         observations: list[np.ndarray] = []
         actions: list[np.ndarray] = []
 
-        for _ in tqdm(range(0,max_steps)):
+        step_count = 0
+        progress = tqdm(
+            range(max_steps),
+            desc=f"episode {episode_idx:06d}",
+            leave=False,
+            unit="step",
+        )
+        for step_count, _ in enumerate(progress, start=1):
             observations.append(self.sim.build_observation())
 
             controller.control()
@@ -74,11 +88,17 @@ class DataCollector:
                 float(self.data.body("cube").xpos[2]),
             )
             controller.update_phase()
+            progress.set_postfix(phase=controller.phase.name)
 
             if controller.phase == Phase.DONE:
                 break
 
-        return {"observations": observations, "actions": actions}
+        return {
+            "observations": observations,
+            "actions": actions,
+            "final_phase": controller.phase,
+            "steps": step_count,
+        }
 
     def collect_episodes(
         self,
@@ -86,14 +106,26 @@ class DataCollector:
         episodes: int,
         out_dir: Path,
         seed: int,
-        max_steps: int) -> None:
+        max_steps: int,
+        randomize_scene: bool,
+    ) -> None:
         """Collect and optionally save multiple scripted expert episodes."""
 
-        for episode_idx in range(episodes):
-            self.sim.reset_episode()
+        rng = np.random.default_rng(seed)
+
+        episode_progress = tqdm(range(episodes), desc="episodes", unit="episode")
+        for episode_idx in episode_progress:
+            self.sim.reset_episode(randomize=randomize_scene, rng=rng)
+            cube_init_pos = self.data.body("cube").xpos.copy()
+            tray_init_pos = self.data.site("tray_center").xpos.copy()
 
             data = self.collect_episode(
                 max_steps=max_steps,
+                episode_idx=episode_idx,
+            )
+            episode_progress.set_postfix(
+                phase=data["final_phase"].name,
+                steps=data["steps"],
             )
 
             DataCollector.save_episode(
@@ -101,6 +133,8 @@ class DataCollector:
                 episode_idx=episode_idx,
                 observations=data["observations"],
                 actions=data["actions"],
+                cube_init_pos=cube_init_pos,
+                tray_init_pos=tray_init_pos,
             )
 
 
@@ -114,6 +148,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=str, default=f"data/demos/{timestamp}")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=8000)
+    parser.add_argument(
+        "--randomize-scene",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     
     return parser.parse_args()
 
@@ -128,6 +167,7 @@ def main() -> None:
         out_dir=args.out_dir,
         seed=args.seed,
         max_steps=args.max_steps,
+        randomize_scene=args.randomize_scene,
     )
 
     # print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
