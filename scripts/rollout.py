@@ -18,7 +18,7 @@ from constant import (
         ACTION_DIMS
         )
 
-def rollout(*, model_path: str, randomize_scene: bool, seed: int):
+def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int, max_steps: int):
     
    
     # sim = SimEnv()
@@ -65,9 +65,6 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int):
     model.eval() 
     
 
-    max_steps = 100 * 100 * 100
-    # max_steps = 1
-
     quit_requested = False
 
     def key_callback(keycode: int) -> None:
@@ -92,54 +89,57 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int):
     
         with torch.no_grad():  
 
-            steps = 0
-            while viewer.is_running() and not quit_requested and steps < max_steps:
-                # print(f"steps=>{steps}")
-                obs = sim.build_observation()
-                obs = torch.from_numpy(obs).to(device).unsqueeze(0)
-                
-                obs_norm = torch.empty_like(obs)
-                # normalize obs
-                if normalize_obs: 
-                    obs_norm = obs - arm_obs_mean
-                    obs_norm = obs_norm / (arm_obs_std + EPSILON)
-                else: 
-                    obs_norm = obs
+            for episode in range(episodes):
+                steps = 0
+                sim.reset_episode()
 
-                # print(f"type(obs_norm)=>{type(obs_norm)}")
-                # print(f"obs_norm.shape=>{obs_norm.shape}")
+                while viewer.is_running() and not quit_requested and steps < max_steps:
+                    # print(f"steps=>{steps}")
+                    obs = sim.build_observation()
+                    obs = torch.from_numpy(obs).to(device).unsqueeze(0)
+                    
+                    obs_norm = torch.empty_like(obs)
+                    # normalize obs
+                    if normalize_obs: 
+                        obs_norm = obs - arm_obs_mean
+                        obs_norm = obs_norm / (arm_obs_std + EPSILON)
+                    else: 
+                        obs_norm = obs
+
+                    # print(f"type(obs_norm)=>{type(obs_norm)}")
+                    # print(f"obs_norm.shape=>{obs_norm.shape}")
+                        
+
+                    # pred = model(obs_norm)
+                    actions = torch.empty(obs_norm.shape[0], ACTION_DIMS)
+
+                    (joints_pred, gripper_pred) = model(obs_norm)
+                    
+                    # print(f"joints_pred.shape=>{joints_pred.shape}")
+                    # print(f"gripper_pred.shape=>{gripper_pred.shape}")
+                    
+                    joints_actions = torch.empty_like(joints_pred)
+                    gripper_actions = torch.empty_like(gripper_pred)
+
+
+                    # unnormalize actions
+                    if normalize_actions: 
+                        joints_actions = joints_pred * (arm_actions_std + EPSILON) + arm_actions_mean
+                        # gripper_actions = (255.0 if gripper_pred >= 0.5 else 0)
+                        gripper_actions = torch.where(torch.sigmoid(gripper_pred) >= 0.5, 255.0, 0.0)
+
+                    # print(f"type(joints_actions)=>{type(joints_actions)}")
+                    # print(f"type(gripper_actions)=>{type(gripper_actions)}")
+                    actions = torch.concat([joints_actions, gripper_actions], dim=1)
                     
 
-                # pred = model(obs_norm)
-                actions = torch.empty(obs_norm.shape[0], ACTION_DIMS)
+                    sim.data.ctrl[:sim.model.nu] = actions.detach().cpu().numpy()
+                    
+                    mujoco.mj_step(sim.model, sim.data)
+                    time.sleep(sim.model.opt.timestep * 10)
 
-                (joints_pred, gripper_pred) = model(obs_norm)
-                
-                # print(f"joints_pred.shape=>{joints_pred.shape}")
-                # print(f"gripper_pred.shape=>{gripper_pred.shape}")
-                
-                joints_actions = torch.empty_like(joints_pred)
-                gripper_actions = torch.empty_like(gripper_pred)
-
-
-                # unnormalize actions
-                if normalize_actions: 
-                    joints_actions = joints_pred * (arm_actions_std + EPSILON) + arm_actions_mean
-                    # gripper_actions = (255.0 if gripper_pred >= 0.5 else 0)
-                    gripper_actions = torch.where(torch.sigmoid(gripper_pred) >= 0.5, 255.0, 0.0)
-
-                # print(f"type(joints_actions)=>{type(joints_actions)}")
-                # print(f"type(gripper_actions)=>{type(gripper_actions)}")
-                actions = torch.concat([joints_actions, gripper_actions], dim=1)
-                
-
-                sim.data.ctrl[:sim.model.nu] = actions.detach().cpu().numpy()
-                
-                mujoco.mj_step(sim.model, sim.data)
-                time.sleep(sim.model.opt.timestep * 10)
-
-                viewer.sync()
-                steps += 1
+                    viewer.sync()
+                    steps += 1
 
                 # break
 
@@ -148,6 +148,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, required=True, help="model path e.g. checkpoints/026_mlp_action_norm")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--max-steps", type=int, default=1500)
     parser.add_argument(
         "--randomize-scene",
         action=argparse.BooleanOptionalAction,
@@ -157,7 +159,11 @@ def parse_args():
 
 def main(): 
     args = parse_args()
-    rollout(model_path=args.model, randomize_scene=args.randomize_scene, seed=args.seed)
+    rollout(model_path=args.model, 
+        randomize_scene=args.randomize_scene, 
+        seed=args.seed,
+        episodes=args.episodes,
+        max_steps=args.max_steps)
 
 
 if __name__ == "__main__":
