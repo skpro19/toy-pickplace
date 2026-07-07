@@ -45,8 +45,12 @@ def next_run_name(
 def make_run_dirs(
     *,
     base_name: str,
+    npz_folder: str,
+    num_epochs: int,
     checkpoint_root: str,
     log_root: str) -> tuple[str, Path, Path]:
+    n_episodes = len(list(Path(npz_folder).glob("*.npz")))
+    base_name = f"{base_name}_eps{n_episodes}_epochs{num_epochs}"
     while True:
         run_name = next_run_name(
             base_name=base_name,
@@ -130,7 +134,8 @@ def train(
 
     writer = SummaryWriter(log_dir=str(log_dir))
    
-    for epoch in tqdm(range(num_epochs)):
+    epoch_bar = tqdm(range(num_epochs), desc="epochs", unit="epoch")
+    for epoch in epoch_bar:
         epoch_loss = 0.0
         epoch_joints_loss = 0.0
         epoch_gripper_loss = 0.0
@@ -183,6 +188,7 @@ def train(
         writer.add_scalar("Loss/train", avg_loss, epoch)
         writer.add_scalar("Loss/joints", avg_joints_loss, epoch)
         writer.add_scalar("Loss/gripper", avg_gripper_loss, epoch)
+        epoch_bar.set_postfix(epoch=epoch + 1, loss=f"{avg_loss:.4f}")
         
     
     writer.close()
@@ -214,7 +220,7 @@ def parse_args():
 
     # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
     # and `runs/<idx>_<base_name>` respectively
-    parser.add_argument("--base", type=str, default="mlp-joint-gripper-tuning")
+    parser.add_argument("--base", type=str, default="mlp-rand-episodes")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
     parser.add_argument("--npz", type=str, required=True, help="npz folder path")
@@ -224,11 +230,10 @@ def main():
 
     args = parse_args()
 
-    # checkpoint and runs folder are created at `checkpoints/idx_base_name 
-    # and `runs/idx_base_name respectively
-    # idx is auto incremented
     run_name, checkpoint_dir, log_dir = make_run_dirs(
         base_name=args.base,
+        npz_folder=args.npz,
+        num_epochs=args.epochs,
         checkpoint_root=args.checkpoint_root,
         log_root=args.log_root,
     )
