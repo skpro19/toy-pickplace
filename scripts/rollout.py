@@ -18,7 +18,7 @@ from constant import (
         ACTION_DIMS
         )
 
-def infer(*, model_path: str):
+def rollout(*, model_path: str):
     
    
     sim = SimEnv()
@@ -149,7 +149,7 @@ def parse_args():
 
 def main(): 
     args = parse_args()
-    infer(model_path=args.model)
+    rollout(model_path=args.model)
 
 
 if __name__ == "__main__":
