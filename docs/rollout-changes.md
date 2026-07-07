@@ -6,6 +6,17 @@
 
 Evaluate a trained behavior cloning model on the same randomized scene distribution used during data collection, then use the same script for held-out randomized evaluation with a different seed.
 
+## Summary
+
+| Area | Current State | Desired Change | Why It Matters |
+| --- | --- | --- | --- |
+| Scene distribution | Single rollout can use configured randomization, but evaluation flow is limited | Match `scripts/data.py` randomization controls across many episodes | Evaluates the policy on the same distribution it was trained on |
+| Episode count | Viewer-oriented single rollout behavior | Add multi-episode rollout support | Robustness needs repeated closed-loop trials, not one anecdotal run |
+| Evaluation mode | Viewer-first execution | Add headless evaluation as the primary path | Enables fast, repeatable evaluation over many randomized scenes |
+| Metrics | No structured rollout metrics | Track per-episode and aggregate success metrics | Makes closed-loop failures measurable and comparable |
+| Seeds | Seed can reproduce randomized layouts | Use same seed for debugging and different seeds for held-out tests | Separates reproduction from generalization evaluation |
+| Output | Interactive visual feedback | Print concise summaries and optionally save metrics later | Makes results easy to inspect and compare across checkpoints |
+
 ## Distribution Controls
 
 The rollout script should expose the same environment controls as data collection:

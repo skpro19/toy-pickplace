@@ -78,10 +78,8 @@ def print_episode_summary(
 def run_viewer(
     *,
     sim: SimEnv,
-    rng: np.random.Generator,
     episodes: int,
     max_steps: int,
-    randomize_scene: bool,
     slowdown: float,
     episode_pause: float,
 ) -> None:
@@ -112,7 +110,7 @@ def run_viewer(
             if not viewer.is_running():
                 break
 
-            sim.reset_episode(randomize=randomize_scene, rng=rng)
+            sim.reset_episode()
             initial_cube_z = sim.initial_cube_z
             controller = PickPlaceController(model, data)
             print(f"Starting episode {episode_idx}/{episodes}")
@@ -181,14 +179,13 @@ def main() -> None:
     parser.add_argument("--randomize-scene", action="store_true")
     args = parser.parse_args()
 
-    sim = SimEnv()
+    sim = SimEnv(randomize_scene=args.randomize_scene, seed=args.seed)
     model = sim.model
     data = sim.data
-    rng = np.random.default_rng(args.seed)
 
     if args.headless:
         for episode_idx in range(1, args.episodes + 1):
-            sim.reset_episode(randomize=args.randomize_scene, rng=rng)
+            sim.reset_episode()
             initial_cube_z = sim.initial_cube_z
             final_phase, controller = run_headless(model, data, args.max_steps)
             print_episode_summary(
@@ -203,10 +200,8 @@ def main() -> None:
     else:
         run_viewer(
             sim=sim,
-            rng=rng,
             episodes=args.episodes,
             max_steps=args.max_steps,
-            randomize_scene=args.randomize_scene,
             slowdown=args.slowdown,
             episode_pause=args.episode_pause,
         )

@@ -18,10 +18,12 @@ from constant import (
         ACTION_DIMS
         )
 
-def rollout(*, model_path: str):
+def rollout(*, model_path: str, randomize_scene: bool, seed: int):
     
    
-    sim = SimEnv()
+    # sim = SimEnv()
+    sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
+
     sim.reset_episode()
 
     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,11 +147,17 @@ def rollout(*, model_path: str):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, required=True, help="model path e.g. checkpoints/026_mlp_action_norm")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--randomize-scene",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     return parser.parse_args()
 
 def main(): 
     args = parse_args()
-    rollout(model_path=args.model)
+    rollout(model_path=args.model, randomize_scene=args.randomize_scene, seed=args.seed)
 
 
 if __name__ == "__main__":

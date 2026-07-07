@@ -18,8 +18,16 @@ MIN_CUBE_TRAY_DIST = 0.22
 
 
 class SimEnv:
-    def __init__(self, *, scene_path: Path = SCENE_PATH) -> None:
+    def __init__(
+        self,
+        *,
+        scene_path: Path = SCENE_PATH,
+        randomize_scene: bool = False,
+        seed: int | None = None,
+    ) -> None:
         self.scene_path = scene_path
+        self.randomize_scene = randomize_scene
+        self.rng = np.random.default_rng(seed)
         self.model = mujoco.MjModel.from_xml_path(str(scene_path))
         self.data = mujoco.MjData(self.model)
         self.cube_joint_id = self.model.joint("cube_freejoint").id
@@ -27,27 +35,25 @@ class SimEnv:
         self.tray_body_id = self.model.body("tray").id
         self.default_tray_pos = self.model.body_pos[self.tray_body_id].copy()
         self.initial_cube_z = 0.0
-        self.reset_episode()
+        self._reset_deterministic()
 
     def sample_scene_layout(
         self,
-        *,
-        rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Sample valid cube and tray start positions on the table."""
         for _ in range(100):
             cube_pos = np.array(
                 [
-                    rng.uniform(*CUBE_X_RANGE),
-                    rng.uniform(*CUBE_Y_RANGE),
+                    self.rng.uniform(*CUBE_X_RANGE),
+                    self.rng.uniform(*CUBE_Y_RANGE),
                     0.815,
                 ],
                 dtype=np.float64,
             )
             tray_pos = np.array(
                 [
-                    rng.uniform(*TRAY_X_RANGE),
-                    rng.uniform(*TRAY_Y_RANGE),
+                    self.rng.uniform(*TRAY_X_RANGE),
+                    self.rng.uniform(*TRAY_Y_RANGE),
                     self.default_tray_pos[2],
                 ],
                 dtype=np.float64,
@@ -125,26 +131,24 @@ class SimEnv:
             mujoco.mj_resetData(self.model, self.data)
         mujoco.mj_forward(self.model, self.data)
 
-    def reset_episode(
-        self,
-        *,
-        randomize: bool = False,
-        rng: np.random.Generator | None = None,
-    ) -> None:
-        """Reset robot, cube, and tray to the episode start state."""
+    def _reset_deterministic(self) -> None:
+        """Reset to the default non-randomized episode start state."""
         self.reset_home()
         self.model.body_pos[self.tray_body_id] = self.default_tray_pos
+        mujoco.mj_forward(self.model, self.data)
+        self.initial_cube_z = float(self.data.body("cube").xpos[2])
 
-        if randomize:
-            if rng is None:
-                raise ValueError("rng is required when randomize=True.")
-            cube_pos, tray_pos = self.sample_scene_layout(rng=rng)
+    def reset_episode(self) -> None:
+        """Reset robot, cube, and tray to the episode start state."""
+        self._reset_deterministic()
+
+        if self.randomize_scene:
+            cube_pos, tray_pos = self.sample_scene_layout()
             self.data.qpos[self.cube_qpos_addr : self.cube_qpos_addr + 3] = cube_pos
             self.data.qpos[self.cube_qpos_addr + 3 : self.cube_qpos_addr + 7] = np.array(
                 [1.0, 0.0, 0.0, 0.0],
                 dtype=np.float64,
             )
             self.model.body_pos[self.tray_body_id] = tray_pos
-
-        mujoco.mj_forward(self.model, self.data)
-        self.initial_cube_z = float(self.data.body("cube").xpos[2])
+            mujoco.mj_forward(self.model, self.data)
+            self.initial_cube_z = float(self.data.body("cube").xpos[2])

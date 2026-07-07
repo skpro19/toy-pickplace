@@ -105,17 +105,13 @@ class DataCollector:
         *,
         episodes: int,
         out_dir: Path,
-        seed: int,
         max_steps: int,
-        randomize_scene: bool,
     ) -> None:
         """Collect and optionally save multiple scripted expert episodes."""
 
-        rng = np.random.default_rng(seed)
-
         episode_progress = tqdm(range(episodes), desc="episodes", unit="episode")
         for episode_idx in episode_progress:
-            self.sim.reset_episode(randomize=randomize_scene, rng=rng)
+            self.sim.reset_episode()
             cube_init_pos = self.data.body("cube").xpos.copy()
             tray_init_pos = self.data.site("tray_center").xpos.copy()
 
@@ -159,15 +155,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    sim = SimEnv()
+    sim = SimEnv(randomize_scene=args.randomize_scene, seed=args.seed)
     
     collector = DataCollector(sim=sim)
     collector.collect_episodes(
         episodes=args.episodes,
         out_dir=args.out_dir,
-        seed=args.seed,
         max_steps=args.max_steps,
-        randomize_scene=args.randomize_scene,
     )
 
     # print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
