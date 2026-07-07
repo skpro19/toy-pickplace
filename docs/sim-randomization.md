@@ -11,17 +11,19 @@ The scene now supports reset-time randomization for data collection and visual e
 
 ## SimEnv Changes
 
-`scripts/sim.py` owns episode initialization through `SimEnv.reset_episode(...)`.
+`scripts/sim.py` owns episode initialization through `SimEnv.reset_episode(...)`. Randomization is configured on each `SimEnv` instance so every reset uses the same private, seeded random stream.
 
-Randomized reset uses:
+Randomized environment setup uses:
 
 ```python
-sim.reset_episode(randomize=True, rng=rng)
+sim = SimEnv(randomize_scene=True, seed=0)
+sim.reset_episode()
 ```
 
 Deterministic reset remains:
 
 ```python
+sim = SimEnv()
 sim.reset_episode()
 ```
 
