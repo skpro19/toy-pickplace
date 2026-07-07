@@ -9,6 +9,24 @@ from pathlib import Path
 from sim import SimEnv
 
 
+def restore_episode_layout(
+    *,
+    sim: SimEnv,
+    cube_init_pos: np.ndarray,
+    tray_init_pos: np.ndarray,
+) -> None:
+    """Restore the randomized layout used when the episode was collected."""
+    sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3] = cube_init_pos
+    sim.data.qpos[sim.cube_qpos_addr + 3 : sim.cube_qpos_addr + 7] = np.array(
+        [1.0, 0.0, 0.0, 0.0],
+        dtype=np.float64,
+    )
+
+    tray_center_id = sim.model.site("tray_center").id
+    sim.model.body_pos[sim.tray_body_id] = tray_init_pos - sim.model.site_pos[tray_center_id]
+    mujoco.mj_forward(sim.model, sim.data)
+
+
 def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True) -> None:
     sim = SimEnv()
     npz_path = Path(npz_dir)
@@ -51,6 +69,11 @@ def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True)
 
             with np.load(fpath) as data:
                 actions = data["actions"]
+                restore_episode_layout(
+                    sim=sim,
+                    cube_init_pos=data["cube_init_pos"],
+                    tray_init_pos=data["tray_init_pos"],
+                )
                 print(f"  actions.shape => {actions.shape}")
 
                 for action in actions:
