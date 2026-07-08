@@ -47,10 +47,11 @@ def make_run_dirs(
     base_name: str,
     npz_folder: str,
     num_epochs: int,
+    action_space: str,
     checkpoint_root: str,
     log_root: str) -> tuple[str, Path, Path]:
     n_episodes = len(list(Path(npz_folder).glob("*.npz")))
-    base_name = f"{base_name}_eps{n_episodes}_epochs{num_epochs}"
+    base_name = f"{base_name}_{action_space}_eps{n_episodes}_epochs{num_epochs}"
     while True:
         run_name = next_run_name(
             base_name=base_name,
@@ -74,8 +75,8 @@ def train(
     npz_folder: str,
     checkpoint_dir: Path,
     log_dir: Path,
-    normalize_actions:bool=True,
-    normalize_obs:bool=True) -> None: 
+    normalize=True,
+    action_space: str="joint_delta") -> None: 
     
     assert os.path.exists(npz_folder), f"npz_folder=>{npz_folder} does not exist"
     assert os.path.isdir(npz_folder), f"npz_folder=>{npz_folder} is not a directory"
@@ -92,24 +93,52 @@ def train(
     arm_actions_std = None
     arm_obs_mean = None
     arm_obs_std = None
-    
-    if normalize_actions:
-        arm_actions_mean = np.mean(dataset_.actions[:, 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
-        arm_actions_std = np.std(dataset_.actions[: , 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
-        # normalizae 
-        dataset_.action_targets[:, 0:ACTION_DIMS-1] = (dataset_.actions[:, 0:ACTION_DIMS-1] - arm_actions_mean) / (arm_actions_std + EPSILON)
-        dataset_.action_targets[:,ACTION_DIMS-1] = dataset_.actions[:,ACTION_DIMS-1] / 255.0
-    else: 
-        dataset_.action_targets = dataset_.actions
-        
-    if normalize_obs: 
-        arm_obs_mean = np.mean(dataset_.obs, axis=0, keepdims=True) # (1,45)
-        arm_obs_std = np.std(dataset_.obs, axis=0, keepdims=True) # (1,45)
 
-        #normalize
-        dataset_.obs_targets = (dataset_.obs - arm_obs_mean) / (arm_obs_std + EPSILON)
-    else: 
-        dataset_.obs_targets = dataset_.obs
+    # [action_targets]
+    if action_space == "joint_delta":
+        dataset_.action_targets[:, 0:ACTION_DIMS-1] = dataset_.actions[:, 0:ACTION_DIMS-1] - dataset_.obs[:, 0:ACTION_DIMS-1]
+        dataset_.action_targets[:, ACTION_DIMS-1] = dataset_.actions[:, ACTION_DIMS-1]/255.0
+    elif action_space == "absolute":
+        dataset_.action_targets[:, 0:ACTION_DIMS-1] = dataset_.actions[:, 0:ACTION_DIMS-1]
+        dataset_.action_targets[:, ACTION_DIMS-1] = dataset_.actions[:, ACTION_DIMS-1]/255.0
+    else:
+        raise ValueError(f"Unknown action_space: {action_space}")
+    
+    # [obs targets]
+    dataset_.obs_targets = dataset_.obs
+
+
+    # [action/obs mean computation]
+    arm_actions_mean = np.mean(dataset_.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True)
+    arm_actions_std = np.std(dataset_.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True)
+
+    arm_obs_mean = np.mean(dataset_.obs_targets, axis=0, keepdims=True)
+    arm_obs_std = np.std(dataset_.obs, axis=0, keepdims=True) # (1,45)
+    
+    if normalize:
+        dataset_.action_targets[:, 0:ACTION_DIMS-1] -= arm_actions_mean
+        dataset_.action_targets[:, 0:ACTION_DIMS-1] /= (arm_actions_std + EPSILON)
+
+        dataset_.obs_targets -= arm_obs_mean
+        dataset_.obs_targets /= (arm_obs_std + EPSILON)
+
+    # if normalize_actions:
+    #     arm_actions_mean = np.mean(dataset_.actions[:, 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
+    #     arm_actions_std = np.std(dataset_.actions[: , 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
+    #     # normalizae 
+    #     dataset_.action_targets[:, 0:ACTION_DIMS-1] = (dataset_.actions[:, 0:ACTION_DIMS-1] - arm_actions_mean) / (arm_actions_std + EPSILON)
+    #     dataset_.action_targets[:,ACTION_DIMS-1] = dataset_.actions[:,ACTION_DIMS-1] / 255.0
+    # else: 
+    #     dataset_.action_targets = dataset_.actions
+        
+    # if normalize_obs: 
+    #     arm_obs_mean = np.mean(dataset_.obs, axis=0, keepdims=True) # (1,45)
+    #     arm_obs_std = np.std(dataset_.obs, axis=0, keepdims=True) # (1,45)
+
+    #     #normalize
+    #     dataset_.obs_targets = (dataset_.obs - arm_obs_mean) / (arm_obs_std + EPSILON)
+    # else: 
+    #     dataset_.obs_targets = dataset_.obs
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -199,8 +228,8 @@ def train(
     # print(f"Saved model: {model_path}")
     checkpoint = {
         "model_dict" : model.state_dict(), 
-        "normalize_actions": normalize_actions, 
-        "normalize_obs": normalize_obs,
+        "normalize": normalize,
+        "action_space": action_space,
         "arm_actions_mean" : arm_actions_mean, 
         "arm_actions_std" : arm_actions_std, 
         "arm_obs_mean": arm_obs_mean, 
@@ -224,6 +253,13 @@ def parse_args():
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--log_root", type=str, default="runs")
     parser.add_argument("--npz", type=str, required=True, help="npz folder path")
+    parser.add_argument("--action_space", type=str, default="joint_delta", 
+                        choices=["joint_delta", "absolute"])
+    parser.add_argument(
+        "--normalize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     return parser.parse_args()
 
 def main():
@@ -236,6 +272,7 @@ def main():
         num_epochs=args.epochs,
         checkpoint_root=args.checkpoint_root,
         log_root=args.log_root,
+        action_space=args.action_space,
     )
 
     train(
@@ -244,6 +281,8 @@ def main():
         npz_folder=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
+        action_space=args.action_space,
+        normalize=args.normalize,
     )
 
 if __name__ == "__main__":
