@@ -1,17 +1,12 @@
 import torch 
 import argparse
 from pathlib import Path
-from torch.utils.data import DataLoader
 
-from dataset import PickPlaceDataset
-from train import MLP
+from mlp import MLP
 from sim import SimEnv
-from data import DataCollector
-from formatters import print_1d_array, print_1d_tensor
 import mujoco
 import mujoco.viewer
 import time
-import numpy as np
 
 from constant import (
         EPSILON, 
@@ -36,31 +31,33 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int,
     model.load_state_dict(ckpt["model_dict"])
     
     
-    normalize_actions: bool = ckpt["normalize_actions"]
-    arm_actions_mean: np.ndarray = ckpt["arm_actions_mean"]
-    arm_actions_std: np.ndarray = ckpt["arm_actions_std"]
+    normalize = ckpt["normalize"]
+    action_space = ckpt["action_space"]
+    arm_actions_mean = ckpt["arm_actions_mean"]
+    arm_actions_std = ckpt["arm_actions_std"]
+    arm_obs_mean = ckpt["arm_obs_mean"]
+    arm_obs_std = ckpt["arm_obs_std"]
 
-    normalize_obs: bool = ckpt["normalize_obs"]
-    arm_obs_mean: np.ndarray = ckpt["arm_obs_mean"]
-    arm_obs_std: np.ndarray = ckpt["arm_obs_std"]
+
+
+    # normalize_actions: bool = ckpt["normalize_actions"]
+    # arm_actions_mean: np.ndarray = ckpt["arm_actions_mean"]
+    # arm_actions_std: np.ndarray = ckpt["arm_actions_std"]
+
+    # normalize_obs: bool = ckpt["normalize_obs"]
+    # arm_obs_mean: np.ndarray = ckpt["arm_obs_mean"]
+    # arm_obs_std: np.ndarray = ckpt["arm_obs_std"]
 
     # debug
-    assert normalize_actions, "normalize_actions must be True"
-    assert normalize_obs, "normalize_obs must be True"
+    assert normalize, "normalize must be True"
+    assert action_space in ["joint_delta", "absolute"], "action_space must be either joint_delta or absolute"
 
-    if normalize_actions:
-        arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device)
-        arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device)
+    if normalize:
+        arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device).squeeze(0)
+        arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device).squeeze(0)
 
-        arm_actions_mean = arm_actions_mean.squeeze(0)
-        arm_actions_std = arm_actions_std.squeeze(0)
-
-    if normalize_obs:
-        arm_obs_mean: torch.Tensor = torch.from_numpy(arm_obs_mean).to(device)
-        arm_obs_std: torch.Tensor = torch.from_numpy(arm_obs_std).to(device)
-
-        arm_obs_mean = arm_obs_mean.squeeze(0)
-        arm_obs_std = arm_obs_std.squeeze(0)
+        arm_obs_mean: torch.Tensor = torch.from_numpy(arm_obs_mean).to(device).squeeze(0)
+        arm_obs_std: torch.Tensor = torch.from_numpy(arm_obs_std).to(device).squeeze(0)
 
     model.eval() 
     
@@ -100,7 +97,7 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int,
                     
                     obs_norm = torch.empty_like(obs)
                     # normalize obs
-                    if normalize_obs: 
+                    if normalize: 
                         obs_norm = obs - arm_obs_mean
                         obs_norm = obs_norm / (arm_obs_std + EPSILON)
                     else: 
@@ -123,10 +120,13 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int,
 
 
                     # unnormalize actions
-                    if normalize_actions: 
+                    if normalize: 
                         joints_actions = joints_pred * (arm_actions_std + EPSILON) + arm_actions_mean
                         # gripper_actions = (255.0 if gripper_pred >= 0.5 else 0)
-                        gripper_actions = torch.where(torch.sigmoid(gripper_pred) >= 0.5, 255.0, 0.0)
+                    
+                    if action_space == "joint_delta":
+                        joints_actions += obs[:, 0:ACTION_DIMS-1]
+                    gripper_actions = torch.where(torch.sigmoid(gripper_pred) >= 0.5, 255.0, 0.0)
 
                     # print(f"type(joints_actions)=>{type(joints_actions)}")
                     # print(f"type(gripper_actions)=>{type(gripper_actions)}")
