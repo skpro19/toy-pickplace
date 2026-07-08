@@ -9,3 +9,6 @@ JOINTS_LOSS_WEIGHT=0.5
 
 # epsilon
 EPSILON = 1e-6
+
+# rollout safety
+MAX_ARM_DELTA = 1.2
