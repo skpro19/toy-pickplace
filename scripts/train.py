@@ -75,7 +75,7 @@ def train(
     npz_folder: str,
     checkpoint_dir: Path,
     log_dir: Path,
-    normalize=True,
+    normalize: bool=True,
     action_space: str="joint_delta") -> None: 
     
     assert os.path.exists(npz_folder), f"npz_folder=>{npz_folder} does not exist"
@@ -96,7 +96,9 @@ def train(
 
     # [action_targets]
     if action_space == "joint_delta":
-        dataset_.action_targets[:, 0:ACTION_DIMS-1] = dataset_.actions[:, 0:ACTION_DIMS-1] - dataset_.obs[:, 0:ACTION_DIMS-1]
+        arm_actions = dataset_.actions[:, 0:ACTION_DIMS-1]
+        arm_qpos    = dataset_.obs[:, 0:ACTION_DIMS-1]
+        dataset_.action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
         dataset_.action_targets[:, ACTION_DIMS-1] = dataset_.actions[:, ACTION_DIMS-1]/255.0
     elif action_space == "absolute":
         dataset_.action_targets[:, 0:ACTION_DIMS-1] = dataset_.actions[:, 0:ACTION_DIMS-1]
@@ -113,7 +115,7 @@ def train(
     arm_actions_std = np.std(dataset_.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True)
 
     arm_obs_mean = np.mean(dataset_.obs_targets, axis=0, keepdims=True)
-    arm_obs_std = np.std(dataset_.obs, axis=0, keepdims=True) # (1,45)
+    arm_obs_std = np.std(dataset_.obs_targets, axis=0, keepdims=True) # (1,45)
     
     if normalize:
         dataset_.action_targets[:, 0:ACTION_DIMS-1] -= arm_actions_mean
@@ -121,24 +123,6 @@ def train(
 
         dataset_.obs_targets -= arm_obs_mean
         dataset_.obs_targets /= (arm_obs_std + EPSILON)
-
-    # if normalize_actions:
-    #     arm_actions_mean = np.mean(dataset_.actions[:, 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
-    #     arm_actions_std = np.std(dataset_.actions[: , 0:ACTION_DIMS-1], axis=0, keepdims=True) # (1, 7)
-    #     # normalizae 
-    #     dataset_.action_targets[:, 0:ACTION_DIMS-1] = (dataset_.actions[:, 0:ACTION_DIMS-1] - arm_actions_mean) / (arm_actions_std + EPSILON)
-    #     dataset_.action_targets[:,ACTION_DIMS-1] = dataset_.actions[:,ACTION_DIMS-1] / 255.0
-    # else: 
-    #     dataset_.action_targets = dataset_.actions
-        
-    # if normalize_obs: 
-    #     arm_obs_mean = np.mean(dataset_.obs, axis=0, keepdims=True) # (1,45)
-    #     arm_obs_std = np.std(dataset_.obs, axis=0, keepdims=True) # (1,45)
-
-    #     #normalize
-    #     dataset_.obs_targets = (dataset_.obs - arm_obs_mean) / (arm_obs_std + EPSILON)
-    # else: 
-    #     dataset_.obs_targets = dataset_.obs
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -245,12 +229,12 @@ def parse_args():
         description="Training params for simple MLP policy"
     )
     
-    parser.add_argument("--epochs", type=int, default=1)
-
+    
     # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
     # and `runs/<idx>_<base_name>` respectively
-    parser.add_argument("--base", type=str, default="mlp-rand-episodes")
+    parser.add_argument("--base", type=str, default="action-delta")
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--log_root", type=str, default="runs")
     parser.add_argument("--npz", type=str, required=True, help="npz folder path")
     parser.add_argument("--action_space", type=str, default="joint_delta", 
