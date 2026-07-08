@@ -2,6 +2,15 @@
 set -euo pipefail
 
 kill_stale=false
+SUDO_PASSWORD=""
+
+sudo_cmd() {
+  if [[ -n "$SUDO_PASSWORD" ]]; then
+    echo "$SUDO_PASSWORD" | sudo -S "$@"
+  else
+    sudo "$@"
+  fi
+}
 
 usage() {
   echo "Usage: bash/fix-cuda-sleep.sh [--kill-stale]"
@@ -14,7 +23,8 @@ validate_sudo() {
   if [[ -t 0 ]]; then
     sudo -v
   else
-    sudo -S -v
+    IFS= read -r SUDO_PASSWORD
+    echo "$SUDO_PASSWORD" | sudo -S -v
   fi
 }
 
@@ -48,7 +58,7 @@ active_uvm_pids() {
     return
   fi
 
-  output=$(sudo fuser "${devices[@]}" 2>&1 || true)
+  output=$(sudo_cmd fuser "${devices[@]}" 2>&1 || true)
 
   for pid in $output; do
     if [[ $pid =~ ^([0-9]+) ]]; then
@@ -85,15 +95,17 @@ kill_stale_uvm_users() {
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
+
+  sleep 1
 }
 
 echo "Reloading NVIDIA UVM module..."
 validate_sudo
 
-if ! sudo modprobe -r nvidia_uvm; then
+if ! sudo_cmd modprobe -r nvidia_uvm; then
   echo "Could not unload nvidia_uvm. It is probably being used by a CUDA process."
   echo "Active NVIDIA device users:"
-  sudo fuser -v /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia0 /dev/nvidiactl || true
+  sudo_cmd fuser -v /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia0 /dev/nvidiactl || true
 
   if [[ $kill_stale == false ]]; then
     echo "Stop active CUDA jobs and run this script again."
@@ -105,13 +117,13 @@ if ! sudo modprobe -r nvidia_uvm; then
   kill_stale_uvm_users
 
   echo "Retrying NVIDIA UVM unload..."
-  if ! sudo modprobe -r nvidia_uvm; then
+  if ! sudo_cmd modprobe -r nvidia_uvm; then
     echo "Could not unload nvidia_uvm after stopping user-owned processes. Reboot the laptop."
     exit 1
   fi
 fi
 
-sudo modprobe nvidia_uvm
+sudo_cmd modprobe nvidia_uvm
 
 echo "NVIDIA UVM module reloaded."
 
@@ -128,5 +140,7 @@ if command -v uv >/dev/null 2>&1 && [[ -f pyproject.toml ]]; then
 else
   echo "Skipping PyTorch check: uv or pyproject.toml not found."
 fi
+
+SUDO_PASSWORD=""
 
 echo "Done. If CUDA still fails, reboot the laptop."
