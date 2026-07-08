@@ -1,25 +1,75 @@
 import torch 
 import argparse
+import json
 from pathlib import Path
+from datetime import datetime
 
 from mlp import MLP
 from sim import SimEnv
 import mujoco
 import mujoco.viewer
 import time
+import numpy as np
 
 from constant import (
         EPSILON, 
         ACTION_DIMS
         )
 
-def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int, max_steps: int):
+
+def make_rollout_log_dir(*, log_root: Path, model_path: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    checkpoint_name = model_path.parent.name or model_path.stem
+    return log_root / f"{timestamp}_{checkpoint_name}"
+
+
+def append_step_log(
+    *,
+    buffers: dict[str, list[np.ndarray]],
+    obs: torch.Tensor,
+) -> None:
+    buffers["rollout_obs"].append(obs.squeeze(0).detach().cpu().numpy())
+
+
+def save_episode_log(
+    *,
+    log_dir: Path,
+    train_npz_dir: Path,
+    episode_idx: int,
+    buffers: dict[str, list[np.ndarray]],
+) -> None:
+    train_episode_path = train_npz_dir / f"pick_place_{episode_idx:06d}.npz"
+    if not train_episode_path.exists():
+        raise FileNotFoundError(f"Training episode file not found: {train_episode_path}")
+
+    with np.load(train_episode_path) as data:
+        if "obs" not in data:
+            raise KeyError(f"{train_episode_path} does not contain an 'obs' array")
+        train_obs = np.asarray(data["obs"], dtype=np.float32)
+
+    episode_path = log_dir / f"episode_{episode_idx:06d}.npz"
+    np.savez_compressed(
+        episode_path,
+        rollout_obs=np.asarray(buffers["rollout_obs"], dtype=np.float32),
+        train_obs=train_obs,
+    )
+
+
+def rollout(
+    *,
+    model_path: str,
+    randomize_scene: bool,
+    seed: int,
+    episodes: int,
+    max_steps: int,
+    log_root: str | Path,
+    train_npz_dir: str | Path,
+    log_rollout: bool,
+):
     
    
     # sim = SimEnv()
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
-
-    sim.reset_episode()
 
     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -51,6 +101,30 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int,
     # debug
     assert normalize, "normalize must be True"
     assert action_space in ["joint_delta", "absolute"], "action_space must be either joint_delta or absolute"
+
+    log_dir = None
+    train_npz_dir = Path(train_npz_dir)
+    if log_rollout:
+        if not train_npz_dir.exists():
+            raise FileNotFoundError(f"Training npz directory not found: {train_npz_dir}")
+        log_dir = make_rollout_log_dir(log_root=Path(log_root), model_path=model_path)
+        log_dir.mkdir(parents=True, exist_ok=False)
+        metadata = {
+            "model_path": str(model_path),
+            "train_npz_dir": str(train_npz_dir),
+            "action_space": action_space,
+            "normalize": normalize,
+            "seed": seed,
+            "randomize_scene": randomize_scene,
+            "episodes": episodes,
+            "max_steps": max_steps,
+            "device": str(device),
+            "logged_arrays": ["rollout_obs", "train_obs"],
+            "episode_alignment": "rollout episode i uses train pick_place_i.npz",
+        }
+        with (log_dir / "metadata.json").open("w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        print(f"Rollout log dir: {log_dir}")
 
     if normalize:
         arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device).squeeze(0)
@@ -89,6 +163,9 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int,
             for episode in range(episodes):
                 steps = 0
                 sim.reset_episode()
+                log_buffers: dict[str, list[np.ndarray]] = {
+                    "rollout_obs": [],
+                }
 
                 while viewer.is_running() and not quit_requested and steps < max_steps:
                     # print(f"steps=>{steps}")
@@ -108,38 +185,51 @@ def rollout(*, model_path: str, randomize_scene: bool, seed: int, episodes: int,
                         
 
                     # pred = model(obs_norm)
-                    actions = torch.empty(obs_norm.shape[0], ACTION_DIMS)
-
                     (joints_pred, gripper_pred) = model(obs_norm)
                     
                     # print(f"joints_pred.shape=>{joints_pred.shape}")
                     # print(f"gripper_pred.shape=>{gripper_pred.shape}")
                     
-                    joints_actions = torch.empty_like(joints_pred)
-                    gripper_actions = torch.empty_like(gripper_pred)
-
-
                     # unnormalize actions
                     if normalize: 
                         joints_actions = joints_pred * (arm_actions_std + EPSILON) + arm_actions_mean
                         # gripper_actions = (255.0 if gripper_pred >= 0.5 else 0)
-                    
+                    else:
+                        joints_actions = joints_pred
+
+                    arm_qpos = obs[:, 0:ACTION_DIMS-1]
+                     
                     if action_space == "joint_delta":
-                        joints_actions += obs[:, 0:ACTION_DIMS-1]
-                    gripper_actions = torch.where(torch.sigmoid(gripper_pred) >= 0.5, 255.0, 0.0)
+                        joints_actions = joints_actions + arm_qpos
+                    gripper_prob = torch.sigmoid(gripper_pred)
+                    gripper_actions = torch.where(gripper_prob >= 0.5, 255.0, 0.0)
 
                     # print(f"type(joints_actions)=>{type(joints_actions)}")
                     # print(f"type(gripper_actions)=>{type(gripper_actions)}")
                     actions = torch.concat([joints_actions, gripper_actions], dim=1)
-                    
 
-                    sim.data.ctrl[:sim.model.nu] = actions.detach().cpu().numpy()
+                    if log_rollout and log_dir is not None:
+                        append_step_log(
+                            buffers=log_buffers,
+                            obs=obs,
+                        )
+                     
+
+                    sim.data.ctrl[:sim.model.nu] = actions.squeeze(0).detach().cpu().numpy()
                     
                     mujoco.mj_step(sim.model, sim.data)
                     time.sleep(sim.model.opt.timestep * 10)
 
                     viewer.sync()
                     steps += 1
+
+                if log_rollout and log_dir is not None:
+                    save_episode_log(
+                        log_dir=log_dir,
+                        train_npz_dir=train_npz_dir,
+                        episode_idx=episode,
+                        buffers=log_buffers,
+                    )
 
                 # break
 
@@ -155,6 +245,13 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument("--log-dir", type=Path, default=Path("logs/rollouts"))
+    parser.add_argument("--train-npz-dir", type=Path, default=Path("data/rand-100"))
+    parser.add_argument(
+        "--log-rollout",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     return parser.parse_args()
 
 def main(): 
@@ -163,7 +260,10 @@ def main():
         randomize_scene=args.randomize_scene, 
         seed=args.seed,
         episodes=args.episodes,
-        max_steps=args.max_steps)
+        max_steps=args.max_steps,
+        log_root=args.log_dir,
+        train_npz_dir=args.train_npz_dir,
+        log_rollout=args.log_rollout)
 
 
 if __name__ == "__main__":
