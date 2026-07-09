@@ -46,9 +46,14 @@ class Phase(Enum):
 
 
 class PickPlaceController:
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    def __init__(
+        self,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+    ) -> None:
         self.model = model
         self.data = data
+
         self.phase = Phase.MOVE_ABOVE_CUBE
         self.settle_steps = 0
         self.grasp_id = model.site("grasp").id
@@ -71,6 +76,7 @@ class PickPlaceController:
             self.home_qpos = model.key_qpos[home_key_id].copy()
             self.home_ctrl = model.key_ctrl[home_key_id].copy()
 
+        # mink config
         self.configuration = mink.Configuration(model)
         self.configuration.update(data.qpos)
         self.grasp_task = mink.FrameTask(
@@ -97,8 +103,7 @@ class PickPlaceController:
         self,
         site_id: int,
         local_offset: np.ndarray,
-        rotation: mink.SO3,
-    ) -> mink.SE3:
+        rotation: mink.SO3) -> mink.SE3:
         return mink.SE3.from_rotation_and_translation(
             rotation,
             self.site_target(site_id, local_offset),
@@ -181,19 +186,21 @@ class PickPlaceController:
         ori_err = self.rotation_error(target_rot, grasp_rot)
         return pos_err, ori_err
 
-    def run_ik(self, target: mink.SE3) -> None:
+    def run_ik(self, target: mink.SE3) -> np.ndarray:
         self.grasp_task.set_target(target)
         self.converge_ik()
-        self.data.ctrl[:ARM_DOF] = self.configuration.q[:ARM_DOF]
+        return self.configuration.q[:ARM_DOF].copy()
 
-    def control(self) -> None:
+    def compute_actions(self) -> np.ndarray:
+
+        self.configuration.update(self.data.qpos)
+        actions = self.data.ctrl[: self.model.nu].copy()
+
         if self.phase == Phase.DONE:
-            return
+            return actions
 
         if self.phase == Phase.HOME:
-            self.data.ctrl[: self.model.nu] = self.home_ctrl[: self.model.nu]
-            self.configuration.update(self.data.qpos)
-            return
+            return self.home_ctrl[: self.model.nu].copy()
 
         if self.phase in (
             Phase.CLOSE_GRIPPER,
@@ -201,20 +208,21 @@ class PickPlaceController:
             Phase.MOVE_TO_TRAY,
             Phase.LOWER_TO_TRAY,
         ):
-            self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
-            target = self.target_for_phase()
-            if target is not None:
-                self.configuration.update(self.data.qpos)
-                self.run_ik(target)
-            return
+            actions[GRIPPER_ACTUATOR] = GRIPPER_CLOSE
+        else:
+            actions[GRIPPER_ACTUATOR] = GRIPPER_OPEN
 
-        self.data.ctrl[GRIPPER_ACTUATOR] = GRIPPER_OPEN
         target = self.target_for_phase()
         if target is None:
-            return
+            return actions
 
-        self.configuration.update(self.data.qpos)
-        self.run_ik(target)
+        actions[:ARM_DOF] = self.run_ik(target)
+        return actions
+
+    def control(self) -> None:
+
+        self.data.ctrl[:self.model.nu] = self.compute_actions()
+
 
     def update_phase(self) -> None:
         if self.phase == Phase.DONE:
