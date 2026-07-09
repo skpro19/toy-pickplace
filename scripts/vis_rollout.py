@@ -57,7 +57,13 @@ def load_episode_arrays(*, episode_path: Path) -> dict[str, np.ndarray]:
             min_dims=ARM_JOINT_DIMS,
         )
 
-    for name in ("rollout_actions", "train_actions", "dagger_obs", "dagger_actions"):
+    for name in (
+        "rollout_actions",
+        "train_actions",
+        "dagger_obs",
+        "dagger_actions",
+        "executed_actions",
+    ):
         if name in arrays:
             validate_timeseries(
                 episode_path=episode_path,
@@ -66,7 +72,12 @@ def load_episode_arrays(*, episode_path: Path) -> dict[str, np.ndarray]:
                 min_dims=ARM_JOINT_DIMS,
             )
 
-    for name in ("rollout_action_deltas", "train_action_deltas", "dagger_action_deltas"):
+    for name in (
+        "rollout_action_deltas",
+        "train_action_deltas",
+        "dagger_action_deltas",
+        "executed_action_deltas",
+    ):
         if name in arrays:
             validate_timeseries(
                 episode_path=episode_path,
@@ -159,7 +170,8 @@ def save_arm_timeseries_multi_overlay(
     styles = {
         "train": {"alpha": 0.75, "linestyle": "-", "zorder": 1},
         "dagger": {"alpha": 0.7, "linestyle": "--", "zorder": 2},
-        "rollout": {"alpha": 0.9, "linestyle": "-", "zorder": 3},
+        "executed": {"alpha": 0.8, "linestyle": ":", "zorder": 3},
+        "rollout": {"alpha": 0.9, "linestyle": "-", "zorder": 4},
     }
     fig, axes = plt.subplots(ARM_JOINT_DIMS, 1, figsize=(14, 18), sharex=True)
     for joint_idx, ax in enumerate(axes):
@@ -258,6 +270,8 @@ def save_episode_plots(*, episode_path: Path, out_dir: Path) -> None:
         ]
         if "dagger_actions" in arrays:
             action_series.append(("dagger", arrays["dagger_actions"]))
+        if "executed_actions" in arrays:
+            action_series.append(("executed", arrays["executed_actions"]))
         save_arm_timeseries_multi_overlay(
             series=action_series,
             title="Arm Joint Action Overlay",
@@ -272,6 +286,8 @@ def save_episode_plots(*, episode_path: Path, out_dir: Path) -> None:
         ]
         if "dagger_action_deltas" in arrays:
             delta_series.append(("dagger", arrays["dagger_action_deltas"]))
+        if "executed_action_deltas" in arrays:
+            delta_series.append(("executed", arrays["executed_action_deltas"]))
         save_arm_timeseries_multi_overlay(
             series=delta_series,
             title="Arm Joint Action Delta Overlay",
@@ -683,14 +699,24 @@ def save_summary_plots(*, episode_paths: list[Path], out_dir: Path) -> None:
         episode_paths=episode_paths,
         key="dagger_actions",
     )
-    if action_values is not None and dagger_actions is not None:
+    executed_actions = load_all_arm_value(
+        episode_paths=episode_paths,
+        key="executed_actions",
+    )
+    if action_values is not None and (
+        dagger_actions is not None or executed_actions is not None
+    ):
+        action_series = [
+            ("train", action_values[1]),
+            ("rollout", action_values[0]),
+        ]
+        if dagger_actions is not None:
+            action_series.append(("dagger", dagger_actions))
+        if executed_actions is not None:
+            action_series.append(("executed", executed_actions))
         save_arm_distribution_multi_overlay(
-            series=[
-                ("train", action_values[1]),
-                ("rollout", action_values[0]),
-                ("dagger", dagger_actions),
-            ],
-            title="Train vs Rollout vs Dagger Action Distributions",
+            series=action_series,
+            title="Train vs Rollout vs Dagger vs Executed Action Distributions",
             xlabel="ctrl",
             filename="dagger_actions_distribution.png",
             out_dir=out_dir,
@@ -715,14 +741,24 @@ def save_summary_plots(*, episode_paths: list[Path], out_dir: Path) -> None:
         episode_paths=episode_paths,
         key="dagger_action_deltas",
     )
-    if delta_values is not None and dagger_deltas is not None:
+    executed_deltas = load_all_arm_value(
+        episode_paths=episode_paths,
+        key="executed_action_deltas",
+    )
+    if delta_values is not None and (
+        dagger_deltas is not None or executed_deltas is not None
+    ):
+        delta_series = [
+            ("train", delta_values[1]),
+            ("rollout", delta_values[0]),
+        ]
+        if dagger_deltas is not None:
+            delta_series.append(("dagger", dagger_deltas))
+        if executed_deltas is not None:
+            delta_series.append(("executed", executed_deltas))
         save_arm_distribution_multi_overlay(
-            series=[
-                ("train", delta_values[1]),
-                ("rollout", delta_values[0]),
-                ("dagger", dagger_deltas),
-            ],
-            title="Train vs Rollout vs Dagger Action Delta Distributions",
+            series=delta_series,
+            title="Train vs Rollout vs Dagger vs Executed Action Delta Distributions",
             xlabel="ctrl - qpos",
             filename="dagger_action_deltas_distribution.png",
             out_dir=out_dir,
@@ -773,7 +809,7 @@ def save_summary_plots(*, episode_paths: list[Path], out_dir: Path) -> None:
         save_model_vs_applied_delta_distribution(
             train_deltas=delta_values[1],
             pred_deltas=pred_unnorm,
-            applied_deltas=delta_values[0],
+            applied_deltas=executed_deltas if executed_deltas is not None else delta_values[0],
             out_dir=out_dir,
         )
     save_first_ood_summary(episode_paths=episode_paths, out_dir=out_dir)
