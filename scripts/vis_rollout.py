@@ -57,7 +57,7 @@ def load_episode_arrays(*, episode_path: Path) -> dict[str, np.ndarray]:
             min_dims=ARM_JOINT_DIMS,
         )
 
-    for name in ("rollout_actions", "train_actions"):
+    for name in ("rollout_actions", "train_actions", "dagger_obs", "dagger_actions"):
         if name in arrays:
             validate_timeseries(
                 episode_path=episode_path,
@@ -66,7 +66,7 @@ def load_episode_arrays(*, episode_path: Path) -> dict[str, np.ndarray]:
                 min_dims=ARM_JOINT_DIMS,
             )
 
-    for name in ("rollout_action_deltas", "train_action_deltas"):
+    for name in ("rollout_action_deltas", "train_action_deltas", "dagger_action_deltas"):
         if name in arrays:
             validate_timeseries(
                 episode_path=episode_path,
@@ -148,6 +148,46 @@ def save_arm_timeseries_overlay(
     plt.close(fig)
 
 
+def save_arm_timeseries_multi_overlay(
+    *,
+    series: list[tuple[str, np.ndarray]],
+    title: str,
+    ylabel: str,
+    filename: str,
+    out_dir: Path,
+) -> None:
+    styles = {
+        "train": {"alpha": 0.75, "linestyle": "-", "zorder": 1},
+        "dagger": {"alpha": 0.7, "linestyle": "--", "zorder": 2},
+        "rollout": {"alpha": 0.9, "linestyle": "-", "zorder": 3},
+    }
+    fig, axes = plt.subplots(ARM_JOINT_DIMS, 1, figsize=(14, 18), sharex=True)
+    for joint_idx, ax in enumerate(axes):
+        for label, values in series:
+            style = styles.get(label, {"alpha": 0.8, "linestyle": "-", "zorder": 1})
+            steps = np.arange(values.shape[0])
+            ax.plot(
+                steps,
+                values[:, joint_idx],
+                linewidth=1.1,
+                alpha=style["alpha"],
+                linestyle=style["linestyle"],
+                label=label,
+                zorder=style["zorder"],
+            )
+        ax.set_ylabel(JOINT_NAMES[joint_idx])
+        ax.grid(True, alpha=0.3)
+        if joint_idx == 0:
+            ax.legend()
+
+    axes[-1].set_xlabel("timestep")
+    fig.supylabel(ylabel)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_dir / filename, dpi=160)
+    plt.close(fig)
+
+
 def has_keys(*, arrays: dict[str, np.ndarray], keys: tuple[str, ...]) -> bool:
     return all(key in arrays for key in keys)
 
@@ -198,27 +238,42 @@ def save_episode_plots(*, episode_path: Path, out_dir: Path) -> None:
     if arrays["rollout_obs"].shape[0] == 0 or arrays["train_obs"].shape[0] == 0:
         return
 
-    save_arm_timeseries_overlay(
-        rollout_values=arrays["rollout_obs"],
-        train_values=arrays["train_obs"],
+    obs_series = [
+        ("train", arrays["train_obs"]),
+        ("rollout", arrays["rollout_obs"]),
+    ]
+    if "dagger_obs" in arrays:
+        obs_series.append(("dagger", arrays["dagger_obs"]))
+    save_arm_timeseries_multi_overlay(
+        series=obs_series,
         title="Arm Joint Observation Overlay",
         ylabel="qpos",
         filename="arm_qpos_overlay.png",
         out_dir=out_dir,
     )
     if has_keys(arrays=arrays, keys=("rollout_actions", "train_actions")):
-        save_arm_timeseries_overlay(
-            rollout_values=arrays["rollout_actions"],
-            train_values=arrays["train_actions"],
+        action_series = [
+            ("train", arrays["train_actions"]),
+            ("rollout", arrays["rollout_actions"]),
+        ]
+        if "dagger_actions" in arrays:
+            action_series.append(("dagger", arrays["dagger_actions"]))
+        save_arm_timeseries_multi_overlay(
+            series=action_series,
             title="Arm Joint Action Overlay",
             ylabel="ctrl",
             filename="arm_actions_overlay.png",
             out_dir=out_dir,
         )
     if has_keys(arrays=arrays, keys=("rollout_action_deltas", "train_action_deltas")):
-        save_arm_timeseries_overlay(
-            rollout_values=arrays["rollout_action_deltas"],
-            train_values=arrays["train_action_deltas"],
+        delta_series = [
+            ("train", arrays["train_action_deltas"]),
+            ("rollout", arrays["rollout_action_deltas"]),
+        ]
+        if "dagger_action_deltas" in arrays:
+            delta_series.append(("dagger", arrays["dagger_action_deltas"]))
+        save_arm_timeseries_multi_overlay(
+            series=delta_series,
             title="Arm Joint Action Delta Overlay",
             ylabel="ctrl - qpos",
             filename="arm_action_deltas_overlay.png",
@@ -271,6 +326,21 @@ def load_all_arm_values(
     return np.concatenate(rollout_values, axis=0), np.concatenate(train_values, axis=0)
 
 
+def load_all_arm_value(*, episode_paths: list[Path], key: str) -> np.ndarray | None:
+    values = []
+    for episode_path in episode_paths:
+        arrays = load_episode_arrays(episode_path=episode_path)
+        if key not in arrays:
+            return None
+        if arrays[key].shape[0] > 0:
+            values.append(arrays[key][:, :ARM_JOINT_DIMS])
+
+    if not values:
+        return None
+
+    return np.concatenate(values, axis=0)
+
+
 def save_arm_distribution_overlay(
     *,
     rollout_values: np.ndarray,
@@ -308,6 +378,40 @@ def save_arm_distribution_overlay(
         ax.axvline(train_max, color="black", linestyle=":", linewidth=0.9)
         ax.axvline(p05, color="tab:orange", linestyle="--", linewidth=0.9, label="train p5/p95" if joint_idx == 0 else None)
         ax.axvline(p95, color="tab:orange", linestyle="--", linewidth=0.9)
+        ax.set_title(JOINT_NAMES[joint_idx])
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("density")
+        ax.grid(True, alpha=0.3)
+        if joint_idx == 0:
+            ax.legend()
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_dir / filename, dpi=160)
+    plt.close(fig)
+
+
+def save_arm_distribution_multi_overlay(
+    *,
+    series: list[tuple[str, np.ndarray]],
+    title: str,
+    xlabel: str,
+    filename: str,
+    out_dir: Path,
+) -> None:
+    fig, axes = plt.subplots(4, 2, figsize=(14, 14))
+    for joint_idx, ax in enumerate(axes.flat):
+        if joint_idx >= ARM_JOINT_DIMS:
+            ax.set_visible(False)
+            continue
+        for label, values in series:
+            ax.hist(
+                values[:, joint_idx],
+                bins=60,
+                alpha=0.45,
+                density=True,
+                label=label,
+            )
         ax.set_title(JOINT_NAMES[joint_idx])
         ax.set_xlabel(xlabel)
         ax.set_ylabel("density")
@@ -575,6 +679,23 @@ def save_summary_plots(*, episode_paths: list[Path], out_dir: Path) -> None:
             out_dir=out_dir,
         )
 
+    dagger_actions = load_all_arm_value(
+        episode_paths=episode_paths,
+        key="dagger_actions",
+    )
+    if action_values is not None and dagger_actions is not None:
+        save_arm_distribution_multi_overlay(
+            series=[
+                ("train", action_values[1]),
+                ("rollout", action_values[0]),
+                ("dagger", dagger_actions),
+            ],
+            title="Train vs Rollout vs Dagger Action Distributions",
+            xlabel="ctrl",
+            filename="dagger_actions_distribution.png",
+            out_dir=out_dir,
+        )
+
     delta_values = load_all_arm_values(
         episode_paths=episode_paths,
         rollout_key="rollout_action_deltas",
@@ -587,6 +708,23 @@ def save_summary_plots(*, episode_paths: list[Path], out_dir: Path) -> None:
             title="Arm Joint Action Delta Distributions",
             xlabel="ctrl - qpos",
             filename="arm_action_deltas_distribution.png",
+            out_dir=out_dir,
+        )
+
+    dagger_deltas = load_all_arm_value(
+        episode_paths=episode_paths,
+        key="dagger_action_deltas",
+    )
+    if delta_values is not None and dagger_deltas is not None:
+        save_arm_distribution_multi_overlay(
+            series=[
+                ("train", delta_values[1]),
+                ("rollout", delta_values[0]),
+                ("dagger", dagger_deltas),
+            ],
+            title="Train vs Rollout vs Dagger Action Delta Distributions",
+            xlabel="ctrl - qpos",
+            filename="dagger_action_deltas_distribution.png",
             out_dir=out_dir,
         )
 

@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 from datetime import datetime
-
+from typing import List
 from mlp import MLP
 from sim import SimEnv
 import mujoco
@@ -11,18 +11,27 @@ import mujoco.viewer
 import time
 import numpy as np
 
+from expert import PickPlaceController
+
 from constant import (
         EPSILON, 
         ACTION_DIMS,
         MAX_ARM_DELTA,
+        OBS_DIMS,
         )
 
+
+DAGGER_LOG_DIR = Path("logs/dagger")
 
 def make_rollout_log_dir(*, log_root: Path, model_path: Path) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_name = model_path.parent.name or model_path.stem
     return log_root / f"{timestamp}_{checkpoint_name}"
 
+def make_dagger_log_dir(*, dagger_root: Path, model_path: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    checkpoint_name = model_path.parent.name or model_path.stem
+    return dagger_root / f"{timestamp}_{checkpoint_name}"
 
 def append_step_log(
     *,
@@ -30,8 +39,7 @@ def append_step_log(
     obs: torch.Tensor,
     actions: torch.Tensor,
     joints_pred_raw: torch.Tensor,
-    joints_pred_unnorm: torch.Tensor,
-) -> None:
+    joints_pred_unnorm: torch.Tensor) -> None:
     buffers["rollout_obs"].append(obs.squeeze(0).detach().cpu().numpy())
     buffers["rollout_actions"].append(actions.squeeze(0).detach().cpu().numpy())
     buffers["joints_pred_raw"].append(joints_pred_raw.squeeze(0).detach().cpu().numpy())
@@ -72,9 +80,17 @@ def save_episode_log(
         "joints_pred_raw": joints_pred_raw,
         "joints_pred_unnorm": joints_pred_unnorm,
     }
+    if "dagger_obs" in buffers and "dagger_actions" in buffers:
+        dagger_obs = np.asarray(buffers["dagger_obs"], dtype=np.float32)
+        dagger_actions = np.asarray(buffers["dagger_actions"], dtype=np.float32)
+        arrays["dagger_obs"] = dagger_obs
+        arrays["dagger_actions"] = dagger_actions
+
     if action_space == "joint_delta":
         arrays["rollout_action_deltas"] = rollout_actions[:, : ACTION_DIMS - 1] - rollout_obs[:, : ACTION_DIMS - 1]
         arrays["train_action_deltas"] = train_actions[:, : ACTION_DIMS - 1] - train_obs[:, : ACTION_DIMS - 1]
+        if "dagger_obs" in arrays and "dagger_actions" in arrays:
+            arrays["dagger_action_deltas"] = arrays["dagger_actions"][:, : ACTION_DIMS - 1] - arrays["dagger_obs"][:, : ACTION_DIMS - 1]
 
     episode_path = log_dir / f"episode_{episode_idx:06d}.npz"
     np.savez_compressed(episode_path, **arrays)
@@ -90,12 +106,12 @@ def rollout(
     log_root: str | Path,
     train_npz_dir: str | Path,
     log_rollout: bool,
+    dagger: bool,
 ):
     
    
     # sim = SimEnv()
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
-
     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     model_path = Path(model_path)
@@ -160,6 +176,12 @@ def rollout(
         #     json.dump(metadata, f, indent=2)
         print(f"Rollout log dir: {log_dir}")
 
+    dagger_dir = None
+    if dagger:
+        dagger_dir = make_dagger_log_dir(dagger_root=DAGGER_LOG_DIR, model_path=model_path)
+        dagger_dir.mkdir(parents=True, exist_ok=False)
+        print(f"Dagger log dir: {dagger_dir}")
+
     if normalize:
         arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device).squeeze(0)
         arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device).squeeze(0)
@@ -191,22 +213,39 @@ def rollout(
         viewer.cam.distance = 1.35
         viewer.cam.azimuth = 145
         viewer.cam.elevation = -25
-    
-        with torch.no_grad():  
+
+        with torch.no_grad():
 
             for episode in range(episodes):
+                print(f"EPISODE #{episode}")
+
+                dagger_obs: List[np.ndarray] = []
+                dagger_actions: List[np.ndarray] = []
+                dagger_expert = None
+
                 steps = 0
                 sim.reset_episode()
+
+                if dagger:
+                    dagger_expert = PickPlaceController(sim.model, sim.data)
+
                 log_buffers: dict[str, list[np.ndarray]] = {
                     "rollout_obs": [],
                     "rollout_actions": [],
                     "joints_pred_raw": [],
                     "joints_pred_unnorm": [],
                 }
+                if dagger:
+                    log_buffers["dagger_obs"] = dagger_obs
+                    log_buffers["dagger_actions"] = dagger_actions
 
                 while viewer.is_running() and not quit_requested and steps < max_steps:
                     # print(f"steps=>{steps}")
                     obs = sim.build_observation()
+                    # print(f"obs.shape => {obs.shape}")
+                    # break
+                    if dagger and dagger_expert is not None:
+                        dagger_obs.append(obs.copy())
                     obs = torch.from_numpy(obs).to(device).unsqueeze(0)
                     
                     obs_norm = torch.empty_like(obs)
@@ -252,6 +291,11 @@ def rollout(
                     # print(f"type(gripper_actions)=>{type(gripper_actions)}")
                     actions = torch.concat([joints_actions, gripper_actions], dim=1)
 
+                    if dagger and dagger_expert is not None:
+                        dagger_actions.append(dagger_expert.compute_actions())
+                    # print(f"actions.shape => {actions.shape}")
+                    # expert_actions = torch.from_numpy(expert.compute_actions(), dtype=torch.float32).to(device).unsqueeze(0)
+
                     if log_rollout and log_dir is not None:
                         append_step_log(
                             buffers=log_buffers,
@@ -265,6 +309,8 @@ def rollout(
                     sim.data.ctrl[:sim.model.nu] = actions.squeeze(0).detach().cpu().numpy()
                     
                     mujoco.mj_step(sim.model, sim.data)
+                    if dagger and dagger_expert is not None:
+                        dagger_expert.update_phase()
                     time.sleep(sim.model.opt.timestep * 10)
 
                     viewer.sync()
@@ -277,6 +323,15 @@ def rollout(
                         episode_idx=episode,
                         action_space=action_space,
                         buffers=log_buffers,
+                    )
+
+
+                if dagger and dagger_dir is not None:
+                    dagger_path = dagger_dir / f"episode_{episode:06d}.npz"
+                    np.savez_compressed(
+                        dagger_path,
+                        obs=np.asarray(dagger_obs, dtype=np.float32),
+                        actions=np.asarray(dagger_actions, dtype=np.float32),
                     )
 
                 # break
@@ -295,11 +350,8 @@ def parse_args():
     )
     parser.add_argument("--log-dir", type=Path, default=Path("logs/rollouts"))
     parser.add_argument("--train-npz-dir", type=Path, default=Path("data/rand-100"))
-    parser.add_argument(
-        "--log-rollout",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
+    parser.add_argument("--log-rollout", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dagger", action=argparse.BooleanOptionalAction, default=False)
     return parser.parse_args()
 
 def main(): 
@@ -311,7 +363,9 @@ def main():
         max_steps=args.max_steps,
         log_root=args.log_dir,
         train_npz_dir=args.train_npz_dir,
-        log_rollout=args.log_rollout)
+        log_rollout=args.log_rollout,
+        dagger=args.dagger,
+    )
 
 
 if __name__ == "__main__":
