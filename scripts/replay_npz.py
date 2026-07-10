@@ -27,10 +27,21 @@ def restore_episode_layout(
     mujoco.mj_forward(sim.model, sim.data)
 
 
-def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True) -> None:
+def replay_actions(
+    *,
+    npz: str,
+    episodes: int = 10,
+    randomised: bool = True,
+    action_key: str = "actions",
+) -> None:
     sim = SimEnv()
-    npz_path = Path(npz_dir)
-    npz_files = sorted(npz_path.glob("*.npz"))
+    npz_path = Path(npz)
+    if npz_path.is_file():
+        npz_files = [npz_path]
+    elif npz_path.is_dir():
+        npz_files = sorted(npz_path.glob("*.npz"))
+    else:
+        raise FileNotFoundError(f"NPZ path not found: {npz_path}")
 
     if randomised:
         rng = np.random.default_rng()
@@ -68,13 +79,21 @@ def replay_actions(*, npz_dir: str, episodes: int = 10, randomised: bool = True)
             sim.reset_episode()
 
             with np.load(fpath) as data:
-                actions = data["actions"]
-                restore_episode_layout(
-                    sim=sim,
-                    cube_init_pos=data["cube_init_pos"],
-                    tray_init_pos=data["tray_init_pos"],
-                )
-                print(f"  actions.shape => {actions.shape}")
+                if action_key not in data.files:
+                    raise KeyError(
+                        f"{fpath} does not contain action key {action_key!r}. "
+                        f"Available keys: {sorted(data.files)}"
+                    )
+                actions = data[action_key]
+                if "cube_init_pos" in data.files and "tray_init_pos" in data.files:
+                    restore_episode_layout(
+                        sim=sim,
+                        cube_init_pos=data["cube_init_pos"],
+                        tray_init_pos=data["tray_init_pos"],
+                    )
+                else:
+                    print("  layout metadata missing; replaying from reset layout")
+                print(f"  {action_key}.shape => {actions.shape}")
 
                 for action in actions:
                     if quit_requested or not viewer.is_running():
@@ -90,6 +109,12 @@ def parse_args():
     parser.add_argument("--npz", type=str, default="data/test")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument(
+        "--action-key",
+        type=str,
+        default="actions",
+        help="NPZ action array to replay, e.g. actions, executed_actions, policy_actions.",
+    )
+    parser.add_argument(
         "--no-randomised",
         action="store_false",
         dest="randomised",
@@ -101,7 +126,12 @@ def parse_args():
 
 def main():
     args = parse_args()
-    replay_actions(npz_dir=args.npz, episodes=args.episodes, randomised=args.randomised)
+    replay_actions(
+        npz=args.npz,
+        episodes=args.episodes,
+        randomised=args.randomised,
+        action_key=args.action_key,
+    )
 
 
 if __name__ == "__main__":

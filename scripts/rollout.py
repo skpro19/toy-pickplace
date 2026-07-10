@@ -114,6 +114,7 @@ def rollout(
     dagger: bool,
     dagger_root: str | Path,
     beta: float,
+    headless: bool,
 ):
     if not 0.0 <= beta <= 1.0:
         raise ValueError(f"beta must be in [0.0, 1.0], got {beta}")
@@ -205,21 +206,7 @@ def rollout(
         if chr(keycode).lower() == "q":
             quit_requested = True
 
-    with mujoco.viewer.launch_passive(
-        sim.model,
-        sim.data,
-        key_callback=key_callback,
-        show_left_ui=True,
-        show_right_ui=True,
-    ) as viewer:
-        viewer_handle = viewer
-        viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-        viewer.cam.lookat[:] = (0.45, 0.0, 0.78)
-        viewer.cam.distance = 1.35
-        viewer.cam.azimuth = 145
-        viewer.cam.elevation = -25
-
+    def run_rollouts(*, viewer=None) -> None:
         with torch.no_grad():
 
             for episode in range(episodes):
@@ -234,6 +221,10 @@ def rollout(
 
                 steps = 0
                 sim.reset_episode()
+                cube_init_pos = sim.data.qpos[
+                    sim.cube_qpos_addr : sim.cube_qpos_addr + 3
+                ].copy()
+                tray_init_pos = sim.data.site("tray_center").xpos.copy()
 
                 if dagger:
                     dagger_expert = PickPlaceController(sim.model, sim.data)
@@ -249,7 +240,11 @@ def rollout(
                     log_buffers["dagger_obs"] = dagger_obs
                     log_buffers["dagger_actions"] = dagger_actions
 
-                while viewer.is_running() and not quit_requested and steps < max_steps:
+                while (
+                    not quit_requested
+                    and steps < max_steps
+                    and (viewer is None or viewer.is_running())
+                ):
                     # print(f"steps=>{steps}")
                     obs = sim.build_observation()
                     # print(f"obs.shape => {obs.shape}")
@@ -330,10 +325,14 @@ def rollout(
 
                     mujoco.mj_step(sim.model, sim.data)
                     if dagger and dagger_expert is not None:
+                        previous_phase = dagger_expert.phase
                         dagger_expert.update_phase()
-                    time.sleep(sim.model.opt.timestep * 10)
+                        if dagger_expert.phase != previous_phase:
+                            print(f"step={steps} expert_phase={dagger_expert.phase.name}")
 
-                    viewer.sync()
+                    if viewer is not None:
+                        time.sleep(sim.model.opt.timestep * 2)
+                        viewer.sync()
                     steps += 1
 
                 if log_rollout and log_dir is not None:
@@ -364,9 +363,29 @@ def rollout(
                         executed_actions=np.asarray(dagger_executed_actions, dtype=np.float32),
                         execute_expert=np.asarray(dagger_execute_expert, dtype=np.bool_),
                         beta=np.asarray(beta, dtype=np.float32),
+                        cube_init_pos=np.asarray(cube_init_pos, dtype=np.float32),
+                        tray_init_pos=np.asarray(tray_init_pos, dtype=np.float32),
                     )
 
                 # break
+
+    if headless:
+        run_rollouts()
+    else:
+        with mujoco.viewer.launch_passive(
+            sim.model,
+            sim.data,
+            key_callback=key_callback,
+            show_left_ui=True,
+            show_right_ui=True,
+        ) as viewer:
+            viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+            viewer.cam.lookat[:] = (0.45, 0.0, 0.78)
+            viewer.cam.distance = 1.35
+            viewer.cam.azimuth = 145
+            viewer.cam.elevation = -25
+            run_rollouts(viewer=viewer)
 
 
 def parse_args():
@@ -386,6 +405,7 @@ def parse_args():
     parser.add_argument("--dagger", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--dagger-dir", type=Path, default=DEFAULT_DAGGER_DIR)
     parser.add_argument("--beta", type=float, default=0.0)
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False)
 
     return parser.parse_args()
 
@@ -402,6 +422,7 @@ def main():
         dagger=args.dagger,
         dagger_root=args.dagger_dir,
         beta=args.beta,
+        headless=args.headless,
     )
 
 
