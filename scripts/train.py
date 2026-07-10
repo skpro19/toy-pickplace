@@ -47,11 +47,12 @@ def make_run_dirs(
     base_name: str,
     npz_folder: str,
     num_epochs: int,
-    action_space: str,
+    # action_space: str,
     checkpoint_root: str,
     log_root: str) -> tuple[str, Path, Path]:
     n_episodes = len(list(Path(npz_folder).glob("*.npz")))
-    base_name = f"{base_name}_{action_space}_eps{n_episodes}_epochs{num_epochs}"
+    # base_name = f"{base_name}_{action_space}_eps{n_episodes}_epochs{num_epochs}"
+    base_name = f"{base_name}_eps{n_episodes}_epochs{num_epochs}"
     while True:
         run_name = next_run_name(
             base_name=base_name,
@@ -256,7 +257,7 @@ def main():
         num_epochs=args.epochs,
         checkpoint_root=args.checkpoint_root,
         log_root=args.log_root,
-        action_space=args.action_space,
+        # action_space=args.action_space,
     )
 
     train(
