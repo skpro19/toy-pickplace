@@ -9,6 +9,7 @@ from sim import SimEnv
 import mujoco
 import mujoco.viewer
 import time
+import sys
 import numpy as np
 from tqdm import tqdm
 
@@ -210,7 +211,13 @@ def rollout(
     def run_rollouts(*, viewer=None) -> None:
         with torch.no_grad():
 
-            episode_pbar = tqdm(range(episodes), desc="rollout", unit="episode")
+            progress_is_tty = sys.stderr.isatty()
+            episode_pbar = tqdm(
+                range(episodes),
+                desc="rollout",
+                unit="episode",
+                disable=not progress_is_tty,
+            )
             for episode in episode_pbar:
                 dagger_obs: List[np.ndarray] = []
                 dagger_actions: List[np.ndarray] = []
@@ -228,6 +235,10 @@ def rollout(
 
                 if dagger:
                     dagger_expert = PickPlaceController(sim.model, sim.data)
+                    if progress_is_tty:
+                        episode_pbar.set_postfix_str(
+                            f"step={steps} phase={dagger_expert.phase.name}"
+                        )
 
                 log_buffers: dict[str, list[np.ndarray]] = {
                     "rollout_obs": [],
@@ -328,9 +339,10 @@ def rollout(
                         previous_phase = dagger_expert.phase
                         dagger_expert.update_phase()
                         if dagger_expert.phase != previous_phase:
-                            episode_pbar.set_postfix(phase=dagger_expert.phase.name)
-                            if viewer is not None:
-                                print(f"step={steps} expert_phase={dagger_expert.phase.name}", end="\r", flush=True)
+                            if progress_is_tty:
+                                episode_pbar.set_postfix_str(
+                                    f"step={steps} phase={dagger_expert.phase.name}"
+                                )
 
                     if viewer is not None:
                         time.sleep(sim.model.opt.timestep * 2)
