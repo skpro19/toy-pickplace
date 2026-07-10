@@ -327,7 +327,7 @@ def rollout(
                     if dagger and dagger_expert is not None:
                         previous_phase = dagger_expert.phase
                         dagger_expert.update_phase()
-                        if dagger_expert.phase != previous_phase:
+                        if viewer is not None and dagger_expert.phase != previous_phase:
                             print(f"step={steps} expert_phase={dagger_expert.phase.name}")
 
                     if viewer is not None:
