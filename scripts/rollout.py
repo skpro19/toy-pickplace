@@ -21,17 +21,18 @@ from constant import (
         )
 
 
-DAGGER_LOG_DIR = Path("logs/dagger")
+DEFAULT_DAGGER_DIR = Path("data/dagger")
 
 def make_rollout_log_dir(*, log_root: Path, model_path: Path) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_name = model_path.parent.name or model_path.stem
     return log_root / f"{timestamp}_{checkpoint_name}"
 
-def make_dagger_log_dir(*, dagger_root: Path, model_path: Path) -> Path:
+def make_dagger_log_dir(*, dagger_root: Path, model_path: Path, beta: float) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_name = model_path.parent.name or model_path.stem
-    return dagger_root / f"{timestamp}_{checkpoint_name}"
+    beta_name = f"beta{beta:.2f}".replace(".", "p")
+    return dagger_root / f"{timestamp}_{checkpoint_name}_{beta_name}"
 
 def append_step_log(
     *,
@@ -111,6 +112,7 @@ def rollout(
     train_npz_dir: str | Path,
     log_rollout: bool,
     dagger: bool,
+    dagger_root: str | Path,
     beta: float,
 ):
     if not 0.0 <= beta <= 1.0:
@@ -178,7 +180,11 @@ def rollout(
 
     dagger_dir = None
     if dagger:
-        dagger_dir = make_dagger_log_dir(dagger_root=DAGGER_LOG_DIR, model_path=model_path)
+        dagger_dir = make_dagger_log_dir(
+            dagger_root=Path(dagger_root),
+            model_path=model_path,
+            beta=beta,
+        )
         dagger_dir.mkdir(parents=True, exist_ok=False)
         print(f"Dagger log dir: {dagger_dir}")
 
@@ -378,6 +384,7 @@ def parse_args():
     parser.add_argument("--train-npz-dir", type=Path, default=Path("data/train/rand-100"))
     parser.add_argument("--log-rollout", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--dagger", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--dagger-dir", type=Path, default=DEFAULT_DAGGER_DIR)
     parser.add_argument("--beta", type=float, default=0.0)
 
     return parser.parse_args()
@@ -393,6 +400,7 @@ def main():
         train_npz_dir=args.train_npz_dir,
         log_rollout=args.log_rollout,
         dagger=args.dagger,
+        dagger_root=args.dagger_dir,
         beta=args.beta,
     )
 
