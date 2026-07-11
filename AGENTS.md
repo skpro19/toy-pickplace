@@ -9,6 +9,7 @@
 
 ## Python Best Practices 
 - do not use `dataclass` decorator
+- do not use Ruff for linting or formatting
 - use keyword-only arguments for functions/methods with multiple parameters: put a bare `*` after `self` (or after positional-only args), then name every remaining parameter so callers must pass them by keyword (e.g. `def append_step(self, *, obs: ..., action: ...) -> None`)
 
 ## Git Commits
