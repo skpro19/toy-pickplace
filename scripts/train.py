@@ -45,12 +45,11 @@ def next_run_name(
 def make_run_dirs(
     *,
     base_name: str,
-    npz_folder: str,
+    npz_folders: list[str],
     num_epochs: int,
-    # action_space: str,
     checkpoint_root: str,
     log_root: str) -> tuple[str, Path, Path]:
-    n_episodes = len(list(Path(npz_folder).glob("*.npz")))
+    n_episodes = sum(len(list(Path(d).glob("*.npz"))) for d in npz_folders)
     # base_name = f"{base_name}_{action_space}_eps{n_episodes}_epochs{num_epochs}"
     base_name = f"{base_name}_eps{n_episodes}_epochs{num_epochs}"
     while True:
@@ -73,16 +72,23 @@ def train(
     *, 
     num_epochs: int=10,
     run_name: str,
-    npz_folder: str,
+    npz_folders: list[str],
     checkpoint_dir: Path,
     log_dir: Path,
     normalize: bool=True,
-    action_space: str="joint_delta") -> None: 
+    action_space: str="joint_delta",
+    sample_ratios: list[float] | None = None,
+    sample_seed: int = 0) -> None: 
     
-    assert os.path.exists(npz_folder), f"npz_folder=>{npz_folder} does not exist"
-    assert os.path.isdir(npz_folder), f"npz_folder=>{npz_folder} is not a directory"
+    for d in npz_folders:
+        assert os.path.exists(d), f"npz_folder=>{d} does not exist"
+        assert os.path.isdir(d), f"npz_folder=>{d} is not a directory"
 
-    dataset_ = PickPlaceDataset(data_dir=npz_folder)
+    dataset_ = PickPlaceDataset(
+        data_dirs=npz_folders,
+        sample_ratios=sample_ratios,
+        seed=sample_seed,
+    )
     train_dataloader = DataLoader(
         dataset=dataset_,
         batch_size=200,
@@ -237,9 +243,22 @@ def parse_args():
     parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--log_root", type=str, default="runs")
-    parser.add_argument("--npz", type=str, required=True, help="npz folder path")
+    parser.add_argument("--npz", type=str, nargs="+", required=True, help="npz folder path(s)")
     parser.add_argument("--action_space", type=str, default="joint_delta", 
                         choices=["joint_delta", "absolute"])
+    parser.add_argument(
+        "--sample-ratios",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional per --npz directory timestep sampling ratios, e.g. 0.8 0.2",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=0,
+        help="Random seed used when --sample-ratios is set",
+    )
     parser.add_argument(
         "--normalize",
         action=argparse.BooleanOptionalAction,
@@ -251,23 +270,29 @@ def main():
 
     args = parse_args()
 
+    if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
+        raise ValueError(
+            f"--sample-ratios length ({len(args.sample_ratios)}) must match --npz length ({len(args.npz)})"
+        )
+
     run_name, checkpoint_dir, log_dir = make_run_dirs(
         base_name=args.base,
-        npz_folder=args.npz,
+        npz_folders=args.npz,
         num_epochs=args.epochs,
         checkpoint_root=args.checkpoint_root,
         log_root=args.log_root,
-        # action_space=args.action_space,
     )
 
     train(
         num_epochs=args.epochs, 
         run_name=run_name,
-        npz_folder=args.npz,
+        npz_folders=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
         action_space=args.action_space,
         normalize=args.normalize,
+        sample_ratios=args.sample_ratios,
+        sample_seed=args.sample_seed,
     )
 
 if __name__ == "__main__":
