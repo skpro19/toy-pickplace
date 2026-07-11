@@ -85,18 +85,22 @@ def make_run_dirs(
 def save_checkpoint(
     *,
     model: nn.Module,
-    checkpoint_dir: Path,
+    model_path: Path,
     epoch_number: int,
     normalize: bool,
     action_space: str,
-    norm_stats: NormStats,) -> Path:
+    norm_stats: NormStats,
+    eval_score: float | None = None,
+) -> Path:
     checkpoint = {
         "model_dict": model.state_dict(),
         "normalize": normalize,
         "action_space": action_space,
+        "epoch": epoch_number,
     }
+    if eval_score is not None:
+        checkpoint["eval_score"] = eval_score
     checkpoint.update(norm_stats)
-    model_path = checkpoint_dir / f"model_epoch_{epoch_number:04d}.pt"
     torch.save(checkpoint, model_path)
     return model_path
 
@@ -234,7 +238,9 @@ def train(
     eval_interval: int = 1,
     eval_seed: int = 0,
     eval_episodes: int = 100,
-    eval_max_steps: int = 1400) -> None:
+    eval_max_steps: int = 1400,
+    early_stop_patience: int = 50,
+) -> None:
 
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
@@ -267,6 +273,8 @@ def train(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
+    best_score = float("-inf")
+    best_epoch = 0
     writer = SummaryWriter(log_dir=str(log_dir))
     try:
         epoch_bar = tqdm(range(num_epochs), desc="epochs", unit="epoch")
@@ -285,31 +293,60 @@ def train(
             epoch_bar.set_postfix(epoch=epoch + 1, loss=f'{metrics["loss"]:.4f}')
 
             epoch_number = epoch + 1
+            last_model_path = save_checkpoint(
+                model=model,
+                model_path=checkpoint_dir / "last.pt",
+                epoch_number=epoch_number,
+                normalize=normalize,
+                action_space=action_space,
+                norm_stats=norm_stats,
+            )
             should_evaluate = epoch_number % eval_interval == 0 or epoch_number == num_epochs
             if should_evaluate:
-                model_path = save_checkpoint(
-                    model=model,
-                    checkpoint_dir=checkpoint_dir,
-                    epoch_number=epoch_number,
-                    normalize=normalize,
-                    action_space=action_space,
-                    norm_stats=norm_stats,
-                )
-
                 mean_score = evaluate_checkpoint(
-                    model_path=model_path,
+                    model_path=last_model_path,
                     writer=writer,
                     epoch=epoch,
                     seed=eval_seed,
                     episodes=eval_episodes,
                     max_steps=eval_max_steps,
                 )
+                improved = mean_score > best_score
+                if improved:
+                    best_score = mean_score
+                    best_epoch = epoch_number
+                    save_checkpoint(
+                        model=model,
+                        model_path=checkpoint_dir / "best.pt",
+                        epoch_number=epoch_number,
+                        normalize=normalize,
+                        action_space=action_space,
+                        norm_stats=norm_stats,
+                        eval_score=mean_score,
+                    )
+
+                writer.add_scalar("Eval/best_score", best_score, epoch)
+                writer.flush()
                 epoch_bar.set_postfix(
                     epoch=epoch_number,
                     loss=f'{metrics["loss"]:.4f}',
                     eval_score=f"{mean_score:.4f}",
                 )
-                print(f"Saved and evaluated model: {model_path} (mean score: {mean_score:.4f})")
+                print(
+                    f"Evaluated {last_model_path} (mean score: {mean_score:.4f}, "
+                    f"best score: {best_score:.4f} at epoch {best_epoch})"
+                )
+
+                should_stop_early = (
+                    early_stop_patience > 0
+                    and epoch_number - best_epoch >= early_stop_patience
+                )
+                if should_stop_early:
+                    print(
+                        f"Stopping early after {early_stop_patience} epochs "
+                        "without improvement"
+                    )
+                    break
 
     finally:
         writer.close()
@@ -354,6 +391,12 @@ def parse_args():
     parser.add_argument("--eval-seed", type=int, default=0)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=50,
+        help="Stop after this many epochs without eval improvement; 0 disables",
+    )
     args = parser.parse_args()
 
     if args.epochs < 1:
@@ -364,6 +407,8 @@ def parse_args():
         parser.error("--eval-episodes must be at least 1")
     if args.eval_max_steps < 1:
         parser.error("--eval-max-steps must be at least 1")
+    if args.early_stop_patience < 0:
+        parser.error("--early-stop-patience must be non-negative")
     if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
         parser.error(
             f"--sample-ratios length ({len(args.sample_ratios)}) "
@@ -401,6 +446,7 @@ def main():
         eval_seed=args.eval_seed,
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
+        early_stop_patience=args.early_stop_patience,
     )
 
 if __name__ == "__main__":
