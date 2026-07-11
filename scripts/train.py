@@ -325,7 +325,6 @@ def train(
                         eval_score=mean_score,
                     )
 
-                writer.add_scalar("Eval/best_score", best_score, epoch)
                 writer.flush()
                 epoch_bar.set_postfix(
                     epoch=epoch_number,
