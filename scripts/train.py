@@ -29,6 +29,12 @@ class NormStats(TypedDict):
     arm_obs_std: np.ndarray
 
 
+class EpochMetrics(TypedDict):
+    loss: float
+    joints_loss: float
+    gripper_loss: float
+
+
 def next_run_name(
     *,
     base_name: str,
@@ -83,8 +89,7 @@ def save_checkpoint(
     epoch_number: int,
     normalize: bool,
     action_space: str,
-    norm_stats: NormStats,
-) -> Path:
+    norm_stats: NormStats,) -> Path:
     checkpoint = {
         "model_dict": model.state_dict(),
         "normalize": normalize,
@@ -96,8 +101,127 @@ def save_checkpoint(
     return model_path
 
 
+def evaluate_checkpoint(
+    *,
+    model_path: Path,
+    writer: SummaryWriter,
+    epoch: int,
+    seed: int,
+    episodes: int,
+    max_steps: int,
+) -> float:
+    score_dict = score_ckpt(
+        ckpt_path=str(model_path),
+        seed=seed,
+        max_steps=max_steps,
+        episodes=episodes,
+    )
+    mean_score = float(score_dict["mean_score"])
+    writer.add_scalar("Eval/mean_score", mean_score, epoch)
+    writer.flush()
+    return mean_score
+
+
+def prepare_dataset(
+    *,
+    npz_folders: list[Path],
+    sample_ratios: list[float] | None,
+    sample_seed: int,
+    action_space: str,
+    normalize: bool,
+) -> tuple[PickPlaceDataset, NormStats]:
+    dataset = PickPlaceDataset(
+        data_dirs=npz_folders,
+        sample_ratios=sample_ratios,
+        seed=sample_seed,
+    )
+
+    if action_space == "joint_delta":
+        arm_actions = dataset.actions[:, 0:ACTION_DIMS-1]
+        arm_qpos = dataset.obs[:, 0:ACTION_DIMS-1]
+        dataset.action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
+        dataset.action_targets[:, ACTION_DIMS-1] = (
+            dataset.actions[:, ACTION_DIMS-1] / 255.0
+        )
+    elif action_space == "absolute":
+        dataset.action_targets[:, 0:ACTION_DIMS-1] = dataset.actions[
+            :, 0:ACTION_DIMS-1
+        ]
+        dataset.action_targets[:, ACTION_DIMS-1] = (
+            dataset.actions[:, ACTION_DIMS-1] / 255.0
+        )
+    else:
+        raise ValueError(f"Unknown action_space: {action_space}")
+
+    dataset.obs_targets = dataset.obs.copy()
+
+    norm_stats: NormStats = {
+        "arm_actions_mean": np.mean(
+            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
+        ),
+        "arm_actions_std": np.std(
+            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
+        ),
+        "arm_obs_mean": np.mean(dataset.obs_targets, axis=0, keepdims=True),
+        "arm_obs_std": np.std(dataset.obs_targets, axis=0, keepdims=True),
+    }
+
+    if normalize:
+        dataset.action_targets[:, 0:ACTION_DIMS-1] -= norm_stats["arm_actions_mean"]
+        dataset.action_targets[:, 0:ACTION_DIMS-1] /= (
+            norm_stats["arm_actions_std"] + EPSILON
+        )
+        dataset.obs_targets -= norm_stats["arm_obs_mean"]
+        dataset.obs_targets /= norm_stats["arm_obs_std"] + EPSILON
+
+    return dataset, norm_stats
+
+
+def train_epoch(
+    *,
+    model: MLP,
+    dataloader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    joint_loss_fn: nn.Module,
+    gripper_loss_fn: nn.Module,
+) -> EpochMetrics:
+    epoch_loss = 0.0
+    epoch_joints_loss = 0.0
+    epoch_gripper_loss = 0.0
+    num_batches = 0
+
+    for obs_target, action_target in dataloader:
+        obs_target = obs_target.to(device)
+        action_target = action_target.to(device)
+
+        joints_target = action_target[:, :ACTION_DIMS-1]
+        gripper_target = action_target[:, ACTION_DIMS-1].unsqueeze(1)
+
+        joints_pred, gripper_pred = model(obs_target)
+
+        joints_loss = joint_loss_fn(joints_pred, joints_target)
+        gripper_loss = gripper_loss_fn(gripper_pred, gripper_target)
+        loss = JOINTS_LOSS_WEIGHT * joints_loss + GRIPPER_LOSS_WEIGHT * gripper_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        epoch_loss += loss.item()
+        epoch_joints_loss += joints_loss.item()
+        epoch_gripper_loss += gripper_loss.item()
+        num_batches += 1
+
+    return {
+        "loss": epoch_loss / num_batches,
+        "joints_loss": epoch_joints_loss / num_batches,
+        "gripper_loss": epoch_gripper_loss / num_batches,
+    }
+
+
 def train(
-    *, 
+    *,
     num_epochs: int=10,
     run_name: str,
     npz_folders: list[Path],
@@ -111,51 +235,19 @@ def train(
     eval_seed: int = 0,
     eval_episodes: int = 100,
     eval_max_steps: int = 1400) -> None:
-    
-    dataset = PickPlaceDataset(
-        data_dirs=npz_folders,
+
+    dataset, norm_stats = prepare_dataset(
+        npz_folders=npz_folders,
         sample_ratios=sample_ratios,
-        seed=sample_seed,
+        sample_seed=sample_seed,
+        action_space=action_space,
+        normalize=normalize,
     )
     dataloader = DataLoader(
         dataset=dataset,
         batch_size=200,
         shuffle=True,
     )
-
-    if action_space == "joint_delta":
-        arm_actions = dataset.actions[:, 0:ACTION_DIMS-1]
-        arm_qpos    = dataset.obs[:, 0:ACTION_DIMS-1]
-        dataset.action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
-        dataset.action_targets[:, ACTION_DIMS-1] = dataset.actions[:, ACTION_DIMS-1]/255.0
-    elif action_space == "absolute":
-        dataset.action_targets[:, 0:ACTION_DIMS-1] = dataset.actions[:, 0:ACTION_DIMS-1]
-        dataset.action_targets[:, ACTION_DIMS-1] = dataset.actions[:, ACTION_DIMS-1]/255.0
-    else:
-        raise ValueError(f"Unknown action_space: {action_space}")
-    
-    dataset.obs_targets = dataset.obs
-
-
-    norm_stats: NormStats = {
-        "arm_actions_mean": np.mean(
-            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
-        ),
-        "arm_actions_std": np.std(
-            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
-        ),
-        "arm_obs_mean": np.mean(dataset.obs_targets, axis=0, keepdims=True),
-        "arm_obs_std": np.std(dataset.obs_targets, axis=0, keepdims=True),
-    }
-    
-    if normalize:
-        dataset.action_targets[:, 0:ACTION_DIMS-1] -= norm_stats["arm_actions_mean"]
-        dataset.action_targets[:, 0:ACTION_DIMS-1] /= (
-            norm_stats["arm_actions_std"] + EPSILON
-        )
-
-        dataset.obs_targets -= norm_stats["arm_obs_mean"]
-        dataset.obs_targets /= norm_stats["arm_obs_std"] + EPSILON
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,40 +271,18 @@ def train(
     try:
         epoch_bar = tqdm(range(num_epochs), desc="epochs", unit="epoch")
         for epoch in epoch_bar:
-            epoch_loss = 0.0
-            epoch_joints_loss = 0.0
-            epoch_gripper_loss = 0.0
-            num_batches = 0
-
-            for obs_target, action_target in dataloader:
-                obs_target = obs_target.to(device)
-                action_target = action_target.to(device)
-
-                joints_target = action_target[:, :ACTION_DIMS-1]
-                gripper_target = action_target[:, ACTION_DIMS-1].unsqueeze(1)
-
-                (joints_pred, gripper_pred) = model(obs_target)
-
-                joints_loss = joint_loss_fn(joints_pred, joints_target)
-                gripper_loss = gripper_loss_fn(gripper_pred, gripper_target)
-                loss = JOINTS_LOSS_WEIGHT * joints_loss + GRIPPER_LOSS_WEIGHT * gripper_loss
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                epoch_loss += loss.item()
-                epoch_joints_loss += joints_loss.item()
-                epoch_gripper_loss += gripper_loss.item()
-                num_batches += 1
-
-            avg_loss = epoch_loss / num_batches
-            avg_joints_loss = epoch_joints_loss / num_batches
-            avg_gripper_loss = epoch_gripper_loss / num_batches
-            writer.add_scalar("Loss/train", avg_loss, epoch)
-            writer.add_scalar("Loss/joints", avg_joints_loss, epoch)
-            writer.add_scalar("Loss/gripper", avg_gripper_loss, epoch)
-            epoch_bar.set_postfix(epoch=epoch + 1, loss=f"{avg_loss:.4f}")
+            metrics = train_epoch(
+                model=model,
+                dataloader=dataloader,
+                optimizer=optimizer,
+                device=device,
+                joint_loss_fn=joint_loss_fn,
+                gripper_loss_fn=gripper_loss_fn,
+            )
+            writer.add_scalar("Loss/train", metrics["loss"], epoch)
+            writer.add_scalar("Loss/joints", metrics["joints_loss"], epoch)
+            writer.add_scalar("Loss/gripper", metrics["gripper_loss"], epoch)
+            epoch_bar.set_postfix(epoch=epoch + 1, loss=f'{metrics["loss"]:.4f}')
 
             epoch_number = epoch + 1
             should_evaluate = epoch_number % eval_interval == 0 or epoch_number == num_epochs
@@ -226,18 +296,17 @@ def train(
                     norm_stats=norm_stats,
                 )
 
-                score_dict = score_ckpt(
-                    ckpt_path=str(model_path),
+                mean_score = evaluate_checkpoint(
+                    model_path=model_path,
+                    writer=writer,
+                    epoch=epoch,
                     seed=eval_seed,
-                    max_steps=eval_max_steps,
                     episodes=eval_episodes,
+                    max_steps=eval_max_steps,
                 )
-                mean_score = float(score_dict["mean_score"])
-                writer.add_scalar("Eval/mean_score", mean_score, epoch)
-                writer.flush()
                 epoch_bar.set_postfix(
                     epoch=epoch_number,
-                    loss=f"{avg_loss:.4f}",
+                    loss=f'{metrics["loss"]:.4f}',
                     eval_score=f"{mean_score:.4f}",
                 )
                 print(f"Saved and evaluated model: {model_path} (mean score: {mean_score:.4f})")
