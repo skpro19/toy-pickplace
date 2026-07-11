@@ -11,7 +11,8 @@ from expert import Phase
 def score_ckpt(ckpt_path: str,  
             seed: int,
             max_steps: int = 1400, 
-            episodes: int = 100) -> dict[str, float | list[float]]:
+            episodes: int = 100,
+            expert_baseline: bool = False) -> dict[str, float | list[float]]:
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, _, _, norm_dict = load_policy(model_path=Path(ckpt_path), device=device)
@@ -35,13 +36,15 @@ def score_ckpt(ckpt_path: str,
                 nonlocal last_phase
                 last_phase = phase
 
-            run_policy_episode(sim=sim, 
-                            model=model, 
-                            device=device, 
-                            norm_dict=norm_dict, 
-                            max_steps=max_steps, 
-                            track_phase = True, 
-                            rng = rng,
+            run_policy_episode(sim=sim,
+                             model=model,
+                             device=device,
+                             norm_dict=norm_dict,
+                             max_steps=max_steps,
+                             track_phase = True,
+                             dagger=expert_baseline,
+                             beta=1.0 if expert_baseline else 0.0,
+                             rng = rng,
                             phase_callback = last_phase_cb,
                             should_stop=lambda: last_phase == Phase.DONE,
                             )
@@ -59,11 +62,18 @@ def parse_args():
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--max_steps", type=int, default=1400)
     parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--expert-baseline", action="store_true")
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    score_dict = score_ckpt(args.ckpt_path, args.seed, args.max_steps, args.episodes)
+    score_dict = score_ckpt(
+        args.ckpt_path,
+        args.seed,
+        args.max_steps,
+        args.episodes,
+        args.expert_baseline,
+    )
     print(f"Mean Score: {score_dict['mean_score']}")
     print(f"Scores: {score_dict['scores']}")
     
