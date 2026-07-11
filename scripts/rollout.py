@@ -36,11 +36,11 @@ class EpisodeResult(TypedDict):
     cube_init_pos: np.ndarray
     tray_init_pos: np.ndarray
     log_buffers: dict[str, list[np.ndarray]]
-    dagger_obs: list[np.ndarray]
-    dagger_actions: list[np.ndarray]
-    dagger_policy_actions: list[np.ndarray]
-    dagger_executed_actions: list[np.ndarray]
-    dagger_execute_expert: list[bool]
+    observations: list[np.ndarray]
+    expert_actions: list[np.ndarray]
+    policy_actions: list[np.ndarray]
+    executed_actions: list[np.ndarray]
+    expert_action_mask: list[bool]
 
 
 def load_policy(
@@ -78,6 +78,44 @@ def make_dagger_log_dir(*, dagger_root: Path, model_path: Path, beta: float) -> 
     return dagger_root / f"{timestamp}_{checkpoint_name}_{beta_name}"
 
 
+def prepare_rollout_log_dir(
+    *,
+    enabled: bool,
+    log_root: Path,
+    model_path: Path,
+    train_npz_dir: Path,
+) -> Path | None:
+    if not enabled:
+        return None
+    if not train_npz_dir.exists():
+        raise FileNotFoundError(f"Training npz directory not found: {train_npz_dir}")
+
+    log_dir = make_rollout_log_dir(log_root=log_root, model_path=model_path)
+    log_dir.mkdir(parents=True, exist_ok=False)
+    print(f"Rollout log dir: {log_dir}")
+    return log_dir
+
+
+def prepare_dagger_dir(
+    *,
+    enabled: bool,
+    dagger_root: Path,
+    model_path: Path,
+    beta: float,
+) -> Path | None:
+    if not enabled:
+        return None
+
+    dagger_dir = make_dagger_log_dir(
+        dagger_root=dagger_root,
+        model_path=model_path,
+        beta=beta,
+    )
+    dagger_dir.mkdir(parents=True, exist_ok=False)
+    print(f"Dagger log dir: {dagger_dir}")
+    return dagger_dir
+
+
 def append_step_log(
     *,
     buffers: dict[str, list[np.ndarray]],
@@ -102,8 +140,7 @@ def save_episode_log(
     train_npz_dir: Path,
     episode_idx: int,
     action_space: str,
-    buffers: dict[str, list[np.ndarray]],
-) -> None:
+    buffers: dict[str, list[np.ndarray]],) -> None:
     train_episode_path = train_npz_dir / f"pick_place_{episode_idx:06d}.npz"
     if not train_episode_path.exists():
         raise FileNotFoundError(
@@ -165,18 +202,15 @@ def save_dagger_episode(
     dagger_dir: Path,
     episode_idx: int,
     beta: float,
-    result: EpisodeResult,
-) -> None:
+    result: EpisodeResult,) -> None:
     dagger_path = dagger_dir / f"pick_place_{episode_idx:06d}.npz"
     np.savez_compressed(
         dagger_path,
-        obs=np.asarray(result["dagger_obs"], dtype=np.float32),
-        actions=np.asarray(result["dagger_actions"], dtype=np.float32),
-        policy_actions=np.asarray(result["dagger_policy_actions"], dtype=np.float32),
-        executed_actions=np.asarray(
-            result["dagger_executed_actions"], dtype=np.float32
-        ),
-        execute_expert=np.asarray(result["dagger_execute_expert"], dtype=np.bool_),
+        obs=np.asarray(result["observations"], dtype=np.float32),
+        actions=np.asarray(result["expert_actions"], dtype=np.float32),
+        policy_actions=np.asarray(result["policy_actions"], dtype=np.float32),
+        executed_actions=np.asarray(result["executed_actions"], dtype=np.float32),
+        execute_expert=np.asarray(result["expert_action_mask"], dtype=np.bool_),
         beta=np.asarray(beta, dtype=np.float32),
         cube_init_pos=np.asarray(result["cube_init_pos"], dtype=np.float32),
         tray_init_pos=np.asarray(result["tray_init_pos"], dtype=np.float32),
@@ -190,8 +224,7 @@ def predict_policy_action(
     device: torch.device,
     normalize: bool,
     action_space: str,
-    norm_dict: NormDict,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    norm_dict: NormDict,) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
     obs_target = obs_tensor
     if normalize:
@@ -239,11 +272,12 @@ def run_policy_episode(
     should_stop=None,
     phase_callback=None,
 ) -> EpisodeResult:
-    dagger_obs: list[np.ndarray] = []
-    dagger_actions: list[np.ndarray] = []
-    dagger_policy_actions: list[np.ndarray] = []
-    dagger_executed_actions: list[np.ndarray] = []
-    dagger_execute_expert: list[bool] = []
+    """Run one policy episode, optionally mixing and recording expert actions."""
+    observations: list[np.ndarray] = []
+    expert_actions: list[np.ndarray] = []
+    policy_action_history: list[np.ndarray] = []
+    executed_actions: list[np.ndarray] = []
+    expert_action_mask: list[bool] = []
 
     sim.reset_episode()
     cube_init_pos = sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3].copy()
@@ -263,8 +297,8 @@ def run_policy_episode(
             "joints_pred_unnorm": [],
         }
         if dagger:
-            log_buffers["dagger_obs"] = dagger_obs
-            log_buffers["dagger_actions"] = dagger_actions
+            log_buffers["dagger_obs"] = observations
+            log_buffers["dagger_actions"] = expert_actions
 
     steps = 0
     while (
@@ -274,7 +308,7 @@ def run_policy_episode(
     ):
         obs = sim.build_observation()
         if dagger_expert is not None:
-            dagger_obs.append(obs.copy())
+            observations.append(obs.copy())
 
         obs_tensor, policy_actions, joints_pred, joints_pred_unnorm = (
             predict_policy_action(
@@ -292,14 +326,14 @@ def run_policy_episode(
         expert_action = None
         if dagger_expert is not None:
             expert_action = dagger_expert.compute_actions()
-            dagger_actions.append(expert_action)
+            expert_actions.append(expert_action)
             execute_expert_action = rng.random() < beta
 
         action_to_execute = expert_action if execute_expert_action else policy_action_np
         if dagger_expert is not None:
-            dagger_policy_actions.append(policy_action_np.copy())
-            dagger_executed_actions.append(action_to_execute.copy())
-            dagger_execute_expert.append(execute_expert_action)
+            policy_action_history.append(policy_action_np.copy())
+            executed_actions.append(action_to_execute.copy())
+            expert_action_mask.append(execute_expert_action)
 
         if log_rollout:
             append_step_log(
@@ -325,11 +359,11 @@ def run_policy_episode(
         steps += 1
 
     if not (
-        len(dagger_obs)
-        == len(dagger_actions)
-        == len(dagger_policy_actions)
-        == len(dagger_executed_actions)
-        == len(dagger_execute_expert)
+        len(observations)
+        == len(expert_actions)
+        == len(policy_action_history)
+        == len(executed_actions)
+        == len(expert_action_mask)
     ):
         raise ValueError("Dagger episode buffers have mismatched lengths")
 
@@ -338,11 +372,11 @@ def run_policy_episode(
         "cube_init_pos": cube_init_pos,
         "tray_init_pos": tray_init_pos,
         "log_buffers": log_buffers,
-        "dagger_obs": dagger_obs,
-        "dagger_actions": dagger_actions,
-        "dagger_policy_actions": dagger_policy_actions,
-        "dagger_executed_actions": dagger_executed_actions,
-        "dagger_execute_expert": dagger_execute_expert,
+        "observations": observations,
+        "expert_actions": expert_actions,
+        "policy_actions": policy_action_history,
+        "executed_actions": executed_actions,
+        "expert_action_mask": expert_action_mask,
     }
 
 
@@ -359,8 +393,7 @@ def rollout(
     dagger: bool,
     dagger_root: str | Path,
     beta: float,
-    headless: bool,
-):
+    headless: bool,):
     # sim = SimEnv()
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
     rng = np.random.default_rng(seed)
@@ -377,27 +410,19 @@ def rollout(
     if action_space not in ("joint_delta", "absolute"):
         raise ValueError(f"Checkpoint has unsupported action space: {action_space!r}")
 
-    log_dir = None
     train_npz_dir = Path(train_npz_dir)
-    if log_rollout:
-        if not train_npz_dir.exists():
-            raise FileNotFoundError(
-                f"Training npz directory not found: {train_npz_dir}"
-            )
-        log_dir = make_rollout_log_dir(log_root=Path(log_root), model_path=model_path)
-        log_dir.mkdir(parents=True, exist_ok=False)
-
-        print(f"Rollout log dir: {log_dir}")
-
-    dagger_dir = None
-    if dagger:
-        dagger_dir = make_dagger_log_dir(
-            dagger_root=Path(dagger_root),
-            model_path=model_path,
-            beta=beta,
-        )
-        dagger_dir.mkdir(parents=True, exist_ok=False)
-        print(f"Dagger log dir: {dagger_dir}")
+    log_dir = prepare_rollout_log_dir(
+        enabled=log_rollout,
+        log_root=Path(log_root),
+        model_path=model_path,
+        train_npz_dir=train_npz_dir,
+    )
+    dagger_dir = prepare_dagger_dir(
+        enabled=dagger,
+        dagger_root=Path(dagger_root),
+        model_path=model_path,
+        beta=beta,
+    )
 
     quit_requested = False
 
