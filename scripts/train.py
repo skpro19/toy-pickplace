@@ -11,6 +11,7 @@ import os
 
 from mlp import MLP
 from dataset import PickPlaceDataset
+from eval import score_ckpt
 
 from constant import (
     OBS_DIMS, 
@@ -78,7 +79,11 @@ def train(
     normalize: bool=True,
     action_space: str="joint_delta",
     sample_ratios: list[float] | None = None,
-    sample_seed: int = 0) -> None: 
+    sample_seed: int = 0,
+    eval_interval: int = 1,
+    eval_seed: int = 0,
+    eval_episodes: int = 100,
+    eval_max_steps: int = 1400) -> None:
     
     for d in npz_folders:
         assert os.path.exists(d), f"npz_folder=>{d} does not exist"
@@ -209,27 +214,39 @@ def train(
         writer.add_scalar("Loss/joints", avg_joints_loss, epoch)
         writer.add_scalar("Loss/gripper", avg_gripper_loss, epoch)
         epoch_bar.set_postfix(epoch=epoch + 1, loss=f"{avg_loss:.4f}")
-        
-    
-    writer.close()
 
-    # checkpointing
-    # model_path = checkpoint_dir / "model.pt"
-    # torch.save(model.state_dict(), model_path)
-    # print(f"Saved model: {model_path}")
-    checkpoint = {
-        "model_dict" : model.state_dict(), 
-        "normalize": normalize,
-        "action_space": action_space,
-        "arm_actions_mean" : arm_actions_mean, 
-        "arm_actions_std" : arm_actions_std, 
-        "arm_obs_mean": arm_obs_mean, 
-        "arm_obs_std": arm_obs_std
-    }
-    
-    model_path = checkpoint_dir / "model.pt"
-    torch.save(checkpoint, model_path)
-    print(f"Saved model: {model_path}")
+        epoch_number = epoch + 1
+        should_evaluate = epoch_number % eval_interval == 0 or epoch_number == num_epochs
+        if should_evaluate:
+            checkpoint = {
+                "model_dict": model.state_dict(),
+                "normalize": normalize,
+                "action_space": action_space,
+                "arm_actions_mean": arm_actions_mean,
+                "arm_actions_std": arm_actions_std,
+                "arm_obs_mean": arm_obs_mean,
+                "arm_obs_std": arm_obs_std,
+            }
+            model_path = checkpoint_dir / f"model_epoch_{epoch_number:04d}.pt"
+            torch.save(checkpoint, model_path)
+
+            score_dict = score_ckpt(
+                ckpt_path=str(model_path),
+                seed=eval_seed,
+                max_steps=eval_max_steps,
+                episodes=eval_episodes,
+            )
+            mean_score = float(score_dict["mean_score"])
+            writer.add_scalar("Eval/mean_score", mean_score, epoch)
+            writer.flush()
+            epoch_bar.set_postfix(
+                epoch=epoch_number,
+                loss=f"{avg_loss:.4f}",
+                eval_score=f"{mean_score:.4f}",
+            )
+            print(f"Saved and evaluated model: {model_path} (mean score: {mean_score:.4f})")
+
+    writer.close()
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -264,6 +281,15 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=10,
+        help="Save and evaluate every N epochs; the final epoch is always evaluated",
+    )
+    parser.add_argument("--eval-seed", type=int, default=0)
+    parser.add_argument("--eval-episodes", type=int, default=100)
+    parser.add_argument("--eval-max-steps", type=int, default=1400)
     return parser.parse_args()
 
 def main():
@@ -274,6 +300,8 @@ def main():
         raise ValueError(
             f"--sample-ratios length ({len(args.sample_ratios)}) must match --npz length ({len(args.npz)})"
         )
+    if args.eval_interval < 1:
+        raise ValueError("--eval-interval must be at least 1")
 
     run_name, checkpoint_dir, log_dir = make_run_dirs(
         base_name=args.base,
@@ -293,6 +321,10 @@ def main():
         normalize=args.normalize,
         sample_ratios=args.sample_ratios,
         sample_seed=args.sample_seed,
+        eval_interval=args.eval_interval,
+        eval_seed=args.eval_seed,
+        eval_episodes=args.eval_episodes,
+        eval_max_steps=args.eval_max_steps,
     )
 
 if __name__ == "__main__":

@@ -10,8 +10,8 @@ from expert import Phase
 
 def score_ckpt(ckpt_path: str,  
             seed: int,
-            max_steps: int = 1400, 
-            episodes: int = 100,
+            max_steps: int, 
+            episodes: int,
             expert_baseline: bool = False) -> dict[str, float | list[float]]:
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
