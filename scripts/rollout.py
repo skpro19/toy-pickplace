@@ -1,40 +1,82 @@
-import torch 
 import argparse
-import json
-from pathlib import Path
+import sys
+import time
 from datetime import datetime
-from typing import List
-from mlp import MLP
-from sim import SimEnv
+from pathlib import Path
+from typing import TypedDict
+
 import mujoco
 import mujoco.viewer
-import time
-import sys
 import numpy as np
+import torch
 from tqdm import tqdm
 
-from expert import PickPlaceController
-
 from constant import (
-        EPSILON, 
-        ACTION_DIMS,
-        MAX_ARM_DELTA,
-        OBS_DIMS,
-        )
+    ACTION_DIMS,
+    EPSILON,
+    MAX_ARM_DELTA,
+)
+from expert import PickPlaceController
+from mlp import MLP
+from sim import SimEnv
 
 
 DEFAULT_DAGGER_DIR = Path("data/dagger")
+
+
+class NormDict(TypedDict):
+    arm_actions_mean: torch.Tensor
+    arm_actions_std: torch.Tensor
+    arm_obs_mean: torch.Tensor
+    arm_obs_std: torch.Tensor
+
+
+class EpisodeResult(TypedDict):
+    steps: int
+    cube_init_pos: np.ndarray
+    tray_init_pos: np.ndarray
+    log_buffers: dict[str, list[np.ndarray]]
+    dagger_obs: list[np.ndarray]
+    dagger_actions: list[np.ndarray]
+    dagger_policy_actions: list[np.ndarray]
+    dagger_executed_actions: list[np.ndarray]
+    dagger_execute_expert: list[bool]
+
+
+def load_policy(
+    *,
+    model_path: Path,
+    device: torch.device,
+) -> tuple[MLP, bool, str, NormDict]:
+    model = MLP().to(device)
+    checkpoint = torch.load(model_path, weights_only=False)
+    model.load_state_dict(checkpoint["model_dict"])
+    model.eval()
+
+    norm_dict: NormDict = {
+        key: torch.from_numpy(checkpoint[key]).to(device).squeeze(0)
+        for key in (
+            "arm_actions_mean",
+            "arm_actions_std",
+            "arm_obs_mean",
+            "arm_obs_std",
+        )
+    }
+    return model, checkpoint["normalize"], checkpoint["action_space"], norm_dict
+
 
 def make_rollout_log_dir(*, log_root: Path, model_path: Path) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_name = model_path.parent.name or model_path.stem
     return log_root / f"{timestamp}_{checkpoint_name}"
 
+
 def make_dagger_log_dir(*, dagger_root: Path, model_path: Path, beta: float) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_name = model_path.parent.name or model_path.stem
     beta_name = f"beta{beta:.2f}".replace(".", "p")
     return dagger_root / f"{timestamp}_{checkpoint_name}_{beta_name}"
+
 
 def append_step_log(
     *,
@@ -43,7 +85,8 @@ def append_step_log(
     actions: torch.Tensor,
     executed_actions: np.ndarray,
     joints_pred_raw: torch.Tensor,
-    joints_pred_unnorm: torch.Tensor) -> None:
+    joints_pred_unnorm: torch.Tensor,
+) -> None:
     buffers["rollout_obs"].append(obs.squeeze(0).detach().cpu().numpy())
     buffers["rollout_actions"].append(actions.squeeze(0).detach().cpu().numpy())
     buffers["executed_actions"].append(executed_actions.copy())
@@ -59,15 +102,20 @@ def save_episode_log(
     train_npz_dir: Path,
     episode_idx: int,
     action_space: str,
-    buffers: dict[str, list[np.ndarray]],) -> None:
+    buffers: dict[str, list[np.ndarray]],
+) -> None:
     train_episode_path = train_npz_dir / f"pick_place_{episode_idx:06d}.npz"
     if not train_episode_path.exists():
-        raise FileNotFoundError(f"Training episode file not found: {train_episode_path}")
+        raise FileNotFoundError(
+            f"Training episode file not found: {train_episode_path}"
+        )
 
     with np.load(train_episode_path) as data:
         missing_keys = {"obs", "actions"} - set(data.files)
         if missing_keys:
-            raise KeyError(f"{train_episode_path} is missing keys: {sorted(missing_keys)}")
+            raise KeyError(
+                f"{train_episode_path} is missing keys: {sorted(missing_keys)}"
+            )
         train_obs = np.asarray(data["obs"], dtype=np.float32)
         train_actions = np.asarray(data["actions"], dtype=np.float32)
 
@@ -93,14 +141,209 @@ def save_episode_log(
         arrays["dagger_actions"] = dagger_actions
 
     if action_space == "joint_delta":
-        arrays["rollout_action_deltas"] = rollout_actions[:, : ACTION_DIMS - 1] - rollout_obs[:, : ACTION_DIMS - 1]
-        arrays["executed_action_deltas"] = executed_actions[:, : ACTION_DIMS - 1] - rollout_obs[:, : ACTION_DIMS - 1]
-        arrays["train_action_deltas"] = train_actions[:, : ACTION_DIMS - 1] - train_obs[:, : ACTION_DIMS - 1]
+        arrays["rollout_action_deltas"] = (
+            rollout_actions[:, : ACTION_DIMS - 1] - rollout_obs[:, : ACTION_DIMS - 1]
+        )
+        arrays["executed_action_deltas"] = (
+            executed_actions[:, : ACTION_DIMS - 1] - rollout_obs[:, : ACTION_DIMS - 1]
+        )
+        arrays["train_action_deltas"] = (
+            train_actions[:, : ACTION_DIMS - 1] - train_obs[:, : ACTION_DIMS - 1]
+        )
         if "dagger_obs" in arrays and "dagger_actions" in arrays:
-            arrays["dagger_action_deltas"] = arrays["dagger_actions"][:, : ACTION_DIMS - 1] - arrays["dagger_obs"][:, : ACTION_DIMS - 1]
+            arrays["dagger_action_deltas"] = (
+                arrays["dagger_actions"][:, : ACTION_DIMS - 1]
+                - arrays["dagger_obs"][:, : ACTION_DIMS - 1]
+            )
 
     episode_path = log_dir / f"episode_{episode_idx:06d}.npz"
     np.savez_compressed(episode_path, **arrays)
+
+
+def save_dagger_episode(
+    *,
+    dagger_dir: Path,
+    episode_idx: int,
+    beta: float,
+    result: EpisodeResult,
+) -> None:
+    dagger_path = dagger_dir / f"pick_place_{episode_idx:06d}.npz"
+    np.savez_compressed(
+        dagger_path,
+        obs=np.asarray(result["dagger_obs"], dtype=np.float32),
+        actions=np.asarray(result["dagger_actions"], dtype=np.float32),
+        policy_actions=np.asarray(result["dagger_policy_actions"], dtype=np.float32),
+        executed_actions=np.asarray(
+            result["dagger_executed_actions"], dtype=np.float32
+        ),
+        execute_expert=np.asarray(result["dagger_execute_expert"], dtype=np.bool_),
+        beta=np.asarray(beta, dtype=np.float32),
+        cube_init_pos=np.asarray(result["cube_init_pos"], dtype=np.float32),
+        tray_init_pos=np.asarray(result["tray_init_pos"], dtype=np.float32),
+    )
+
+
+def predict_policy_action(
+    *,
+    model: MLP,
+    obs: np.ndarray,
+    device: torch.device,
+    normalize: bool,
+    action_space: str,
+    norm_dict: NormDict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
+    obs_target = obs_tensor
+    if normalize:
+        obs_target = (obs_tensor - norm_dict["arm_obs_mean"]) / (
+            norm_dict["arm_obs_std"] + EPSILON
+        )
+
+    joints_pred, gripper_pred = model(obs_target)
+    joints_pred_unnorm = joints_pred
+    if normalize:
+        joints_pred_unnorm = (
+            joints_pred * (norm_dict["arm_actions_std"] + EPSILON)
+            + norm_dict["arm_actions_mean"]
+        )
+
+    joints_actions = joints_pred_unnorm
+    if action_space == "joint_delta":
+        joints_actions = torch.clamp(
+            joints_actions,
+            min=-MAX_ARM_DELTA,
+            max=MAX_ARM_DELTA,
+        )
+        joints_actions = joints_actions + obs_tensor[:, : ACTION_DIMS - 1]
+
+    gripper_prob = torch.sigmoid(gripper_pred)
+    gripper_actions = torch.where(gripper_prob >= 0.5, 255.0, 0.0)
+    policy_actions = torch.concat([joints_actions, gripper_actions], dim=1)
+    return obs_tensor, policy_actions, joints_pred, joints_pred_unnorm
+
+
+def run_policy_episode(
+    *,
+    sim: SimEnv,
+    model: MLP,
+    device: torch.device,
+    normalize: bool,
+    action_space: str,
+    norm_dict: NormDict,
+    max_steps: int,
+    dagger: bool,
+    beta: float,
+    rng: np.random.Generator,
+    log_rollout: bool,
+    viewer=None,
+    should_stop=None,
+    phase_callback=None,
+) -> EpisodeResult:
+    dagger_obs: list[np.ndarray] = []
+    dagger_actions: list[np.ndarray] = []
+    dagger_policy_actions: list[np.ndarray] = []
+    dagger_executed_actions: list[np.ndarray] = []
+    dagger_execute_expert: list[bool] = []
+
+    sim.reset_episode()
+    cube_init_pos = sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3].copy()
+    tray_init_pos = sim.data.site("tray_center").xpos.copy()
+
+    dagger_expert = PickPlaceController(sim.model, sim.data) if dagger else None
+    if dagger_expert is not None and phase_callback is not None:
+        phase_callback(0, dagger_expert.phase)
+
+    log_buffers: dict[str, list[np.ndarray]] = {}
+    if log_rollout:
+        log_buffers = {
+            "rollout_obs": [],
+            "rollout_actions": [],
+            "executed_actions": [],
+            "joints_pred_raw": [],
+            "joints_pred_unnorm": [],
+        }
+        if dagger:
+            log_buffers["dagger_obs"] = dagger_obs
+            log_buffers["dagger_actions"] = dagger_actions
+
+    steps = 0
+    while (
+        (should_stop is None or not should_stop())
+        and steps < max_steps
+        and (viewer is None or viewer.is_running())
+    ):
+        obs = sim.build_observation()
+        if dagger_expert is not None:
+            dagger_obs.append(obs.copy())
+
+        obs_tensor, policy_actions, joints_pred, joints_pred_unnorm = (
+            predict_policy_action(
+                model=model,
+                obs=obs,
+                device=device,
+                normalize=normalize,
+                action_space=action_space,
+                norm_dict=norm_dict,
+            )
+        )
+        policy_action_np = policy_actions.squeeze(0).detach().cpu().numpy()
+
+        execute_expert_action = False
+        expert_action = None
+        if dagger_expert is not None:
+            expert_action = dagger_expert.compute_actions()
+            dagger_actions.append(expert_action)
+            execute_expert_action = rng.random() < beta
+
+        action_to_execute = expert_action if execute_expert_action else policy_action_np
+        if dagger_expert is not None:
+            dagger_policy_actions.append(policy_action_np.copy())
+            dagger_executed_actions.append(action_to_execute.copy())
+            dagger_execute_expert.append(execute_expert_action)
+
+        if log_rollout:
+            append_step_log(
+                buffers=log_buffers,
+                obs=obs_tensor,
+                actions=policy_actions,
+                executed_actions=action_to_execute,
+                joints_pred_raw=joints_pred,
+                joints_pred_unnorm=joints_pred_unnorm,
+            )
+
+        sim.data.ctrl[: sim.model.nu] = action_to_execute
+        mujoco.mj_step(sim.model, sim.data)
+        if dagger_expert is not None:
+            previous_phase = dagger_expert.phase
+            dagger_expert.update_phase()
+            if dagger_expert.phase != previous_phase and phase_callback is not None:
+                phase_callback(steps, dagger_expert.phase)
+
+        if viewer is not None:
+            time.sleep(sim.model.opt.timestep * 2)
+            viewer.sync()
+        steps += 1
+
+    if not (
+        len(dagger_obs)
+        == len(dagger_actions)
+        == len(dagger_policy_actions)
+        == len(dagger_executed_actions)
+        == len(dagger_execute_expert)
+    ):
+        raise ValueError("Dagger episode buffers have mismatched lengths")
+
+    return {
+        "steps": steps,
+        "cube_init_pos": cube_init_pos,
+        "tray_init_pos": tray_init_pos,
+        "log_buffers": log_buffers,
+        "dagger_obs": dagger_obs,
+        "dagger_actions": dagger_actions,
+        "dagger_policy_actions": dagger_policy_actions,
+        "dagger_executed_actions": dagger_executed_actions,
+        "dagger_execute_expert": dagger_execute_expert,
+    }
 
 
 def rollout(
@@ -118,67 +361,32 @@ def rollout(
     beta: float,
     headless: bool,
 ):
-    if not 0.0 <= beta <= 1.0:
-        raise ValueError(f"beta must be in [0.0, 1.0], got {beta}")
-    if beta > 0.0 and not dagger:
-        raise ValueError("--beta requires --dagger")
-    
-   
     # sim = SimEnv()
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
     rng = np.random.default_rng(seed)
-    device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     model_path = Path(model_path)
-    model = MLP().to(device)
-    
-    ckpt = torch.load(model_path, weights_only=False)
+    model, normalize, action_space, norm_dict = load_policy(
+        model_path=model_path,
+        device=device,
+    )
 
-    model.load_state_dict(ckpt["model_dict"])
-    
-    
-    normalize = ckpt["normalize"]
-    action_space = ckpt["action_space"]
-    arm_actions_mean = ckpt["arm_actions_mean"]
-    arm_actions_std = ckpt["arm_actions_std"]
-    arm_obs_mean = ckpt["arm_obs_mean"]
-    arm_obs_std = ckpt["arm_obs_std"]
-
-    # debug
-    assert normalize, "normalize must be True"
-    assert action_space in ["joint_delta", "absolute"], "action_space must be either joint_delta or absolute"
+    if not normalize:
+        raise ValueError("Checkpoint must use normalized observations and actions")
+    if action_space not in ("joint_delta", "absolute"):
+        raise ValueError(f"Checkpoint has unsupported action space: {action_space!r}")
 
     log_dir = None
     train_npz_dir = Path(train_npz_dir)
     if log_rollout:
         if not train_npz_dir.exists():
-            raise FileNotFoundError(f"Training npz directory not found: {train_npz_dir}")
+            raise FileNotFoundError(
+                f"Training npz directory not found: {train_npz_dir}"
+            )
         log_dir = make_rollout_log_dir(log_root=Path(log_root), model_path=model_path)
         log_dir.mkdir(parents=True, exist_ok=False)
-        # metadata = {
-        #     "model_path": str(model_path),
-        #     "train_npz_dir": str(train_npz_dir),
-        #     "action_space": action_space,
-        #     "normalize": normalize,
-        #     "seed": seed,
-        #     "randomize_scene": randomize_scene,
-        #     "episodes": episodes,
-        #     "max_steps": max_steps,
-        #     "device": str(device),
-        #     "logged_arrays": [
-        #         "rollout_obs",
-        #         "train_obs",
-        #         "rollout_actions",
-        #         "train_actions",
-        #     ],
-        #     "episode_alignment": "rollout episode i uses train pick_place_i.npz",
-        # }
-        # if action_space == "joint_delta":
-        #     metadata["logged_arrays"].extend(
-        #         ["rollout_action_deltas", "train_action_deltas"]
-        #     )
-        # with (log_dir / "metadata.json").open("w", encoding="utf-8") as f:
-        #     json.dump(metadata, f, indent=2)
+
         print(f"Rollout log dir: {log_dir}")
 
     dagger_dir = None
@@ -191,16 +399,6 @@ def rollout(
         dagger_dir.mkdir(parents=True, exist_ok=False)
         print(f"Dagger log dir: {dagger_dir}")
 
-    if normalize:
-        arm_actions_mean: torch.Tensor = torch.from_numpy(arm_actions_mean).to(device).squeeze(0)
-        arm_actions_std: torch.Tensor = torch.from_numpy(arm_actions_std).to(device).squeeze(0)
-
-        arm_obs_mean: torch.Tensor = torch.from_numpy(arm_obs_mean).to(device).squeeze(0)
-        arm_obs_std: torch.Tensor = torch.from_numpy(arm_obs_std).to(device).squeeze(0)
-
-    model.eval() 
-    
-
     quit_requested = False
 
     def key_callback(keycode: int) -> None:
@@ -210,7 +408,6 @@ def rollout(
 
     def run_rollouts(*, viewer=None) -> None:
         with torch.no_grad():
-
             progress_is_tty = sys.stderr.isatty()
             episode_pbar = tqdm(
                 range(episodes),
@@ -218,136 +415,28 @@ def rollout(
                 unit="episode",
                 disable=not progress_is_tty,
             )
+
+            def update_phase_progress(step, phase) -> None:
+                if progress_is_tty:
+                    episode_pbar.set_postfix_str(f"step={step} phase={phase.name}")
+
             for episode in episode_pbar:
-                dagger_obs: List[np.ndarray] = []
-                dagger_actions: List[np.ndarray] = []
-                dagger_policy_actions: List[np.ndarray] = []
-                dagger_executed_actions: List[np.ndarray] = []
-                dagger_execute_expert: List[bool] = []
-                dagger_expert = None
-
-                steps = 0
-                sim.reset_episode()
-                cube_init_pos = sim.data.qpos[
-                    sim.cube_qpos_addr : sim.cube_qpos_addr + 3
-                ].copy()
-                tray_init_pos = sim.data.site("tray_center").xpos.copy()
-
-                if dagger:
-                    dagger_expert = PickPlaceController(sim.model, sim.data)
-                    if progress_is_tty:
-                        episode_pbar.set_postfix_str(
-                            f"step={steps} phase={dagger_expert.phase.name}"
-                        )
-
-                log_buffers: dict[str, list[np.ndarray]] = {
-                    "rollout_obs": [],
-                    "rollout_actions": [],
-                    "executed_actions": [],
-                    "joints_pred_raw": [],
-                    "joints_pred_unnorm": [],
-                }
-                if dagger:
-                    log_buffers["dagger_obs"] = dagger_obs
-                    log_buffers["dagger_actions"] = dagger_actions
-
-                while (
-                    not quit_requested
-                    and steps < max_steps
-                    and (viewer is None or viewer.is_running())
-                ):
-                    # print(f"steps=>{steps}")
-                    obs = sim.build_observation()
-                    # print(f"obs.shape => {obs.shape}")
-                    # break
-                    if dagger and dagger_expert is not None:
-                        dagger_obs.append(obs.copy())
-                    obs = torch.from_numpy(obs).to(device).unsqueeze(0)
-                    
-                    obs_norm = torch.empty_like(obs)
-                    # normalize obs
-                    if normalize: 
-                        obs_norm = obs - arm_obs_mean
-                        obs_norm = obs_norm / (arm_obs_std + EPSILON)
-                    else: 
-                        obs_norm = obs
-
-                    # print(f"type(obs_norm)=>{type(obs_norm)}")
-                    # print(f"obs_norm.shape=>{obs_norm.shape}")
-                        
-
-                    # pred = model(obs_norm)
-                    (joints_pred, gripper_pred) = model(obs_norm)
-                    
-                    # print(f"joints_pred.shape=>{joints_pred.shape}")
-                    # print(f"gripper_pred.shape=>{gripper_pred.shape}")
-                    
-                    # unnormalize actions
-                    if normalize: 
-                        joints_pred_unnorm = joints_pred * (arm_actions_std + EPSILON) + arm_actions_mean
-                        # gripper_actions = (255.0 if gripper_pred >= 0.5 else 0)
-                    else:
-                        joints_pred_unnorm = joints_pred
-
-                    joints_actions = joints_pred_unnorm
-
-                    arm_qpos = obs[:, 0:ACTION_DIMS-1]
-                      
-                    if action_space == "joint_delta":
-                        joints_actions = torch.clamp(
-                            joints_actions,
-                            min=-MAX_ARM_DELTA,
-                            max=MAX_ARM_DELTA,
-                        )
-                        joints_actions = joints_actions + arm_qpos
-                    gripper_prob = torch.sigmoid(gripper_pred)
-                    gripper_actions = torch.where(gripper_prob >= 0.5, 255.0, 0.0)
-
-                    policy_actions = torch.concat([joints_actions, gripper_actions], dim=1)
-                    policy_action_np = policy_actions.squeeze(0).detach().cpu().numpy()
-
-                    execute_expert_actions = False
-                    expert_actions = None
-
-                    if dagger and dagger_expert is not None:
-                        expert_actions = dagger_expert.compute_actions()
-                        dagger_actions.append(expert_actions)
-                        execute_expert_actions = rng.random() < beta
-
-                    action_to_execute = expert_actions if execute_expert_actions else policy_action_np
-                    if dagger and dagger_expert is not None:
-                        dagger_policy_actions.append(policy_action_np.copy())
-                        dagger_executed_actions.append(action_to_execute.copy())
-                        dagger_execute_expert.append(execute_expert_actions)
-
-                    if log_rollout and log_dir is not None:
-                        append_step_log(
-                            buffers=log_buffers,
-                            obs=obs,
-                            actions=policy_actions,
-                            executed_actions=action_to_execute,
-                            joints_pred_raw=joints_pred,
-                            joints_pred_unnorm=joints_pred_unnorm,
-                        )
-                     
-
-                    # sim.data.ctrl[:sim.model.nu] = policy_actions.squeeze(0).detach().cpu().numpy()
-                    sim.data.ctrl[:sim.model.nu] = action_to_execute
-
-                    mujoco.mj_step(sim.model, sim.data)
-                    if dagger and dagger_expert is not None:
-                        previous_phase = dagger_expert.phase
-                        dagger_expert.update_phase()
-                        if dagger_expert.phase != previous_phase:
-                            if progress_is_tty:
-                                episode_pbar.set_postfix_str(
-                                    f"step={steps} phase={dagger_expert.phase.name}"
-                                )
-
-                    if viewer is not None:
-                        time.sleep(sim.model.opt.timestep * 2)
-                        viewer.sync()
-                    steps += 1
+                result = run_policy_episode(
+                    sim=sim,
+                    model=model,
+                    device=device,
+                    normalize=normalize,
+                    action_space=action_space,
+                    norm_dict=norm_dict,
+                    max_steps=max_steps,
+                    dagger=dagger,
+                    beta=beta,
+                    rng=rng,
+                    log_rollout=log_rollout and log_dir is not None,
+                    viewer=viewer,
+                    should_stop=lambda: quit_requested,
+                    phase_callback=update_phase_progress,
+                )
 
                 if log_rollout and log_dir is not None:
                     save_episode_log(
@@ -355,33 +444,16 @@ def rollout(
                         train_npz_dir=train_npz_dir,
                         episode_idx=episode,
                         action_space=action_space,
-                        buffers=log_buffers,
+                        buffers=result["log_buffers"],
                     )
-
 
                 if dagger and dagger_dir is not None:
-                    if not (
-                        len(dagger_obs)
-                        == len(dagger_actions)
-                        == len(dagger_policy_actions)
-                        == len(dagger_executed_actions)
-                        == len(dagger_execute_expert)
-                    ):
-                        raise ValueError("Dagger episode buffers have mismatched lengths")
-                    dagger_path = dagger_dir / f"pick_place_{episode:06d}.npz"
-                    np.savez_compressed(
-                        dagger_path,
-                        obs=np.asarray(dagger_obs, dtype=np.float32),
-                        actions=np.asarray(dagger_actions, dtype=np.float32),
-                        policy_actions=np.asarray(dagger_policy_actions, dtype=np.float32),
-                        executed_actions=np.asarray(dagger_executed_actions, dtype=np.float32),
-                        execute_expert=np.asarray(dagger_execute_expert, dtype=np.bool_),
-                        beta=np.asarray(beta, dtype=np.float32),
-                        cube_init_pos=np.asarray(cube_init_pos, dtype=np.float32),
-                        tray_init_pos=np.asarray(tray_init_pos, dtype=np.float32),
+                    save_dagger_episode(
+                        dagger_dir=dagger_dir,
+                        episode_idx=episode,
+                        beta=beta,
+                        result=result,
                     )
-
-                # break
 
     if headless:
         run_rollouts()
@@ -404,7 +476,12 @@ def rollout(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, help="model path e.g. checkpoints/026_mlp_action_norm")
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="model path e.g. checkpoints/026_mlp_action_norm",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=1500)
@@ -414,19 +491,35 @@ def parse_args():
         default=True,
     )
     parser.add_argument("--log-dir", type=Path, default=Path("logs/rollouts"))
-    parser.add_argument("--train-npz-dir", type=Path, default=Path("data/train/rand-100"))
-    parser.add_argument("--log-rollout", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--dagger", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--train-npz-dir", type=Path, default=Path("data/train/rand-100")
+    )
+    parser.add_argument(
+        "--log-rollout", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--dagger", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument("--dagger-dir", type=Path, default=DEFAULT_DAGGER_DIR)
     parser.add_argument("--beta", type=float, default=0.0)
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--headless", action=argparse.BooleanOptionalAction, default=False
+    )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not 0.0 <= args.beta <= 1.0:
+        parser.error(f"--beta must be in [0.0, 1.0], got {args.beta}")
+    if args.beta > 0.0 and not args.dagger:
+        parser.error("--beta requires --dagger")
 
-def main(): 
+    return args
+
+
+def main():
     args = parse_args()
-    rollout(model_path=args.model, 
-        randomize_scene=args.randomize_scene, 
+    rollout(
+        model_path=args.model,
+        randomize_scene=args.randomize_scene,
         seed=args.seed,
         episodes=args.episodes,
         max_steps=args.max_steps,
