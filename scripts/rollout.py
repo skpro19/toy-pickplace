@@ -46,8 +46,7 @@ class EpisodeResult(TypedDict):
 def load_policy(
     *,
     model_path: Path,
-    device: torch.device,
-) -> tuple[MLP, bool, str, NormDict]:
+    device: torch.device,) -> tuple[MLP, bool, str, NormDict]:
     model = MLP().to(device)
     checkpoint = torch.load(model_path, weights_only=False)
     model.load_state_dict(checkpoint["model_dict"])
@@ -83,8 +82,7 @@ def prepare_rollout_log_dir(
     enabled: bool,
     log_root: Path,
     model_path: Path,
-    train_npz_dir: Path,
-) -> Path | None:
+    train_npz_dir: Path,) -> Path | None:
     if not enabled:
         return None
     if not train_npz_dir.exists():
@@ -101,8 +99,7 @@ def prepare_dagger_dir(
     enabled: bool,
     dagger_root: Path,
     model_path: Path,
-    beta: float,
-) -> Path | None:
+    beta: float,) -> Path | None:
     if not enabled:
         return None
 
@@ -123,8 +120,7 @@ def append_step_log(
     actions: torch.Tensor,
     executed_actions: np.ndarray,
     joints_pred_raw: torch.Tensor,
-    joints_pred_unnorm: torch.Tensor,
-) -> None:
+    joints_pred_unnorm: torch.Tensor,) -> None:
     buffers["rollout_obs"].append(obs.squeeze(0).detach().cpu().numpy())
     buffers["rollout_actions"].append(actions.squeeze(0).detach().cpu().numpy())
     buffers["executed_actions"].append(executed_actions.copy())
@@ -225,6 +221,7 @@ def predict_policy_action(
     normalize: bool,
     action_space: str,
     norm_dict: NormDict,) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Predict and post-process a simulator-ready policy action."""
     obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
     obs_target = obs_tensor
     if normalize:
@@ -260,18 +257,18 @@ def run_policy_episode(
     sim: SimEnv,
     model: MLP,
     device: torch.device,
-    normalize: bool,
-    action_space: str,
+    normalize: bool = True,
+    action_space: str = "joint_delta",
     norm_dict: NormDict,
     max_steps: int,
-    dagger: bool,
-    beta: float,
+    track_phase: bool = False,
+    dagger: bool = False,
+    beta: float = 0.0,
     rng: np.random.Generator,
-    log_rollout: bool,
+    log_rollout: bool = False,
     viewer=None,
     should_stop=None,
-    phase_callback=None,
-) -> EpisodeResult:
+    phase_callback=None,) -> EpisodeResult:
     """Run one policy episode, optionally mixing and recording expert actions."""
     observations: list[np.ndarray] = []
     expert_actions: list[np.ndarray] = []
@@ -283,9 +280,11 @@ def run_policy_episode(
     cube_init_pos = sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3].copy()
     tray_init_pos = sim.data.site("tray_center").xpos.copy()
 
-    dagger_expert = PickPlaceController(sim.model, sim.data) if dagger else None
-    if dagger_expert is not None and phase_callback is not None:
-        phase_callback(0, dagger_expert.phase)
+    controller = (
+        PickPlaceController(sim.model, sim.data) if track_phase or dagger else None
+    )
+    if controller is not None and phase_callback is not None:
+        phase_callback(0, controller.phase)
 
     log_buffers: dict[str, list[np.ndarray]] = {}
     if log_rollout:
@@ -307,7 +306,7 @@ def run_policy_episode(
         and (viewer is None or viewer.is_running())
     ):
         obs = sim.build_observation()
-        if dagger_expert is not None:
+        if dagger:
             observations.append(obs.copy())
 
         obs_tensor, policy_actions, joints_pred, joints_pred_unnorm = (
@@ -324,13 +323,13 @@ def run_policy_episode(
 
         execute_expert_action = False
         expert_action = None
-        if dagger_expert is not None:
-            expert_action = dagger_expert.compute_actions()
+        if dagger and controller is not None:
+            expert_action = controller.compute_actions()
             expert_actions.append(expert_action)
             execute_expert_action = rng.random() < beta
 
         action_to_execute = expert_action if execute_expert_action else policy_action_np
-        if dagger_expert is not None:
+        if dagger:
             policy_action_history.append(policy_action_np.copy())
             executed_actions.append(action_to_execute.copy())
             expert_action_mask.append(execute_expert_action)
@@ -347,11 +346,11 @@ def run_policy_episode(
 
         sim.data.ctrl[: sim.model.nu] = action_to_execute
         mujoco.mj_step(sim.model, sim.data)
-        if dagger_expert is not None:
-            previous_phase = dagger_expert.phase
-            dagger_expert.update_phase()
-            if dagger_expert.phase != previous_phase and phase_callback is not None:
-                phase_callback(steps, dagger_expert.phase)
+        if controller is not None:
+            previous_phase = controller.phase
+            controller.update_phase()
+            if controller.phase != previous_phase and phase_callback is not None:
+                phase_callback(steps, controller.phase)
 
         if viewer is not None:
             time.sleep(sim.model.opt.timestep * 2)
@@ -454,6 +453,7 @@ def rollout(
                     action_space=action_space,
                     norm_dict=norm_dict,
                     max_steps=max_steps,
+                    track_phase=dagger,
                     dagger=dagger,
                     beta=beta,
                     rng=rng,
