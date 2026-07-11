@@ -188,8 +188,7 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     joint_loss_fn: nn.Module,
-    gripper_loss_fn: nn.Module,
-) -> EpochMetrics:
+    gripper_loss_fn: nn.Module,) -> EpochMetrics:
     epoch_loss = 0.0
     epoch_joints_loss = 0.0
     epoch_gripper_loss = 0.0
@@ -239,8 +238,7 @@ def train(
     eval_seed: int = 0,
     eval_episodes: int = 100,
     eval_max_steps: int = 1400,
-    early_stop_patience: int = 50,
-) -> None:
+    early_stop_patience: int = 50,) -> None:
 
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
@@ -387,7 +385,9 @@ def parse_args():
         default=10,
         help="Save and evaluate every N epochs; the final epoch is always evaluated",
     )
-    parser.add_argument("--eval-seed", type=int, default=0)
+
+    # eval params
+    parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
     parser.add_argument(
@@ -398,6 +398,7 @@ def parse_args():
     )
     args = parser.parse_args()
 
+    # args validation
     if args.epochs < 1:
         parser.error("--epochs must be at least 1")
     if args.eval_interval < 1:
