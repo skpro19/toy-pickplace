@@ -3,11 +3,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
+from typing import TypedDict
 import numpy as np
 from tqdm import tqdm
 import argparse
 import re
-import os
 
 from mlp import MLP
 from dataset import PickPlaceDataset
@@ -21,15 +21,23 @@ from constant import (
     GRIPPER_LOSS_WEIGHT
     )
 
+
+class NormStats(TypedDict):
+    arm_actions_mean: np.ndarray
+    arm_actions_std: np.ndarray
+    arm_obs_mean: np.ndarray
+    arm_obs_std: np.ndarray
+
+
 def next_run_name(
     *,
     base_name: str,
-    checkpoint_root: str,
-    log_root: str,) -> str:
+    checkpoint_root: Path,
+    log_root: Path,) -> str:
     existing_indices = []
     pattern = re.compile(rf"^(\d+)_({re.escape(base_name)})$")
 
-    for root in (Path(checkpoint_root), Path(log_root)):
+    for root in (checkpoint_root, log_root):
         if not root.exists():
             continue
         for path in root.iterdir():
@@ -46,12 +54,11 @@ def next_run_name(
 def make_run_dirs(
     *,
     base_name: str,
-    npz_folders: list[str],
+    npz_folders: list[Path],
     num_epochs: int,
-    checkpoint_root: str,
-    log_root: str) -> tuple[str, Path, Path]:
+    checkpoint_root: Path,
+    log_root: Path) -> tuple[str, Path, Path]:
     n_episodes = sum(len(list(Path(d).glob("*.npz"))) for d in npz_folders)
-    # base_name = f"{base_name}_{action_space}_eps{n_episodes}_epochs{num_epochs}"
     base_name = f"{base_name}_eps{n_episodes}_epochs{num_epochs}"
     while True:
         run_name = next_run_name(
@@ -59,8 +66,8 @@ def make_run_dirs(
             checkpoint_root=checkpoint_root,
             log_root=log_root,
         )
-        checkpoint_dir = Path(checkpoint_root) / run_name
-        log_dir = Path(log_root) / run_name
+        checkpoint_dir = checkpoint_root / run_name
+        log_dir = log_root / run_name
         if checkpoint_dir.exists() or log_dir.exists():
             continue
 
@@ -69,11 +76,31 @@ def make_run_dirs(
         return run_name, checkpoint_dir, log_dir
 
 
+def save_checkpoint(
+    *,
+    model: nn.Module,
+    checkpoint_dir: Path,
+    epoch_number: int,
+    normalize: bool,
+    action_space: str,
+    norm_stats: NormStats,
+) -> Path:
+    checkpoint = {
+        "model_dict": model.state_dict(),
+        "normalize": normalize,
+        "action_space": action_space,
+    }
+    checkpoint.update(norm_stats)
+    model_path = checkpoint_dir / f"model_epoch_{epoch_number:04d}.pt"
+    torch.save(checkpoint, model_path)
+    return model_path
+
+
 def train(
     *, 
     num_epochs: int=10,
     run_name: str,
-    npz_folders: list[str],
+    npz_folders: list[Path],
     checkpoint_dir: Path,
     log_dir: Path,
     normalize: bool=True,
@@ -85,56 +112,50 @@ def train(
     eval_episodes: int = 100,
     eval_max_steps: int = 1400) -> None:
     
-    for d in npz_folders:
-        assert os.path.exists(d), f"npz_folder=>{d} does not exist"
-        assert os.path.isdir(d), f"npz_folder=>{d} is not a directory"
-
-    dataset_ = PickPlaceDataset(
+    dataset = PickPlaceDataset(
         data_dirs=npz_folders,
         sample_ratios=sample_ratios,
         seed=sample_seed,
     )
-    train_dataloader = DataLoader(
-        dataset=dataset_,
+    dataloader = DataLoader(
+        dataset=dataset,
         batch_size=200,
         shuffle=True,
     )
 
-    # normalization stats for checkpointing
-    arm_actions_mean =  None
-    arm_actions_std = None
-    arm_obs_mean = None
-    arm_obs_std = None
-
-    # [action_targets]
     if action_space == "joint_delta":
-        arm_actions = dataset_.actions[:, 0:ACTION_DIMS-1]
-        arm_qpos    = dataset_.obs[:, 0:ACTION_DIMS-1]
-        dataset_.action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
-        dataset_.action_targets[:, ACTION_DIMS-1] = dataset_.actions[:, ACTION_DIMS-1]/255.0
+        arm_actions = dataset.actions[:, 0:ACTION_DIMS-1]
+        arm_qpos    = dataset.obs[:, 0:ACTION_DIMS-1]
+        dataset.action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
+        dataset.action_targets[:, ACTION_DIMS-1] = dataset.actions[:, ACTION_DIMS-1]/255.0
     elif action_space == "absolute":
-        dataset_.action_targets[:, 0:ACTION_DIMS-1] = dataset_.actions[:, 0:ACTION_DIMS-1]
-        dataset_.action_targets[:, ACTION_DIMS-1] = dataset_.actions[:, ACTION_DIMS-1]/255.0
+        dataset.action_targets[:, 0:ACTION_DIMS-1] = dataset.actions[:, 0:ACTION_DIMS-1]
+        dataset.action_targets[:, ACTION_DIMS-1] = dataset.actions[:, ACTION_DIMS-1]/255.0
     else:
         raise ValueError(f"Unknown action_space: {action_space}")
     
-    # [obs targets]
-    dataset_.obs_targets = dataset_.obs
+    dataset.obs_targets = dataset.obs
 
 
-    # [action/obs mean computation]
-    arm_actions_mean = np.mean(dataset_.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True)
-    arm_actions_std = np.std(dataset_.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True)
-
-    arm_obs_mean = np.mean(dataset_.obs_targets, axis=0, keepdims=True)
-    arm_obs_std = np.std(dataset_.obs_targets, axis=0, keepdims=True) # (1,45)
+    norm_stats: NormStats = {
+        "arm_actions_mean": np.mean(
+            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
+        ),
+        "arm_actions_std": np.std(
+            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
+        ),
+        "arm_obs_mean": np.mean(dataset.obs_targets, axis=0, keepdims=True),
+        "arm_obs_std": np.std(dataset.obs_targets, axis=0, keepdims=True),
+    }
     
     if normalize:
-        dataset_.action_targets[:, 0:ACTION_DIMS-1] -= arm_actions_mean
-        dataset_.action_targets[:, 0:ACTION_DIMS-1] /= (arm_actions_std + EPSILON)
+        dataset.action_targets[:, 0:ACTION_DIMS-1] -= norm_stats["arm_actions_mean"]
+        dataset.action_targets[:, 0:ACTION_DIMS-1] /= (
+            norm_stats["arm_actions_std"] + EPSILON
+        )
 
-        dataset_.obs_targets -= arm_obs_mean
-        dataset_.obs_targets /= (arm_obs_std + EPSILON)
+        dataset.obs_targets -= norm_stats["arm_obs_mean"]
+        dataset.obs_targets /= norm_stats["arm_obs_std"] + EPSILON
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,7 +166,6 @@ def train(
 
    
 
-    # loss_fn = nn.MSELoss()
     joint_loss_fn = nn.MSELoss()
     gripper_loss_fn = nn.BCEWithLogitsLoss()
 
@@ -155,98 +175,75 @@ def train(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    # epochs = 10
-
     writer = SummaryWriter(log_dir=str(log_dir))
-   
-    epoch_bar = tqdm(range(num_epochs), desc="epochs", unit="epoch")
-    for epoch in epoch_bar:
-        epoch_loss = 0.0
-        epoch_joints_loss = 0.0
-        epoch_gripper_loss = 0.0
-        num_batches = 0
+    try:
+        epoch_bar = tqdm(range(num_epochs), desc="epochs", unit="epoch")
+        for epoch in epoch_bar:
+            epoch_loss = 0.0
+            epoch_joints_loss = 0.0
+            epoch_gripper_loss = 0.0
+            num_batches = 0
 
-        for batch_idx, (obs_target, action_target) in enumerate(train_dataloader):
-            # print(f"BATCH_IDX=>{batch_idx}")
-            # continue 
-        
-            obs_target = obs_target.to(device)
-            action_target = action_target.to(device)
+            for obs_target, action_target in dataloader:
+                obs_target = obs_target.to(device)
+                action_target = action_target.to(device)
 
-            # print(f"--------------------------------")
-            # print(f"obs_target.shape=>{obs_target.shape}")
-            # print(f"action_target.shape=>{action_target.shape}")
-            # print(f"--------------------------------")
+                joints_target = action_target[:, :ACTION_DIMS-1]
+                gripper_target = action_target[:, ACTION_DIMS-1].unsqueeze(1)
 
-            # break  
-            joints_target = action_target[:, :ACTION_DIMS-1]
-            gripper_target = action_target[:, ACTION_DIMS-1].unsqueeze(1)
+                (joints_pred, gripper_pred) = model(obs_target)
 
-            # print(f"action_target.shape=>{action_target.shape}")
-            # print(f"joints_target.shape=>{joints_target.shape}")
-            # print(f"gripper_target.shape=>{gripper_target.shape}")
+                joints_loss = joint_loss_fn(joints_pred, joints_target)
+                gripper_loss = gripper_loss_fn(gripper_pred, gripper_target)
+                loss = JOINTS_LOSS_WEIGHT * joints_loss + GRIPPER_LOSS_WEIGHT * gripper_loss
 
-            # break
-            # loss = loss_fn(pred, action_target)``
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            # print(f"joints_target.shape=>{joints_target.shape} joints_pred.shape=>{joints_pred.shape}") 
-            # print(f"gripper_target.shape=>{gripper_target.shape} gripper_pred.shape=>{gripper_pred.shape}")
+                epoch_loss += loss.item()
+                epoch_joints_loss += joints_loss.item()
+                epoch_gripper_loss += gripper_loss.item()
+                num_batches += 1
 
-            (joints_pred, gripper_pred) = model(obs_target)
-                
-            joints_loss = joint_loss_fn(joints_pred, joints_target)
-            gripper_loss = gripper_loss_fn(gripper_pred, gripper_target)
-            loss = JOINTS_LOSS_WEIGHT * joints_loss + GRIPPER_LOSS_WEIGHT * gripper_loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            avg_loss = epoch_loss / num_batches
+            avg_joints_loss = epoch_joints_loss / num_batches
+            avg_gripper_loss = epoch_gripper_loss / num_batches
+            writer.add_scalar("Loss/train", avg_loss, epoch)
+            writer.add_scalar("Loss/joints", avg_joints_loss, epoch)
+            writer.add_scalar("Loss/gripper", avg_gripper_loss, epoch)
+            epoch_bar.set_postfix(epoch=epoch + 1, loss=f"{avg_loss:.4f}")
 
-            epoch_loss += loss.item()
-            epoch_joints_loss += joints_loss.item()
-            epoch_gripper_loss += gripper_loss.item()
-            num_batches += 1
-            
-        avg_loss = epoch_loss / num_batches
-        avg_joints_loss = epoch_joints_loss / num_batches
-        avg_gripper_loss = epoch_gripper_loss / num_batches
-        writer.add_scalar("Loss/train", avg_loss, epoch)
-        writer.add_scalar("Loss/joints", avg_joints_loss, epoch)
-        writer.add_scalar("Loss/gripper", avg_gripper_loss, epoch)
-        epoch_bar.set_postfix(epoch=epoch + 1, loss=f"{avg_loss:.4f}")
+            epoch_number = epoch + 1
+            should_evaluate = epoch_number % eval_interval == 0 or epoch_number == num_epochs
+            if should_evaluate:
+                model_path = save_checkpoint(
+                    model=model,
+                    checkpoint_dir=checkpoint_dir,
+                    epoch_number=epoch_number,
+                    normalize=normalize,
+                    action_space=action_space,
+                    norm_stats=norm_stats,
+                )
 
-        epoch_number = epoch + 1
-        should_evaluate = epoch_number % eval_interval == 0 or epoch_number == num_epochs
-        if should_evaluate:
-            checkpoint = {
-                "model_dict": model.state_dict(),
-                "normalize": normalize,
-                "action_space": action_space,
-                "arm_actions_mean": arm_actions_mean,
-                "arm_actions_std": arm_actions_std,
-                "arm_obs_mean": arm_obs_mean,
-                "arm_obs_std": arm_obs_std,
-            }
-            model_path = checkpoint_dir / f"model_epoch_{epoch_number:04d}.pt"
-            torch.save(checkpoint, model_path)
+                score_dict = score_ckpt(
+                    ckpt_path=str(model_path),
+                    seed=eval_seed,
+                    max_steps=eval_max_steps,
+                    episodes=eval_episodes,
+                )
+                mean_score = float(score_dict["mean_score"])
+                writer.add_scalar("Eval/mean_score", mean_score, epoch)
+                writer.flush()
+                epoch_bar.set_postfix(
+                    epoch=epoch_number,
+                    loss=f"{avg_loss:.4f}",
+                    eval_score=f"{mean_score:.4f}",
+                )
+                print(f"Saved and evaluated model: {model_path} (mean score: {mean_score:.4f})")
 
-            score_dict = score_ckpt(
-                ckpt_path=str(model_path),
-                seed=eval_seed,
-                max_steps=eval_max_steps,
-                episodes=eval_episodes,
-            )
-            mean_score = float(score_dict["mean_score"])
-            writer.add_scalar("Eval/mean_score", mean_score, epoch)
-            writer.flush()
-            epoch_bar.set_postfix(
-                epoch=epoch_number,
-                loss=f"{avg_loss:.4f}",
-                eval_score=f"{mean_score:.4f}",
-            )
-            print(f"Saved and evaluated model: {model_path} (mean score: {mean_score:.4f})")
-
-    writer.close()
+    finally:
+        writer.close()
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -254,13 +251,11 @@ def parse_args():
     )
     
     
-    # checkpoint and runs folder are created at `checkpoints/<idx>_<base_name>` 
-    # and `runs/<idx>_<base_name>` respectively
     parser.add_argument("--base", type=str, default="action-delta")
-    parser.add_argument("--checkpoint_root", type=str, default="checkpoints")
+    parser.add_argument("--checkpoint_root", type=Path, default=Path("checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--log_root", type=str, default="runs")
-    parser.add_argument("--npz", type=str, nargs="+", required=True, help="npz folder path(s)")
+    parser.add_argument("--log_root", type=Path, default=Path("runs"))
+    parser.add_argument("--npz", type=Path, nargs="+", required=True, help="npz folder path(s)")
     parser.add_argument("--action_space", type=str, default="joint_delta", 
                         choices=["joint_delta", "absolute"])
     parser.add_argument(
@@ -290,18 +285,30 @@ def parse_args():
     parser.add_argument("--eval-seed", type=int, default=0)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.epochs < 1:
+        parser.error("--epochs must be at least 1")
+    if args.eval_interval < 1:
+        parser.error("--eval-interval must be at least 1")
+    if args.eval_episodes < 1:
+        parser.error("--eval-episodes must be at least 1")
+    if args.eval_max_steps < 1:
+        parser.error("--eval-max-steps must be at least 1")
+    if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
+        parser.error(
+            f"--sample-ratios length ({len(args.sample_ratios)}) "
+            f"must match --npz length ({len(args.npz)})"
+        )
+    for npz_folder in args.npz:
+        if not npz_folder.is_dir():
+            parser.error(f"--npz path is not a directory: {npz_folder}")
+
+    return args
 
 def main():
 
     args = parse_args()
-
-    if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
-        raise ValueError(
-            f"--sample-ratios length ({len(args.sample_ratios)}) must match --npz length ({len(args.npz)})"
-        )
-    if args.eval_interval < 1:
-        raise ValueError("--eval-interval must be at least 1")
 
     run_name, checkpoint_dir, log_dir = make_run_dirs(
         base_name=args.base,
