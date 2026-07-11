@@ -36,15 +36,15 @@ def score_ckpt(ckpt_path: str,
                 last_phase = phase
 
             run_policy_episode(sim=sim, 
-                                                 model=model, 
-                                                 device=device, 
-                                                 norm_dict=norm_dict, 
-                                                 max_steps=max_steps, 
-                                                 track_phase = True, 
-                                                 rng = rng,
-                                                 phase_callback = last_phase_cb,
-                                                 should_stop=lambda: last_phase == Phase.DONE,
-                                                 )
+                            model=model, 
+                            device=device, 
+                            norm_dict=norm_dict, 
+                            max_steps=max_steps, 
+                            track_phase = True, 
+                            rng = rng,
+                            phase_callback = last_phase_cb,
+                            should_stop=lambda: last_phase == Phase.DONE,
+                            )
 
             phase_index = phases.index(last_phase)
             store_dict["scores"].append(phase_index / done_phase_index)
