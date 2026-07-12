@@ -63,7 +63,6 @@ class PickPlaceDataset(Dataset):
             counts = np.asarray([obs.shape[0] for obs in obs_by_dir], dtype=np.float64)
             total_samples = int(np.floor(np.min(counts / ratios)))
             sample_counts = np.floor(total_samples * ratios).astype(np.int64)
-            sample_counts[-1] = total_samples - int(sample_counts[:-1].sum())
 
             rng = np.random.default_rng(seed)
             sampled_obs = []
