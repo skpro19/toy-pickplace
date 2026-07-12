@@ -99,9 +99,15 @@ def prepare_dagger_dir(
     enabled: bool,
     dagger_root: Path,
     model_path: Path,
-    beta: float,) -> Path | None:
+    beta: float,
+    create_subdir: bool = True,) -> Path | None:
     if not enabled:
         return None
+
+    if not create_subdir:
+        dagger_root.mkdir(parents=True, exist_ok=True)
+        print(f"Dagger log dir: {dagger_root}")
+        return dagger_root
 
     dagger_dir = make_dagger_log_dir(
         dagger_root=dagger_root,
@@ -386,12 +392,13 @@ def rollout(
     seed: int,
     episodes: int,
     max_steps: int,
-    log_root: str | Path,
-    train_npz_dir: str | Path,
+    log_root: str | Path | None,
+    train_npz_dir: str | Path | None,
     log_rollout: bool,
     dagger: bool,
     dagger_root: str | Path,
     beta: float,
+    create_dagger_subdir: bool = True,
     headless: bool,):
     # sim = SimEnv()
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
@@ -409,18 +416,25 @@ def rollout(
     if action_space not in ("joint_delta", "absolute"):
         raise ValueError(f"Checkpoint has unsupported action space: {action_space!r}")
 
-    train_npz_dir = Path(train_npz_dir)
-    log_dir = prepare_rollout_log_dir(
-        enabled=log_rollout,
-        log_root=Path(log_root),
-        model_path=model_path,
-        train_npz_dir=train_npz_dir,
-    )
+    log_dir = None
+    if log_rollout:
+        if log_root is None:
+            raise ValueError("log_root is required when log_rollout is enabled")
+        if train_npz_dir is None:
+            raise ValueError("train_npz_dir is required when log_rollout is enabled")
+        train_npz_dir = Path(train_npz_dir)
+        log_dir = prepare_rollout_log_dir(
+            enabled=True,
+            log_root=Path(log_root),
+            model_path=model_path,
+            train_npz_dir=train_npz_dir,
+        )
     dagger_dir = prepare_dagger_dir(
         enabled=dagger,
         dagger_root=Path(dagger_root),
         model_path=model_path,
         beta=beta,
+        create_subdir=create_dagger_subdir,
     )
 
     quit_requested = False
@@ -554,6 +568,7 @@ def main():
         dagger=args.dagger,
         dagger_root=args.dagger_dir,
         beta=args.beta,
+        create_dagger_subdir=True,
         headless=args.headless,
     )
 

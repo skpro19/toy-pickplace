@@ -90,8 +90,7 @@ def save_checkpoint(
     normalize: bool,
     action_space: str,
     norm_stats: NormStats,
-    eval_score: float | None = None,
-) -> Path:
+    eval_score: float | None = None,) -> Path:
     checkpoint = {
         "model_dict": model.state_dict(),
         "normalize": normalize,
@@ -112,8 +111,7 @@ def evaluate_checkpoint(
     epoch: int,
     seed: int,
     episodes: int,
-    max_steps: int,
-) -> float:
+    max_steps: int,) -> float:
     score_dict = score_ckpt(
         ckpt_path=str(model_path),
         seed=seed,
@@ -132,8 +130,7 @@ def prepare_dataset(
     sample_ratios: list[float] | None,
     sample_seed: int,
     action_space: str,
-    normalize: bool,
-) -> tuple[PickPlaceDataset, NormStats]:
+    normalize: bool,) -> tuple[PickPlaceDataset, NormStats]:
     dataset = PickPlaceDataset(
         data_dirs=npz_folders,
         sample_ratios=sample_ratios,
@@ -226,7 +223,6 @@ def train_epoch(
 def train(
     *,
     num_epochs: int=10,
-    run_name: str,
     npz_folders: list[Path],
     checkpoint_dir: Path,
     log_dir: Path,
@@ -238,7 +234,7 @@ def train(
     eval_seed: int = 0,
     eval_episodes: int = 100,
     eval_max_steps: int = 1400,
-    early_stop_patience: int = 50,) -> None:
+    early_stop_patience: int = 50,) -> str:
 
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
@@ -256,7 +252,6 @@ def train(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    print(f"Run name: {run_name}")
     print(f"TensorBoard log dir: {log_dir}")
     print(f"Checkpoint dir: {checkpoint_dir}")
 
@@ -347,6 +342,7 @@ def train(
 
     finally:
         writer.close()
+    return checkpoint_dir
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -424,7 +420,7 @@ def main():
 
     args = parse_args()
 
-    run_name, checkpoint_dir, log_dir = make_run_dirs(
+    _run_name, checkpoint_dir, log_dir = make_run_dirs(
         base_name=args.base,
         npz_folders=args.npz,
         num_epochs=args.epochs,
@@ -434,7 +430,6 @@ def main():
 
     train(
         num_epochs=args.epochs, 
-        run_name=run_name,
         npz_folders=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
