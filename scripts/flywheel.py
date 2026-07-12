@@ -133,11 +133,12 @@ def run_flywheel(
     num_rounds = num_dagger_rounds + 1
     for round in tqdm(range(num_rounds), desc="Running flywheel"):
         print(f"Running round #{round}/{num_rounds - 1}")
+        round_name = f"round-{round:03d}"
 
         if round == 0:
             # train expert-only policy
-            ckpt_dir = ckpt_root / f"round-{round}"
-            runs_dir = runs_root / f"round-{round}"
+            ckpt_dir = ckpt_root / round_name
+            runs_dir = runs_root / round_name
 
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             runs_dir.mkdir(parents=True, exist_ok=True)
@@ -176,8 +177,9 @@ def run_flywheel(
             print(f"DAgger seed: {dagger_seed}")
 
             # generate dagger data
-            dagger_dir = Path('data/dagger/flywheel') / run_name / f"round-{round}"
-            model_path = ckpt_root / f"round-{round-1}" / "best.pt"
+            dagger_dir = Path("data/flywheel") / run_name / round_name / "dagger"
+            previous_round_name = f"round-{round - 1:03d}"
+            model_path = ckpt_root / previous_round_name / "best.pt"
             print(f"model_path: {model_path}")
 
             # use dagger to collect data
@@ -198,8 +200,8 @@ def run_flywheel(
 
             # retrain with dagger data
             dagger_dirs.append(dagger_dir)
-            ckpt_dir = ckpt_root / f"round-{round}"
-            runs_dir = runs_root / f"round-{round}"
+            ckpt_dir = ckpt_root / round_name
+            runs_dir = runs_root / round_name
 
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             runs_dir.mkdir(parents=True, exist_ok=True)
@@ -249,17 +251,17 @@ def parse_args():
         type=Path,
         default=Path("data/expert/rand-100"),
     )
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--dagger-rounds", type=int, default=1)
-    parser.add_argument("--beta-start", type=float, default=1.0)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--dagger-rounds", type=int, default=10)
+    parser.add_argument("--beta-start", type=float, default=0.7)
     parser.add_argument("--beta-final", type=float, default=0.0)
-    parser.add_argument("--dagger-episodes", type=int, default=10)
-    parser.add_argument("--rollout-max-steps", type=int, default=1400)
-    parser.add_argument("--eval-interval", type=int, default=1)
+    parser.add_argument("--dagger-episodes", type=int, default=20)
+    parser.add_argument("--rollout-max-steps", type=int, default=100)
+    parser.add_argument("--eval-interval", type=int, default=10)
     parser.add_argument("--eval-seed", type=int, default=42)
-    parser.add_argument("--eval-episodes", type=int, default=100)
-    parser.add_argument("--eval-max-steps", type=int, default=1400)
-    parser.add_argument("--early-stop-patience", type=int, default=30)
+    parser.add_argument("--eval-episodes", type=int, default=10)
+    parser.add_argument("--eval-max-steps", type=int, default=100)
+    parser.add_argument("--early-stop-patience", type=int, default=20)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
     parser.add_argument("--train-seed", type=int, default=0)
     args = parser.parse_args()
@@ -297,7 +299,7 @@ def parse_args():
 def main():
     args = parse_args()
     run_name = args.run_name or next_flywheel_run_name(
-        root=Path("data/dagger/flywheel")
+        root=Path("data/flywheel")
     )
     print(f"Running flywheel in {run_name}")
     run_flywheel(
