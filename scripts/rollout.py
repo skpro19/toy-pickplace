@@ -16,7 +16,7 @@ from constant import (
     EPSILON,
     MAX_ARM_DELTA,
 )
-from expert import PickPlaceController
+from expert import Phase, PickPlaceController
 from mlp import MLP
 from sim import SimEnv
 
@@ -275,7 +275,7 @@ def run_policy_episode(
     viewer=None,
     should_stop=None,
     phase_callback=None,) -> EpisodeResult:
-    """Run one policy episode, optionally mixing and recording expert actions."""
+    """Run one policy episode, stopping when the controller reaches DONE."""
     observations: list[np.ndarray] = []
     expert_actions: list[np.ndarray] = []
     policy_action_history: list[np.ndarray] = []
@@ -310,6 +310,7 @@ def run_policy_episode(
         (should_stop is None or not should_stop())
         and steps < max_steps
         and (viewer is None or viewer.is_running())
+        and (controller is None or controller.phase != Phase.DONE)
     ):
         obs = sim.build_observation()
         if dagger:

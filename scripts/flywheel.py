@@ -4,13 +4,57 @@ import argparse
 import json
 import re
 import secrets
+import time
 from pathlib import Path
 
 import torch
 
 from train import train
 from rollout import rollout
-from tqdm import tqdm
+
+
+SECTION_WIDTH = 72
+
+
+def format_duration(*, seconds: float) -> str:
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def print_section(*, title: str) -> None:
+    print()
+    print("=" * SECTION_WIDTH)
+    print(title)
+    print("=" * SECTION_WIDTH)
+
+
+def print_final_summary(
+    *,
+    rounds: list[dict[str, object]],
+    metrics_path: Path,) -> None:
+    print_section(title="Final summary")
+    print(f"{'Round':<8}{'Beta':<10}{'Epoch':<10}{'Score':<10}Checkpoint")
+    print("-" * SECTION_WIDTH)
+    for item in rounds:
+        round_label = f'{int(item["round"]):03d}'
+        beta = "-" if item["beta"] is None else f'{float(item["beta"]):.3f}'
+        print(
+            f'{round_label:<8}{beta:<10}{int(item["best_epoch"]):<10}'
+            f'{float(item["best_score"]):<10.4f}{item["best_checkpoint"]}'
+        )
+
+    overall_best = max(rounds, key=lambda item: float(item["best_score"]))
+    print()
+    print(
+        f'Overall best: round {int(overall_best["round"]):03d}, '
+        f'score {float(overall_best["best_score"]):.4f}'
+    )
+    print(f'Checkpoint: {overall_best["best_checkpoint"]}')
+    print(f"Metrics: {metrics_path}")
 
 def next_flywheel_run_name(*, root: Path) -> str:
     pattern = re.compile(r"^run-(\d+)$")
@@ -54,9 +98,9 @@ def append_round_metrics(
     config: dict[str, object],
     eval_seed: int,
     eval_episodes: int,
-    eval_max_steps: int,) -> None:
+    eval_max_steps: int,) -> dict[str, object]:
     checkpoint = torch.load(best_checkpoint, map_location="cpu", weights_only=False)
-    rounds.append({
+    round_metrics = {
         "round": round_index,
         "beta": beta,
         "dagger_seed": dagger_seed,
@@ -65,7 +109,8 @@ def append_round_metrics(
         "best_checkpoint": str(best_checkpoint),
         "best_epoch": int(checkpoint["epoch"]),
         "best_score": float(checkpoint["eval_score"]),
-    })
+    }
+    rounds.append(round_metrics)
 
     overall_best = max(rounds, key=lambda item: float(item["best_score"]))
     metrics = {
@@ -79,6 +124,7 @@ def append_round_metrics(
         "overall_best_score": overall_best["best_score"],
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
+    return round_metrics
 
 
 def run_flywheel(
@@ -130,15 +176,36 @@ def run_flywheel(
         "train_seed": train_seed,
     }
 
+    print_section(title=f"Flywheel {run_name}")
+    print(f"Expert data: {expert_npz_dir}")
+    print(f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs}")
+    print(
+        f"Expert ratio: {expert_ratio:.2f} | "
+        f"Beta: {beta_start:.3f} -> {beta_final:.3f}"
+    )
+    print(
+        f"Evaluation: {eval_episodes} episodes x {eval_max_steps} steps "
+        f"every {eval_interval} epochs"
+    )
+    print(f"Metrics: {metrics_path}")
+
     num_rounds = num_dagger_rounds + 1
-    for round in tqdm(range(num_rounds), desc="Running flywheel"):
-        print(f"Running round #{round}/{num_rounds - 1}")
+    flywheel_started_at = time.perf_counter()
+    for round in range(num_rounds):
         round_name = f"round-{round:03d}"
+        round_started_at = time.perf_counter()
 
         if round == 0:
             # train expert-only policy
             ckpt_dir = ckpt_root / round_name
             runs_dir = runs_root / round_name
+
+            print_section(
+                title=f"Round {round:03d}/{num_rounds - 1:03d}: expert training"
+            )
+            print(f"Dataset: {expert_npz_dir}")
+            print(f"Checkpoint: {ckpt_dir}")
+            print(f"TensorBoard: {runs_dir}")
 
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             runs_dir.mkdir(parents=True, exist_ok=True)
@@ -155,7 +222,7 @@ def run_flywheel(
                 eval_max_steps=eval_max_steps,
                 early_stop_patience=early_stop_patience,
                 )
-            append_round_metrics(
+            metrics = append_round_metrics(
                 metrics_path=metrics_path,
                 run_name=run_name,
                 rounds=round_metrics,
@@ -170,19 +237,34 @@ def run_flywheel(
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
             )
+            print(
+                f'Round complete | best epoch: {int(metrics["best_epoch"])} | '
+                f'score: {float(metrics["best_score"]):.4f} | '
+                f'elapsed: {format_duration(seconds=time.perf_counter() - round_started_at)}'
+            )
 
         else:
             beta = beta_schedule[round - 1]
             dagger_seed = secrets.randbelow(2**32)
-            print(f"DAgger seed: {dagger_seed}")
 
             # generate dagger data
             dagger_dir = Path("data/flywheel") / run_name / round_name / "dagger"
             previous_round_name = f"round-{round - 1:03d}"
             model_path = ckpt_root / previous_round_name / "best.pt"
-            print(f"model_path: {model_path}")
+
+            print_section(
+                title=f"Round {round:03d}/{num_rounds - 1:03d}: DAgger collection"
+            )
+            print(f"Policy: {model_path}")
+            print(f"Beta: {beta:.3f} | Seed: {dagger_seed}")
+            print(
+                f"Episodes: {dagger_episodes} | "
+                f"Max steps: {rollout_max_steps}"
+            )
+            print(f"Output: {dagger_dir}")
 
             # use dagger to collect data
+            collection_started_at = time.perf_counter()
             rollout(model_path=model_path,
                     randomize_scene=True,
                     seed=dagger_seed,
@@ -197,6 +279,10 @@ def run_flywheel(
                     train_npz_dir=None,
                     log_rollout=False,
                     )
+            print(
+                f"Collection complete | elapsed: "
+                f"{format_duration(seconds=time.perf_counter() - collection_started_at)}"
+            )
 
             # retrain with dagger data
             dagger_dirs.append(dagger_dir)
@@ -212,6 +298,18 @@ def run_flywheel(
                 *[dagger_ratio] * len(dagger_dirs),
             ]
 
+            print_section(
+                title=f"Round {round:03d}/{num_rounds - 1:03d}: retraining"
+            )
+            print(f"Datasets: {len(dagger_dirs) + 1}")
+            for data_dir, ratio in zip(
+                [expert_npz_dir, *dagger_dirs],
+                sample_ratios,
+            ):
+                print(f"  {ratio:.3f}  {data_dir}")
+            print(f"Checkpoint: {ckpt_dir}")
+            print(f"TensorBoard: {runs_dir}")
+
             torch.manual_seed(train_seed)
             train(num_epochs=num_epochs,
                 npz_folders=[expert_npz_dir, *dagger_dirs],
@@ -225,7 +323,7 @@ def run_flywheel(
                 eval_max_steps=eval_max_steps,
                 early_stop_patience=early_stop_patience,
                 )
-            append_round_metrics(
+            metrics = append_round_metrics(
                 metrics_path=metrics_path,
                 run_name=run_name,
                 rounds=round_metrics,
@@ -240,6 +338,17 @@ def run_flywheel(
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
             )
+            print(
+                f'Round complete | best epoch: {int(metrics["best_epoch"])} | '
+                f'score: {float(metrics["best_score"]):.4f} | '
+                f'elapsed: {format_duration(seconds=time.perf_counter() - round_started_at)}'
+            )
+
+    print_final_summary(rounds=round_metrics, metrics_path=metrics_path)
+    print(
+        f"Total elapsed: "
+        f"{format_duration(seconds=time.perf_counter() - flywheel_started_at)}"
+    )
 
 
 
@@ -252,7 +361,7 @@ def parse_args():
         default=Path("data/expert/rand-100"),
     )
     parser.add_argument("--epochs", type=int, default=1000)
-    parser.add_argument("--dagger-rounds", type=int, default=50)
+    parser.add_argument("--dagger-rounds", type=int, default=10)
     parser.add_argument("--beta-start", type=float, default=0.7)
     parser.add_argument("--beta-final", type=float, default=0.0)
     parser.add_argument("--dagger-episodes", type=int, default=50)
@@ -260,7 +369,7 @@ def parse_args():
     parser.add_argument("--eval-interval", type=int, default=20)
     parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--eval-episodes", type=int, default=25)
-    parser.add_argument("--eval-max-steps", type=int, default=1400)
+    parser.add_argument("--eval-max-steps", type=int, default=2800)
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
     parser.add_argument("--train-seed", type=int, default=0)
@@ -301,7 +410,6 @@ def main():
     run_name = args.run_name or next_flywheel_run_name(
         root=Path("data/flywheel")
     )
-    print(f"Running flywheel in {run_name}")
     run_flywheel(
         run_name=run_name,
         num_dagger_rounds=args.dagger_rounds,
