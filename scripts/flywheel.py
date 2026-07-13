@@ -3,10 +3,10 @@
 import argparse
 import json
 import re
-import secrets
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from train import train
@@ -84,6 +84,14 @@ def make_beta_schedule(
     ]
 
 
+def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:
+    seed_sequence = np.random.SeedSequence(seed)
+    return [
+        int(child.generate_state(1, dtype=np.uint32)[0])
+        for child in seed_sequence.spawn(rounds)
+    ]
+
+
 def append_round_metrics(
     *,
     metrics_path: Path,
@@ -144,7 +152,8 @@ def run_flywheel(
     workers: int,
     early_stop_patience: int,
     expert_ratio: float,
-    train_seed: int,) -> None:
+    train_seed: int,
+    dagger_seed: int,) -> None:
 
     ckpt_root = Path('checkpoints/flywheel') / run_name
     runs_root = Path('runs/flywheel') / run_name
@@ -156,6 +165,10 @@ def run_flywheel(
         beta_start=beta_start,
         beta_final=beta_final,
         num_dagger_rounds=num_dagger_rounds,
+    )
+    dagger_round_seeds = make_dagger_round_seeds(
+        seed=dagger_seed,
+        rounds=num_dagger_rounds,
     )
     dagger_dirs: list[Path] = []
     round_metrics: list[dict[str, object]] = []
@@ -176,6 +189,7 @@ def run_flywheel(
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "train_seed": train_seed,
+        "dagger_seed": dagger_seed,
     }
 
     print_section(title=f"Flywheel {run_name}")
@@ -248,7 +262,7 @@ def run_flywheel(
 
         else:
             beta = beta_schedule[round - 1]
-            dagger_seed = secrets.randbelow(2**32)
+            round_dagger_seed = dagger_round_seeds[round - 1]
 
             # generate dagger data
             dagger_dir = Path("data/flywheel") / run_name / round_name / "dagger"
@@ -259,7 +273,7 @@ def run_flywheel(
                 title=f"Round {round:03d}/{num_rounds - 1:03d}: DAgger collection"
             )
             print(f"Policy: {model_path}")
-            print(f"Beta: {beta:.3f} | Seed: {dagger_seed}")
+            print(f"Beta: {beta:.3f} | Seed: {round_dagger_seed}")
             print(
                 f"Episodes: {dagger_episodes} | "
                 f"Max steps: {rollout_max_steps}"
@@ -270,7 +284,7 @@ def run_flywheel(
             collection_started_at = time.perf_counter()
             rollout(model_path=model_path,
                     randomize_scene=True,
-                    seed=dagger_seed,
+                    seed=round_dagger_seed,
                     episodes=dagger_episodes,
                     max_steps=rollout_max_steps,
                     dagger=True,
@@ -334,7 +348,7 @@ def run_flywheel(
                 rounds=round_metrics,
                 round_index=round,
                 beta=beta,
-                dagger_seed=dagger_seed,
+                dagger_seed=round_dagger_seed,
                 data_dirs=[expert_npz_dir, *dagger_dirs],
                 sample_ratios=sample_ratios,
                 best_checkpoint=ckpt_dir / "best.pt",
@@ -379,6 +393,7 @@ def parse_args():
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
     parser.add_argument("--train-seed", type=int, default=0)
+    parser.add_argument("--dagger-seed", type=int, default=0)
     args = parser.parse_args()
 
     if not args.expert_dir.is_dir():
@@ -409,6 +424,8 @@ def parse_args():
         parser.error("--early-stop-patience must be non-negative")
     if not 0.0 < args.expert_ratio < 1.0:
         parser.error("--expert-ratio must be between 0 and 1")
+    if args.dagger_seed < 0:
+        parser.error("--dagger-seed must be non-negative")
 
     return args
 
@@ -435,6 +452,7 @@ def main():
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         train_seed=args.train_seed,
+        dagger_seed=args.dagger_seed,
     )
 if __name__ == "__main__":
     main()
