@@ -1,6 +1,8 @@
 import argparse
+import multiprocessing
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
@@ -24,6 +26,16 @@ from sim import SimEnv
 DEFAULT_DAGGER_DIR = Path("data/dagger")
 
 
+_dagger_worker_state: tuple[
+    SimEnv,
+    MLP,
+    torch.device,
+    bool,
+    str,
+    "NormDict",
+] | None = None
+
+
 class NormDict(TypedDict):
     arm_actions_mean: torch.Tensor
     arm_actions_std: torch.Tensor
@@ -43,12 +55,76 @@ class EpisodeResult(TypedDict):
     expert_action_mask: list[bool]
 
 
+def make_episode_seeds(*, seed: int, episodes: int) -> list[int]:
+    seed_sequence = np.random.SeedSequence(seed)
+    return [
+        int(child.generate_state(1, dtype=np.uint32)[0])
+        for child in seed_sequence.spawn(episodes)
+    ]
+
+
+def initialize_dagger_worker(config: tuple[str, bool]) -> None:
+    global _dagger_worker_state
+
+    model_path, randomize_scene = config
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    device = torch.device("cpu")
+    model, normalize, action_space, norm_dict = load_policy(
+        model_path=Path(model_path),
+        device=device,
+    )
+    sim = SimEnv(randomize_scene=randomize_scene)
+    _dagger_worker_state = (
+        sim,
+        model,
+        device,
+        normalize,
+        action_space,
+        norm_dict,
+    )
+
+
+def run_dagger_worker(
+    task: tuple[int, int, int, float, str],
+) -> tuple[int, int]:
+    if _dagger_worker_state is None:
+        raise RuntimeError("DAgger worker was not initialized")
+
+    episode_idx, seed, max_steps, beta, dagger_dir = task
+    sim, model, device, normalize, action_space, norm_dict = _dagger_worker_state
+    sim.rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(seed)
+
+    with torch.inference_mode():
+        result = run_policy_episode(
+            sim=sim,
+            model=model,
+            device=device,
+            normalize=normalize,
+            action_space=action_space,
+            norm_dict=norm_dict,
+            max_steps=max_steps,
+            track_phase=True,
+            dagger=True,
+            beta=beta,
+            rng=rng,
+        )
+    save_dagger_episode(
+        dagger_dir=Path(dagger_dir),
+        episode_idx=episode_idx,
+        beta=beta,
+        result=result,
+    )
+    return episode_idx, result["steps"]
+
+
 def load_policy(
     *,
     model_path: Path,
     device: torch.device,) -> tuple[MLP, bool, str, NormDict]:
     model = MLP().to(device)
-    checkpoint = torch.load(model_path, weights_only=False)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_dict"])
     model.eval()
 
@@ -400,7 +476,46 @@ def rollout(
     dagger_root: str | Path,
     beta: float,
     create_dagger_subdir: bool = True,
-    headless: bool,):
+    headless: bool,
+    workers: int = 1,):
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    if episodes < 1:
+        raise ValueError("episodes must be at least 1")
+
+    if workers > 1:
+        if not headless or not dagger or log_rollout:
+            raise ValueError(
+                "parallel rollouts require headless DAgger with rollout logging disabled"
+            )
+
+        model_path = Path(model_path)
+        dagger_dir = prepare_dagger_dir(
+            enabled=True,
+            dagger_root=Path(dagger_root),
+            model_path=model_path,
+            beta=beta,
+            create_subdir=create_dagger_subdir,
+        )
+        if dagger_dir is None:
+            raise RuntimeError("DAgger output directory was not created")
+
+        episode_seeds = make_episode_seeds(seed=seed, episodes=episodes)
+        tasks = [
+            (episode_idx, episode_seed, max_steps, beta, str(dagger_dir))
+            for episode_idx, episode_seed in enumerate(episode_seeds)
+        ]
+        worker_count = min(workers, episodes)
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=context,
+            initializer=initialize_dagger_worker,
+            initargs=((str(model_path), randomize_scene),),
+        ) as executor:
+            list(executor.map(run_dagger_worker, tasks))
+        return
+
     # sim = SimEnv()
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
     rng = np.random.default_rng(seed)
@@ -545,12 +660,15 @@ def parse_args():
     parser.add_argument(
         "--headless", action=argparse.BooleanOptionalAction, default=False
     )
+    parser.add_argument("--workers", type=int, default=1)
 
     args = parser.parse_args()
     if not 0.0 <= args.beta <= 1.0:
         parser.error(f"--beta must be in [0.0, 1.0], got {args.beta}")
     if args.beta > 0.0 and not args.dagger:
         parser.error("--beta requires --dagger")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
 
     return args
 
@@ -571,6 +689,7 @@ def main():
         beta=args.beta,
         create_dagger_subdir=True,
         headless=args.headless,
+        workers=args.workers,
     )
 
 

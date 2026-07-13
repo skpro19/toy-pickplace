@@ -111,12 +111,14 @@ def evaluate_checkpoint(
     epoch: int,
     seed: int,
     episodes: int,
-    max_steps: int,) -> float:
+    max_steps: int,
+    workers: int,) -> float:
     score_dict = score_ckpt(
         ckpt_path=str(model_path),
         seed=seed,
         max_steps=max_steps,
         episodes=episodes,
+        workers=workers,
     )
     mean_score = float(score_dict["mean_score"])
     writer.add_scalar("Eval/mean_score", mean_score, epoch)
@@ -234,6 +236,7 @@ def train(
     eval_seed: int = 0,
     eval_episodes: int = 100,
     eval_max_steps: int = 1400,
+    eval_workers: int = 1,
     early_stop_patience: int = 50,) -> str:
 
     dataset, norm_stats = prepare_dataset(
@@ -303,6 +306,7 @@ def train(
                     seed=eval_seed,
                     episodes=eval_episodes,
                     max_steps=eval_max_steps,
+                    workers=eval_workers,
                 )
                 improved = mean_score > best_score
                 if improved:
@@ -386,6 +390,7 @@ def parse_args():
     parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
+    parser.add_argument("--eval-workers", type=int, default=1)
     parser.add_argument(
         "--early-stop-patience",
         type=int,
@@ -403,6 +408,8 @@ def parse_args():
         parser.error("--eval-episodes must be at least 1")
     if args.eval_max_steps < 1:
         parser.error("--eval-max-steps must be at least 1")
+    if args.eval_workers < 1:
+        parser.error("--eval-workers must be at least 1")
     if args.early_stop_patience < 0:
         parser.error("--early-stop-patience must be non-negative")
     if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
@@ -441,6 +448,7 @@ def main():
         eval_seed=args.eval_seed,
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
+        eval_workers=args.eval_workers,
         early_stop_patience=args.early_stop_patience,
     )
 

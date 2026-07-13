@@ -141,6 +141,7 @@ def run_flywheel(
     eval_seed: int,
     eval_episodes: int,
     eval_max_steps: int,
+    workers: int,
     early_stop_patience: int,
     expert_ratio: float,
     train_seed: int,) -> None:
@@ -171,6 +172,7 @@ def run_flywheel(
         "eval_seed": eval_seed,
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
+        "workers": workers,
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "train_seed": train_seed,
@@ -220,6 +222,7 @@ def run_flywheel(
                 eval_seed=eval_seed,
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
+                eval_workers=workers,
                 early_stop_patience=early_stop_patience,
                 )
             metrics = append_round_metrics(
@@ -278,6 +281,7 @@ def run_flywheel(
                     log_root=None,
                     train_npz_dir=None,
                     log_rollout=False,
+                    workers=workers,
                     )
             print(
                 f"Collection complete | elapsed: "
@@ -321,6 +325,7 @@ def run_flywheel(
                 eval_seed=eval_seed,
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
+                eval_workers=workers,
                 early_stop_patience=early_stop_patience,
                 )
             metrics = append_round_metrics(
@@ -370,6 +375,7 @@ def parse_args():
     parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--eval-episodes", type=int, default=25)
     parser.add_argument("--eval-max-steps", type=int, default=2800)
+    parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
     parser.add_argument("--train-seed", type=int, default=0)
@@ -397,6 +403,8 @@ def parse_args():
         parser.error("--eval-episodes must be at least 1")
     if args.eval_max_steps < 1:
         parser.error("--eval-max-steps must be at least 1")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
     if args.early_stop_patience < 0:
         parser.error("--early-stop-patience must be non-negative")
     if not 0.0 < args.expert_ratio < 1.0:
@@ -423,6 +431,7 @@ def main():
         eval_seed=args.eval_seed,
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
+        workers=args.workers,
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         train_seed=args.train_seed,
