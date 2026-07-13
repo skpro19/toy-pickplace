@@ -61,6 +61,9 @@ class PickPlaceController:
         self.cube_grasp_id = model.site("cube_grasp").id
         self.cube_lift_id = model.site("cube_lift").id
         self.tray_center_id = model.site("tray_center").id
+        self.cube_geom_id = model.geom("cube_geom").id
+        self.left_finger_body_id = model.body("left_finger").id
+        self.right_finger_body_id = model.body("right_finger").id
 
         self.dt = model.opt.timestep
         self.last_pos_err = float("inf")
@@ -186,6 +189,29 @@ class PickPlaceController:
         ori_err = self.rotation_error(target_rot, grasp_rot)
         return pos_err, ori_err
 
+    def cube_has_two_finger_contact(self) -> bool:
+        finger_contacts: set[int] = set()
+        for contact_index in range(self.data.ncon):
+            contact = self.data.contact[contact_index]
+            if contact.geom1 == self.cube_geom_id:
+                other_geom_id = contact.geom2
+            elif contact.geom2 == self.cube_geom_id:
+                other_geom_id = contact.geom1
+            else:
+                continue
+
+            other_body_id = int(self.model.geom_bodyid[other_geom_id])
+            if other_body_id in (
+                self.left_finger_body_id,
+                self.right_finger_body_id,
+            ):
+                finger_contacts.add(other_body_id)
+
+        return finger_contacts == {
+            self.left_finger_body_id,
+            self.right_finger_body_id,
+        }
+
     def run_ik(self, target: mink.SE3) -> np.ndarray:
         self.grasp_task.set_target(target)
         self.converge_ik()
@@ -275,6 +301,9 @@ class PickPlaceController:
             self.phase = Phase.CLOSE_GRIPPER
             self.settle_steps = 0
         elif self.phase == Phase.LIFT_CUBE:
+            if not self.cube_has_two_finger_contact():
+                return
+
             lift_rotation = (
                 self.lift_target.rotation()
                 if self.lift_target
