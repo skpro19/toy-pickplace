@@ -127,8 +127,8 @@ def append_round_metrics(
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
     writer.add_scalar(
-        "Flywheel/max_score",
-        float(overall_best["best_score"]),
+        "Eval/round_best_score",
+        float(round_metrics["best_score"]),
         round_index,
     )
     writer.flush()
