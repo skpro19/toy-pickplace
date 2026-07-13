@@ -121,7 +121,9 @@ def evaluate_checkpoint(
         workers=workers,
     )
     mean_score = float(score_dict["mean_score"])
+    max_score = max(score_dict["scores"])
     writer.add_scalar("Eval/mean_score", mean_score, epoch)
+    writer.add_scalar("Eval/max_score", max_score, epoch)
     writer.flush()
     return mean_score
 

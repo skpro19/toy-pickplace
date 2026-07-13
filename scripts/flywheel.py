@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 from train import train
 from rollout import rollout
@@ -88,7 +87,6 @@ def make_beta_schedule(
 def append_round_metrics(
     *,
     metrics_path: Path,
-    writer: SummaryWriter,
     run_name: str,
     rounds: list[dict[str, object]],
     round_index: int,
@@ -126,12 +124,6 @@ def append_round_metrics(
         "overall_best_score": overall_best["best_score"],
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
-    writer.add_scalar(
-        "Eval/round_best_score",
-        float(round_metrics["best_score"]),
-        round_index,
-    )
-    writer.flush()
     return round_metrics
 
 
@@ -159,7 +151,6 @@ def run_flywheel(
     results_root = Path('results/flywheel') / run_name
     results_root.mkdir(parents=True, exist_ok=True)
     metrics_path = results_root / "metrics.json"
-    writer = SummaryWriter(log_dir=str(runs_root))
 
     beta_schedule = make_beta_schedule(
         beta_start=beta_start,
@@ -236,7 +227,6 @@ def run_flywheel(
                 )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
-                writer=writer,
                 run_name=run_name,
                 rounds=round_metrics,
                 round_index=round,
@@ -340,7 +330,6 @@ def run_flywheel(
                 )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
-                writer=writer,
                 run_name=run_name,
                 rounds=round_metrics,
                 round_index=round,
@@ -360,7 +349,6 @@ def run_flywheel(
                 f'elapsed: {format_duration(seconds=time.perf_counter() - round_started_at)}'
             )
 
-    writer.close()
     print_final_summary(rounds=round_metrics, metrics_path=metrics_path)
     print(
         f"Total elapsed: "
