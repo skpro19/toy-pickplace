@@ -212,6 +212,12 @@ class PickPlaceController:
             self.right_finger_body_id,
         }
 
+    def cube_is_in_tray(self) -> bool:
+        cube_pos = self.data.body("cube").xpos
+        tray_pos = self.data.site_xpos[self.tray_center_id]
+        tray_error = float(np.linalg.norm(cube_pos[:2] - tray_pos[:2]))
+        return tray_error <= TRAY_PLACE_TOL
+
     def run_ik(self, target: mink.SE3) -> np.ndarray:
         self.grasp_task.set_target(target)
         self.converge_ik()
@@ -276,7 +282,7 @@ class PickPlaceController:
             )
             self.last_pos_err = joint_err
             self.last_ori_err = 0.0
-            if joint_err <= HOME_JOINT_TOL:
+            if joint_err <= HOME_JOINT_TOL and self.cube_is_in_tray():
                 self.settle_steps += 1
             else:
                 self.settle_steps = 0
