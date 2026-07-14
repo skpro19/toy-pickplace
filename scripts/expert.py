@@ -19,6 +19,7 @@ POS_TOL = 0.02
 ORI_TOL = 0.15
 ARRIVAL_SETTLE_STEPS = 15
 GRASP_SETTLE_STEPS = 150
+GRASP_CONTACT_STABLE_STEPS = 5
 RELEASE_SETTLE_STEPS = 100
 IK_SOLVER = "daqp"
 IK_DAMPING = 1e-3
@@ -56,6 +57,7 @@ class PickPlaceController:
 
         self.phase = Phase.MOVE_ABOVE_CUBE
         self.settle_steps = 0
+        self.grasp_contact_steps = 0
         self.grasp_id = model.site("grasp").id
         self.cube_hover_id = model.site("cube_hover").id
         self.cube_grasp_id = model.site("cube_grasp").id
@@ -189,7 +191,7 @@ class PickPlaceController:
         ori_err = self.rotation_error(target_rot, grasp_rot)
         return pos_err, ori_err
 
-    def cube_has_two_finger_contact(self) -> bool:
+    def cube_finger_contacts(self) -> set[int]:
         finger_contacts: set[int] = set()
         for contact_index in range(self.data.ncon):
             contact = self.data.contact[contact_index]
@@ -207,7 +209,13 @@ class PickPlaceController:
             ):
                 finger_contacts.add(other_body_id)
 
-        return finger_contacts == {
+        return finger_contacts
+
+    def cube_has_any_finger_contact(self) -> bool:
+        return bool(self.cube_finger_contacts())
+
+    def cube_has_two_finger_contact(self) -> bool:
+        return self.cube_finger_contacts() == {
             self.left_finger_body_id,
             self.right_finger_body_id,
         }
@@ -262,10 +270,19 @@ class PickPlaceController:
 
         if self.phase == Phase.CLOSE_GRIPPER:
             self.settle_steps += 1
-            if self.settle_steps >= GRASP_SETTLE_STEPS:
+            self.grasp_contact_steps = (
+                self.grasp_contact_steps + 1
+                if self.cube_has_two_finger_contact()
+                else 0
+            )
+            if (
+                self.settle_steps >= GRASP_SETTLE_STEPS
+                and self.grasp_contact_steps >= GRASP_CONTACT_STABLE_STEPS
+            ):
                 self.lift_target = self.site_pose(self.cube_lift_id)
                 self.phase = Phase.LIFT_CUBE
                 self.settle_steps = 0
+                self.grasp_contact_steps = 0
 
             return
 
