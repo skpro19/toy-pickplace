@@ -93,7 +93,7 @@ def replay_actions(
                     )
                 else:
                     print("  layout metadata missing; replaying from reset layout")
-                print(f"  {action_key}.shape => {actions.shape}")
+                # print(f"  {action_key}.shape => {actions.shape}")
 
                 for action in actions:
                     if quit_requested or not viewer.is_running():

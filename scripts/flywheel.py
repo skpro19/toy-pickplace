@@ -108,6 +108,13 @@ def append_round_metrics(
     eval_episodes: int,
     eval_max_steps: int,) -> dict[str, object]:
     checkpoint = torch.load(best_checkpoint, map_location="cpu", weights_only=False)
+    eval_metric_version = int(checkpoint.get("eval_metric_version", 1))
+    existing_versions = {
+        int(item.get("eval_metric_version", 1)) for item in rounds
+    }
+    if existing_versions and existing_versions != {eval_metric_version}:
+        raise ValueError("Cannot compare flywheel scores from different metric versions")
+
     round_metrics = {
         "round": round_index,
         "beta": beta,
@@ -117,6 +124,8 @@ def append_round_metrics(
         "best_checkpoint": str(best_checkpoint),
         "best_epoch": int(checkpoint["epoch"]),
         "best_score": float(checkpoint["eval_score"]),
+        "eval_metric_version": eval_metric_version,
+        "eval_metrics": checkpoint.get("eval_metrics", {}),
     }
     rounds.append(round_metrics)
 
@@ -126,6 +135,7 @@ def append_round_metrics(
         "eval_seed": eval_seed,
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
+        "eval_metric_version": eval_metric_version,
         "config": config,
         "rounds": rounds,
         "overall_best_checkpoint": overall_best["best_checkpoint"],

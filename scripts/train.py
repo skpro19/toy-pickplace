@@ -11,7 +11,7 @@ import re
 
 from mlp import MLP
 from dataset import PickPlaceDataset
-from eval import score_ckpt
+from eval import ScoreResult, score_ckpt
 
 from constant import (
     OBS_DIMS, 
@@ -90,7 +90,10 @@ def save_checkpoint(
     normalize: bool,
     action_space: str,
     norm_stats: NormStats,
-    eval_score: float | None = None,) -> Path:
+    eval_score: float | None = None,
+    eval_metrics: dict[str, float] | None = None,
+    eval_metric_version: int | None = None,
+) -> Path:
     checkpoint = {
         "model_dict": model.state_dict(),
         "normalize": normalize,
@@ -99,6 +102,10 @@ def save_checkpoint(
     }
     if eval_score is not None:
         checkpoint["eval_score"] = eval_score
+    if eval_metrics is not None:
+        checkpoint["eval_metrics"] = eval_metrics
+    if eval_metric_version is not None:
+        checkpoint["eval_metric_version"] = eval_metric_version
     checkpoint.update(norm_stats)
     torch.save(checkpoint, model_path)
     return model_path
@@ -112,7 +119,8 @@ def evaluate_checkpoint(
     seed: int,
     episodes: int,
     max_steps: int,
-    workers: int,) -> float:
+    workers: int,
+) -> ScoreResult:
     score_dict = score_ckpt(
         ckpt_path=str(model_path),
         seed=seed,
@@ -124,8 +132,26 @@ def evaluate_checkpoint(
     max_score = max(score_dict["scores"])
     writer.add_scalar("Eval/mean_score", mean_score, epoch)
     writer.add_scalar("Eval/max_score", max_score, epoch)
+    writer.add_scalar("Eval/grasp_rate", score_dict["grasp_rate"], epoch)
+    writer.add_scalar("Eval/lift_rate", score_dict["lift_rate"], epoch)
+    writer.add_scalar("Eval/tray_reach_rate", score_dict["tray_reach_rate"], epoch)
+    writer.add_scalar(
+        "Eval/lowered_to_tray_rate",
+        score_dict["lowered_to_tray_rate"],
+        epoch,
+    )
+    writer.add_scalar(
+        "Eval/released_over_tray_rate",
+        score_dict["released_over_tray_rate"],
+        epoch,
+    )
+    writer.add_scalar(
+        "Eval/placement_success_rate",
+        score_dict["placement_success_rate"],
+        epoch,
+    )
     writer.flush()
-    return mean_score
+    return score_dict
 
 
 def prepare_dataset(
@@ -301,7 +327,7 @@ def train(
             )
             should_evaluate = epoch_number % eval_interval == 0 or epoch_number == num_epochs
             if should_evaluate:
-                mean_score = evaluate_checkpoint(
+                eval_result = evaluate_checkpoint(
                     model_path=last_model_path,
                     writer=writer,
                     epoch=epoch,
@@ -310,6 +336,7 @@ def train(
                     max_steps=eval_max_steps,
                     workers=eval_workers,
                 )
+                mean_score = eval_result["mean_score"]
                 improved = mean_score > best_score
                 if improved:
                     best_score = mean_score
@@ -322,6 +349,21 @@ def train(
                         action_space=action_space,
                         norm_stats=norm_stats,
                         eval_score=mean_score,
+                        eval_metric_version=eval_result["eval_metric_version"],
+                        eval_metrics={
+                            "grasp_rate": eval_result["grasp_rate"],
+                            "lift_rate": eval_result["lift_rate"],
+                            "tray_reach_rate": eval_result["tray_reach_rate"],
+                            "lowered_to_tray_rate": eval_result[
+                                "lowered_to_tray_rate"
+                            ],
+                            "released_over_tray_rate": eval_result[
+                                "released_over_tray_rate"
+                            ],
+                            "placement_success_rate": eval_result[
+                                "placement_success_rate"
+                            ],
+                        },
                     )
 
                 writer.flush()

@@ -1,17 +1,79 @@
-""" score model checkpoint """ 
+"""Score model checkpoints using physical task milestones."""
+
+import argparse
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
-
-from rollout import load_policy, make_episode_seeds, run_policy_episode
 from pathlib import Path
-import torch
+from typing import TypedDict
+
 import numpy as np
-import argparse
+import torch
+
+from rollout import (
+    TaskMetrics,
+    load_policy,
+    make_episode_seeds,
+    run_policy_episode,
+)
 from sim import SimEnv
-from expert import Phase
+
+
+GRASP_SCORE_WEIGHT = 0.10
+LIFT_SCORE_WEIGHT = 0.20
+TRAY_REACH_SCORE_WEIGHT = 0.20
+LOWERED_SCORE_WEIGHT = 0.10
+RELEASED_SCORE_WEIGHT = 0.10
+PLACEMENT_SCORE_WEIGHT = 0.30
+EVAL_METRIC_VERSION = 3
+
+
+class ScoreResult(TypedDict):
+    eval_metric_version: int
+    scores: list[float]
+    mean_score: float
+    grasp_rate: float
+    lift_rate: float
+    tray_reach_rate: float
+    lowered_to_tray_rate: float
+    released_over_tray_rate: float
+    placement_success_rate: float
 
 
 _eval_worker_state = None
+
+
+def score_task_metrics(*, metrics: TaskMetrics) -> float:
+    return (
+        GRASP_SCORE_WEIGHT * float(metrics["grasped"])
+        + LIFT_SCORE_WEIGHT * float(metrics["lifted"])
+        + TRAY_REACH_SCORE_WEIGHT * float(metrics["tray_reached"])
+        + LOWERED_SCORE_WEIGHT * float(metrics["lowered_to_tray"])
+        + RELEASED_SCORE_WEIGHT * float(metrics["released_over_tray"])
+        + PLACEMENT_SCORE_WEIGHT * float(metrics["placement_success"])
+    )
+
+
+def summarize_task_metrics(*, episode_metrics: list[TaskMetrics]) -> ScoreResult:
+    scores = [score_task_metrics(metrics=metrics) for metrics in episode_metrics]
+    return {
+        "eval_metric_version": EVAL_METRIC_VERSION,
+        "scores": scores,
+        "mean_score": float(np.mean(scores)),
+        "grasp_rate": float(np.mean([item["grasped"] for item in episode_metrics])),
+        "lift_rate": float(np.mean([item["lifted"] for item in episode_metrics])),
+        "tray_reach_rate": float(
+            np.mean([item["tray_reached"] for item in episode_metrics])
+        ),
+        "lowered_to_tray_rate": float(
+            np.mean([item["lowered_to_tray"] for item in episode_metrics])
+        ),
+        "released_over_tray_rate": float(
+            np.mean([item["released_over_tray"] for item in episode_metrics])
+        ),
+        "placement_success_rate": float(
+            np.mean([item["placement_success"] for item in episode_metrics])
+        ),
+    }
 
 
 def initialize_eval_worker(ckpt_path: str) -> None:
@@ -35,23 +97,17 @@ def initialize_eval_worker(ckpt_path: str) -> None:
     )
 
 
-def score_episode_worker(task: tuple[int, int, bool]) -> float:
+def score_episode_worker(task: tuple[int, int, bool]) -> TaskMetrics:
     if _eval_worker_state is None:
-        raise RuntimeError("evaluation worker was not initialized")
+        raise RuntimeError("Evaluation worker was not initialized")
 
     seed, max_steps, expert_baseline = task
     sim, model, device, normalize, action_space, norm_dict = _eval_worker_state
     sim.rng = np.random.default_rng(seed)
     rng = np.random.default_rng(seed)
-    last_phase = Phase.MOVE_ABOVE_CUBE
-
-    def last_phase_cb(step, phase) -> None:
-        del step
-        nonlocal last_phase
-        last_phase = phase
 
     with torch.inference_mode():
-        run_policy_episode(
+        result = run_policy_episode(
             sim=sim,
             model=model,
             device=device,
@@ -63,31 +119,31 @@ def score_episode_worker(task: tuple[int, int, bool]) -> float:
             dagger=expert_baseline,
             beta=1.0 if expert_baseline else 0.0,
             rng=rng,
-            phase_callback=last_phase_cb,
-            should_stop=lambda: last_phase == Phase.DONE,
         )
-
-    phases = list(Phase)
-    return phases.index(last_phase) / phases.index(Phase.DONE)
+    return result["task_metrics"]
 
 
-def score_ckpt(ckpt_path: str,  
-            seed: int,
-            max_steps: int, 
-            episodes: int,
-            expert_baseline: bool = False,
-            workers: int = 1) -> dict[str, float | list[float]]:
+def score_ckpt(
+    *,
+    ckpt_path: str,
+    seed: int,
+    max_steps: int,
+    episodes: int,
+    expert_baseline: bool = False,
+    workers: int = 1,
+) -> ScoreResult:
     if workers < 1:
         raise ValueError("workers must be at least 1")
     if episodes < 1:
         raise ValueError("episodes must be at least 1")
 
+    episode_seeds = make_episode_seeds(seed=seed, episodes=episodes)
+    tasks = [
+        (episode_seed, max_steps, expert_baseline)
+        for episode_seed in episode_seeds
+    ]
+
     if workers > 1:
-        episode_seeds = make_episode_seeds(seed=seed, episodes=episodes)
-        tasks = [
-            (episode_seed, max_steps, expert_baseline)
-            for episode_seed in episode_seeds
-        ]
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(
             max_workers=min(workers, episodes),
@@ -95,52 +151,35 @@ def score_ckpt(ckpt_path: str,
             initializer=initialize_eval_worker,
             initargs=(ckpt_path,),
         ) as executor:
-            scores = list(executor.map(score_episode_worker, tasks))
-        return {
-            "scores": scores,
-            "mean_score": float(np.mean(scores)),
-        }
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, _, _, norm_dict = load_policy(model_path=Path(ckpt_path), device=device)
-    
-    sim = SimEnv(randomize_scene=True, seed=seed)
-    rng = np.random.default_rng(seed)
+            episode_metrics = list(executor.map(score_episode_worker, tasks))
+        return summarize_task_metrics(episode_metrics=episode_metrics)
 
-    store_dict = {
-        "scores": [],
-        "mean_score": 0.0,
-    }
+    device = torch.device("cpu")
+    model, normalize, action_space, norm_dict = load_policy(
+        model_path=Path(ckpt_path),
+        device=device,
+    )
+    sim = SimEnv(randomize_scene=True)
+    episode_metrics = []
+    with torch.inference_mode():
+        for episode_seed in episode_seeds:
+            sim.rng = np.random.default_rng(episode_seed)
+            result = run_policy_episode(
+                sim=sim,
+                model=model,
+                device=device,
+                normalize=normalize,
+                action_space=action_space,
+                norm_dict=norm_dict,
+                max_steps=max_steps,
+                track_phase=True,
+                dagger=expert_baseline,
+                beta=1.0 if expert_baseline else 0.0,
+                rng=np.random.default_rng(episode_seed),
+            )
+            episode_metrics.append(result["task_metrics"])
 
-    phases = list(Phase)
-    done_phase_index = phases.index(Phase.DONE)
-
-    with torch.no_grad():
-        for _ in range(episodes):
-            last_phase = Phase.MOVE_ABOVE_CUBE
-
-            def last_phase_cb(step, phase) -> None:
-                nonlocal last_phase
-                last_phase = phase
-
-            run_policy_episode(sim=sim,
-                             model=model,
-                             device=device,
-                             norm_dict=norm_dict,
-                             max_steps=max_steps,
-                             track_phase = True,
-                             dagger=expert_baseline,
-                             beta=1.0 if expert_baseline else 0.0,
-                             rng = rng,
-                            phase_callback = last_phase_cb,
-                            should_stop=lambda: last_phase == Phase.DONE,
-                            )
-
-            phase_index = phases.index(last_phase)
-            store_dict["scores"].append(phase_index / done_phase_index)
-
-    store_dict["mean_score"] = float(np.mean(store_dict["scores"]))
-    return store_dict
+    return summarize_task_metrics(episode_metrics=episode_metrics)
 
 
 def parse_args():
@@ -153,20 +192,29 @@ def parse_args():
     parser.add_argument("--expert-baseline", action="store_true")
     return parser.parse_args()
 
+
 def main():
     args = parse_args()
-    if args.workers < 1:
-        raise ValueError("--workers must be at least 1")
     score_dict = score_ckpt(
-        args.ckpt_path,
-        args.seed,
-        args.max_steps,
-        args.episodes,
-        args.expert_baseline,
-        args.workers,
+        ckpt_path=args.ckpt_path,
+        seed=args.seed,
+        max_steps=args.max_steps,
+        episodes=args.episodes,
+        expert_baseline=args.expert_baseline,
+        workers=args.workers,
     )
-    print(f"Mean Score: {score_dict['mean_score']}")
+    print(f"Mean score: {score_dict['mean_score']:.4f}")
+    print(f"Grasp rate: {score_dict['grasp_rate']:.4f}")
+    print(f"Lift rate: {score_dict['lift_rate']:.4f}")
+    print(f"Tray reach rate: {score_dict['tray_reach_rate']:.4f}")
+    print(f"Lowered-to-tray rate: {score_dict['lowered_to_tray_rate']:.4f}")
+    print(f"Released-over-tray rate: {score_dict['released_over_tray_rate']:.4f}")
+    print(
+        "Placement success rate: "
+        f"{score_dict['placement_success_rate']:.4f}"
+    )
     print(f"Scores: {score_dict['scores']}")
-    
+
+
 if __name__ == "__main__":
     main()
