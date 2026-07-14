@@ -46,7 +46,7 @@ def main() -> None:
                 "placement_success": False,
             }
         ),
-        0.6,
+        0.4,
     )
     assert np.isclose(
         score_task_metrics(
@@ -59,7 +59,7 @@ def main() -> None:
                 "placement_success": False,
             }
         ),
-        0.7,
+        0.5,
     )
     assert np.isclose(
         score_task_metrics(

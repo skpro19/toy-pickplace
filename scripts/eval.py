@@ -4,7 +4,7 @@ import argparse
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import numpy as np
 import torch
@@ -18,13 +18,18 @@ from rollout import (
 from sim import SimEnv
 
 
+EvalSelectionMode = Literal["mode-a", "mode-b"]
+
+
 GRASP_SCORE_WEIGHT = 0.10
-LIFT_SCORE_WEIGHT = 0.20
-TRAY_REACH_SCORE_WEIGHT = 0.20
+LIFT_SCORE_WEIGHT = 0.10
+TRAY_REACH_SCORE_WEIGHT = 0.10
 LOWERED_SCORE_WEIGHT = 0.10
 RELEASED_SCORE_WEIGHT = 0.10
-PLACEMENT_SCORE_WEIGHT = 0.30
-EVAL_METRIC_VERSION = 3
+PLACEMENT_SCORE_WEIGHT = 0.50
+EVAL_METRIC_VERSION = 4
+EVAL_SELECTION_MODES: tuple[EvalSelectionMode, ...] = ("mode-a", "mode-b")
+DEFAULT_EVAL_SELECTION_MODE: EvalSelectionMode = "mode-a"
 
 
 class ScoreResult(TypedDict):
@@ -40,6 +45,19 @@ class ScoreResult(TypedDict):
 
 
 _eval_worker_state = None
+
+
+def eval_selection_key(
+    *,
+    selection_mode: EvalSelectionMode,
+    mean_score: float,
+    placement_success_rate: float,
+) -> tuple[float, ...]:
+    if selection_mode == "mode-a":
+        return (mean_score,)
+    if selection_mode == "mode-b":
+        return (placement_success_rate, mean_score)
+    raise ValueError(f"Unknown evaluation selection mode: {selection_mode}")
 
 
 def score_task_metrics(*, metrics: TaskMetrics) -> float:

@@ -11,7 +11,14 @@ import re
 
 from mlp import MLP
 from dataset import PickPlaceDataset
-from eval import ScoreResult, score_ckpt
+from eval import (
+    DEFAULT_EVAL_SELECTION_MODE,
+    EVAL_SELECTION_MODES,
+    EvalSelectionMode,
+    ScoreResult,
+    eval_selection_key,
+    score_ckpt,
+)
 
 from constant import (
     OBS_DIMS, 
@@ -93,6 +100,7 @@ def save_checkpoint(
     eval_score: float | None = None,
     eval_metrics: dict[str, float] | None = None,
     eval_metric_version: int | None = None,
+    eval_selection_mode: EvalSelectionMode | None = None,
 ) -> Path:
     checkpoint = {
         "model_dict": model.state_dict(),
@@ -106,6 +114,8 @@ def save_checkpoint(
         checkpoint["eval_metrics"] = eval_metrics
     if eval_metric_version is not None:
         checkpoint["eval_metric_version"] = eval_metric_version
+    if eval_selection_mode is not None:
+        checkpoint["eval_selection_mode"] = eval_selection_mode
     checkpoint.update(norm_stats)
     torch.save(checkpoint, model_path)
     return model_path
@@ -265,7 +275,9 @@ def train(
     eval_episodes: int = 100,
     eval_max_steps: int = 1400,
     eval_workers: int = 1,
-    early_stop_patience: int = 50,) -> str:
+    early_stop_patience: int = 50,
+    eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
+) -> str:
 
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
@@ -298,6 +310,8 @@ def train(
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     best_score = float("-inf")
+    best_placement_success_rate = float("-inf")
+    best_selection_key: tuple[float, ...] | None = None
     best_epoch = 0
     writer = SummaryWriter(log_dir=str(log_dir))
     try:
@@ -337,9 +351,19 @@ def train(
                     workers=eval_workers,
                 )
                 mean_score = eval_result["mean_score"]
-                improved = mean_score > best_score
+                placement_success_rate = eval_result["placement_success_rate"]
+                selection_key = eval_selection_key(
+                    selection_mode=eval_selection_mode,
+                    mean_score=mean_score,
+                    placement_success_rate=placement_success_rate,
+                )
+                improved = (
+                    best_selection_key is None or selection_key > best_selection_key
+                )
                 if improved:
+                    best_selection_key = selection_key
                     best_score = mean_score
+                    best_placement_success_rate = placement_success_rate
                     best_epoch = epoch_number
                     save_checkpoint(
                         model=model,
@@ -350,6 +374,7 @@ def train(
                         norm_stats=norm_stats,
                         eval_score=mean_score,
                         eval_metric_version=eval_result["eval_metric_version"],
+                        eval_selection_mode=eval_selection_mode,
                         eval_metrics={
                             "grasp_rate": eval_result["grasp_rate"],
                             "lift_rate": eval_result["lift_rate"],
@@ -374,7 +399,10 @@ def train(
                 )
                 print(
                     f"Evaluated {last_model_path} (mean score: {mean_score:.4f}, "
-                    f"best score: {best_score:.4f} at epoch {best_epoch})"
+                    f"placement: {placement_success_rate:.4f}, "
+                    f"best score: {best_score:.4f}, "
+                    f"best placement: {best_placement_success_rate:.4f} "
+                    f"at epoch {best_epoch}, mode: {eval_selection_mode})"
                 )
 
                 should_stop_early = (
@@ -441,6 +469,12 @@ def parse_args():
         default=50,
         help="Stop after this many epochs without eval improvement; 0 disables",
     )
+    parser.add_argument(
+        "--eval-selection-mode",
+        choices=EVAL_SELECTION_MODES,
+        default=DEFAULT_EVAL_SELECTION_MODE,
+        help="Select best checkpoints by weighted score or placement rate first",
+    )
     args = parser.parse_args()
 
     # args validation
@@ -494,6 +528,7 @@ def main():
         eval_max_steps=args.eval_max_steps,
         eval_workers=args.eval_workers,
         early_stop_patience=args.early_stop_patience,
+        eval_selection_mode=args.eval_selection_mode,
     )
 
 if __name__ == "__main__":

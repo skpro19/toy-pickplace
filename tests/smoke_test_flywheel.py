@@ -8,8 +8,16 @@ import torch
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from flywheel import append_round_metrics, make_dagger_round_seeds  # noqa: E402
-from eval import EVAL_METRIC_VERSION  # noqa: E402
+from flywheel import (  # noqa: E402
+    append_round_metrics,
+    make_dagger_round_seeds,
+    select_best_round,
+)
+from eval import (  # noqa: E402
+    DEFAULT_EVAL_SELECTION_MODE,
+    EVAL_METRIC_VERSION,
+    eval_selection_key,
+)
 
 
 def main() -> None:
@@ -18,6 +26,53 @@ def main() -> None:
     assert seeds == make_dagger_round_seeds(seed=42, rounds=10)
     assert len(set(seeds)) == len(seeds)
     assert seeds != make_dagger_round_seeds(seed=43, rounds=10)
+
+    assert eval_selection_key(
+        selection_mode="mode-a",
+        mean_score=0.8,
+        placement_success_rate=0.2,
+    ) > eval_selection_key(
+        selection_mode="mode-a",
+        mean_score=0.7,
+        placement_success_rate=0.3,
+    )
+    assert eval_selection_key(
+        selection_mode="mode-b",
+        mean_score=0.7,
+        placement_success_rate=0.3,
+    ) > eval_selection_key(
+        selection_mode="mode-b",
+        mean_score=0.8,
+        placement_success_rate=0.2,
+    )
+    assert eval_selection_key(
+        selection_mode="mode-b",
+        mean_score=0.8,
+        placement_success_rate=0.3,
+    ) > eval_selection_key(
+        selection_mode="mode-b",
+        mean_score=0.7,
+        placement_success_rate=0.3,
+    )
+
+    candidate_rounds = [
+        {
+            "best_score": 0.8,
+            "best_placement_success_rate": 0.2,
+        },
+        {
+            "best_score": 0.7,
+            "best_placement_success_rate": 0.3,
+        },
+    ]
+    assert select_best_round(
+        rounds=candidate_rounds,
+        selection_mode="mode-a",
+    ) is candidate_rounds[0]
+    assert select_best_round(
+        rounds=candidate_rounds,
+        selection_mode="mode-b",
+    ) is candidate_rounds[1]
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -37,12 +92,15 @@ def main() -> None:
             "eval_seed": 42,
             "eval_episodes": 1,
             "eval_max_steps": 1,
+            "selection_mode": DEFAULT_EVAL_SELECTION_MODE,
         }
         torch.save(
             {
                 "epoch": 1,
                 "eval_score": 0.5,
                 "eval_metric_version": EVAL_METRIC_VERSION,
+                "eval_selection_mode": DEFAULT_EVAL_SELECTION_MODE,
+                "eval_metrics": {"placement_success_rate": 0.25},
             },
             checkpoint_path,
         )
@@ -53,6 +111,8 @@ def main() -> None:
                 "epoch": 1,
                 "eval_score": 0.6,
                 "eval_metric_version": EVAL_METRIC_VERSION - 1,
+                "eval_selection_mode": DEFAULT_EVAL_SELECTION_MODE,
+                "eval_metrics": {"placement_success_rate": 0.5},
             },
             checkpoint_path,
         )
@@ -62,6 +122,23 @@ def main() -> None:
             pass
         else:
             raise AssertionError("Mixed evaluation metric versions were accepted")
+
+        torch.save(
+            {
+                "epoch": 1,
+                "eval_score": 0.6,
+                "eval_metric_version": EVAL_METRIC_VERSION,
+                "eval_selection_mode": "mode-b",
+                "eval_metrics": {"placement_success_rate": 0.5},
+            },
+            checkpoint_path,
+        )
+        try:
+            append_round_metrics(round_index=1, **common_args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Mismatched selection mode was accepted")
 
     print("Flywheel DAgger seed smoke test passed.")
 

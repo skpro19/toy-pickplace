@@ -9,6 +9,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from eval import (
+    DEFAULT_EVAL_SELECTION_MODE,
+    EVAL_SELECTION_MODES,
+    EvalSelectionMode,
+    eval_selection_key,
+)
 from train import train
 from rollout import rollout
 
@@ -35,23 +41,30 @@ def print_section(*, title: str) -> None:
 def print_final_summary(
     *,
     rounds: list[dict[str, object]],
-    metrics_path: Path,) -> None:
+    metrics_path: Path,
+    selection_mode: EvalSelectionMode,
+) -> None:
     print_section(title="Final summary")
-    print(f"{'Round':<8}{'Beta':<10}{'Epoch':<10}{'Score':<10}Checkpoint")
+    print(
+        f"{'Round':<8}{'Beta':<10}{'Epoch':<10}{'Placement':<12}"
+        f"{'Score':<10}Checkpoint"
+    )
     print("-" * SECTION_WIDTH)
     for item in rounds:
         round_label = f'{int(item["round"]):03d}'
         beta = "-" if item["beta"] is None else f'{float(item["beta"]):.3f}'
         print(
             f'{round_label:<8}{beta:<10}{int(item["best_epoch"]):<10}'
+            f'{float(item["best_placement_success_rate"]):<12.4f}'
             f'{float(item["best_score"]):<10.4f}{item["best_checkpoint"]}'
         )
 
-    overall_best = max(rounds, key=lambda item: float(item["best_score"]))
+    overall_best = select_best_round(rounds=rounds, selection_mode=selection_mode)
     print()
     print(
         f'Overall best: round {int(overall_best["round"]):03d}, '
-        f'score {float(overall_best["best_score"]):.4f}'
+        f'placement {float(overall_best["best_placement_success_rate"]):.4f}, '
+        f'score {float(overall_best["best_score"]):.4f}, mode {selection_mode}'
     )
     print(f'Checkpoint: {overall_best["best_checkpoint"]}')
     print(f"Metrics: {metrics_path}")
@@ -92,6 +105,32 @@ def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:
     ]
 
 
+def round_selection_key(
+    *,
+    item: dict[str, object],
+    selection_mode: EvalSelectionMode,
+) -> tuple[float, ...]:
+    return eval_selection_key(
+        selection_mode=selection_mode,
+        mean_score=float(item["best_score"]),
+        placement_success_rate=float(item["best_placement_success_rate"]),
+    )
+
+
+def select_best_round(
+    *,
+    rounds: list[dict[str, object]],
+    selection_mode: EvalSelectionMode,
+) -> dict[str, object]:
+    return max(
+        rounds,
+        key=lambda item: round_selection_key(
+            item=item,
+            selection_mode=selection_mode,
+        ),
+    )
+
+
 def append_round_metrics(
     *,
     metrics_path: Path,
@@ -106,14 +145,28 @@ def append_round_metrics(
     config: dict[str, object],
     eval_seed: int,
     eval_episodes: int,
-    eval_max_steps: int,) -> dict[str, object]:
+    eval_max_steps: int,
+    selection_mode: EvalSelectionMode,
+) -> dict[str, object]:
     checkpoint = torch.load(best_checkpoint, map_location="cpu", weights_only=False)
     eval_metric_version = int(checkpoint.get("eval_metric_version", 1))
+    checkpoint_selection_mode = checkpoint.get(
+        "eval_selection_mode",
+        DEFAULT_EVAL_SELECTION_MODE,
+    )
+    if checkpoint_selection_mode != selection_mode:
+        raise ValueError(
+            "Checkpoint evaluation selection mode does not match flywheel mode"
+        )
     existing_versions = {
         int(item.get("eval_metric_version", 1)) for item in rounds
     }
     if existing_versions and existing_versions != {eval_metric_version}:
         raise ValueError("Cannot compare flywheel scores from different metric versions")
+
+    eval_metrics = checkpoint.get("eval_metrics", {})
+    if "placement_success_rate" not in eval_metrics:
+        raise ValueError("Checkpoint is missing placement_success_rate")
 
     round_metrics = {
         "round": round_index,
@@ -124,22 +177,33 @@ def append_round_metrics(
         "best_checkpoint": str(best_checkpoint),
         "best_epoch": int(checkpoint["epoch"]),
         "best_score": float(checkpoint["eval_score"]),
+        "best_placement_success_rate": float(
+            eval_metrics["placement_success_rate"]
+        ),
         "eval_metric_version": eval_metric_version,
-        "eval_metrics": checkpoint.get("eval_metrics", {}),
+        "eval_selection_mode": selection_mode,
+        "eval_metrics": eval_metrics,
     }
     rounds.append(round_metrics)
 
-    overall_best = max(rounds, key=lambda item: float(item["best_score"]))
+    overall_best = select_best_round(
+        rounds=rounds,
+        selection_mode=selection_mode,
+    )
     metrics = {
         "run_name": run_name,
         "eval_seed": eval_seed,
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
         "eval_metric_version": eval_metric_version,
+        "eval_selection_mode": selection_mode,
         "config": config,
         "rounds": rounds,
         "overall_best_checkpoint": overall_best["best_checkpoint"],
         "overall_best_score": overall_best["best_score"],
+        "overall_best_placement_success_rate": overall_best[
+            "best_placement_success_rate"
+        ],
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
     return round_metrics
@@ -163,7 +227,9 @@ def run_flywheel(
     early_stop_patience: int,
     expert_ratio: float,
     train_seed: int,
-    dagger_seed: int,) -> None:
+    dagger_seed: int,
+    eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
+) -> None:
 
     ckpt_root = Path('checkpoints/flywheel') / run_name
     runs_root = Path('runs/flywheel') / run_name
@@ -195,6 +261,7 @@ def run_flywheel(
         "eval_seed": eval_seed,
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
+        "eval_selection_mode": eval_selection_mode,
         "workers": workers,
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
@@ -211,7 +278,7 @@ def run_flywheel(
     )
     print(
         f"Evaluation: {eval_episodes} episodes x {eval_max_steps} steps "
-        f"every {eval_interval} epochs"
+        f"every {eval_interval} epochs | selection: {eval_selection_mode}"
     )
     print(f"Metrics: {metrics_path}")
 
@@ -248,6 +315,7 @@ def run_flywheel(
                 eval_max_steps=eval_max_steps,
                 eval_workers=workers,
                 early_stop_patience=early_stop_patience,
+                eval_selection_mode=eval_selection_mode,
                 )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
@@ -263,9 +331,11 @@ def run_flywheel(
                 eval_seed=eval_seed,
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
+                selection_mode=eval_selection_mode,
             )
             print(
                 f'Round complete | best epoch: {int(metrics["best_epoch"])} | '
+                f'placement: {float(metrics["best_placement_success_rate"]):.4f} | '
                 f'score: {float(metrics["best_score"]):.4f} | '
                 f'elapsed: {format_duration(seconds=time.perf_counter() - round_started_at)}'
             )
@@ -351,6 +421,7 @@ def run_flywheel(
                 eval_max_steps=eval_max_steps,
                 eval_workers=workers,
                 early_stop_patience=early_stop_patience,
+                eval_selection_mode=eval_selection_mode,
                 )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
@@ -366,14 +437,20 @@ def run_flywheel(
                 eval_seed=eval_seed,
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
+                selection_mode=eval_selection_mode,
             )
             print(
                 f'Round complete | best epoch: {int(metrics["best_epoch"])} | '
+                f'placement: {float(metrics["best_placement_success_rate"]):.4f} | '
                 f'score: {float(metrics["best_score"]):.4f} | '
                 f'elapsed: {format_duration(seconds=time.perf_counter() - round_started_at)}'
             )
 
-    print_final_summary(rounds=round_metrics, metrics_path=metrics_path)
+    print_final_summary(
+        rounds=round_metrics,
+        metrics_path=metrics_path,
+        selection_mode=eval_selection_mode,
+    )
     print(
         f"Total elapsed: "
         f"{format_duration(seconds=time.perf_counter() - flywheel_started_at)}"
@@ -398,7 +475,13 @@ def parse_args():
     parser.add_argument("--eval-interval", type=int, default=20)
     parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--eval-episodes", type=int, default=25)
-    parser.add_argument("--eval-max-steps", type=int, default=2800)
+    parser.add_argument("--eval-max-steps", type=int, default=1400)
+    parser.add_argument(
+        "--selection-mode",
+        choices=EVAL_SELECTION_MODES,
+        default=DEFAULT_EVAL_SELECTION_MODE,
+        help="Select checkpoints by weighted score or placement rate first",
+    )
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
@@ -463,6 +546,7 @@ def main():
         expert_ratio=args.expert_ratio,
         train_seed=args.train_seed,
         dagger_seed=args.dagger_seed,
+        eval_selection_mode=args.selection_mode,
     )
 if __name__ == "__main__":
     main()
