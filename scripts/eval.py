@@ -29,7 +29,7 @@ RELEASED_SCORE_WEIGHT = 0.10
 PLACEMENT_SCORE_WEIGHT = 0.50
 EVAL_METRIC_VERSION = 4
 EVAL_SELECTION_MODES: tuple[EvalSelectionMode, ...] = ("mode-a", "mode-b")
-DEFAULT_EVAL_SELECTION_MODE: EvalSelectionMode = "mode-a"
+DEFAULT_EVAL_SELECTION_MODE: EvalSelectionMode = "mode-b"
 
 
 class ScoreResult(TypedDict):

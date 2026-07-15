@@ -69,17 +69,27 @@ def print_final_summary(
     print(f'Checkpoint: {overall_best["best_checkpoint"]}')
     print(f"Metrics: {metrics_path}")
 
-def next_flywheel_run_name(*, root: Path) -> str:
+def next_flywheel_run_name(*, root: Path, occupied_roots: list[Path]) -> str:
     pattern = re.compile(r"^run-(\d+)$")
-    indices = []
-    if root.exists():
+    root.mkdir(parents=True, exist_ok=True)
+
+    while True:
         indices = [
             int(match.group(1))
-            for path in root.iterdir()
-            if path.is_dir() and (match := pattern.match(path.name))
+            for occupied_root in [root, *occupied_roots]
+            if occupied_root.exists()
+            for path in occupied_root.iterdir()
+            if (match := pattern.match(path.name))
         ]
+        run_name = f"run-{max(indices, default=0) + 1:03d}"
 
-    return f"run-{max(indices, default=0) + 1:03d}"
+        try:
+            # mkdir without exist_ok reserves this name across concurrent processes.
+            (root / run_name).mkdir()
+        except FileExistsError:
+            continue
+
+        return run_name
 
 
 def make_beta_schedule(
@@ -477,7 +487,7 @@ def parse_args():
     parser.add_argument("--eval-episodes", type=int, default=25)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
     parser.add_argument(
-        "--selection-mode",
+        "--mode",
         choices=EVAL_SELECTION_MODES,
         default=DEFAULT_EVAL_SELECTION_MODE,
         help="Select checkpoints by weighted score or placement rate first",
@@ -526,7 +536,12 @@ def parse_args():
 def main():
     args = parse_args()
     run_name = args.run_name or next_flywheel_run_name(
-        root=Path("data/flywheel")
+        root=Path("data/flywheel"),
+        occupied_roots=[
+            Path("checkpoints/flywheel"),
+            Path("runs/flywheel"),
+            Path("results/flywheel"),
+        ],
     )
     run_flywheel(
         run_name=run_name,
@@ -546,7 +561,7 @@ def main():
         expert_ratio=args.expert_ratio,
         train_seed=args.train_seed,
         dagger_seed=args.dagger_seed,
-        eval_selection_mode=args.selection_mode,
+        eval_selection_mode=args.mode,
     )
 if __name__ == "__main__":
     main()

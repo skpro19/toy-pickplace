@@ -11,6 +11,7 @@
 - do not use `dataclass` decorator
 - do not use Ruff for linting or formatting
 - use keyword-only arguments for functions/methods with multiple parameters: put a bare `*` after `self` (or after positional-only args), then name every remaining parameter so callers must pass them by keyword (e.g. `def append_step(self, *, obs: ..., action: ...) -> None`)
+- keep a function's return annotation on the `def` line when it fits (e.g. `def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:`); do not place it on a separate line
 
 ## Git Commits
 - use conventional commits format: `<type>: <short description>`

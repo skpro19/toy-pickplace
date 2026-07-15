@@ -1,6 +1,6 @@
 import torch 
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 from typing import TypedDict
@@ -168,13 +168,11 @@ def prepare_dataset(
     *,
     npz_folders: list[Path],
     sample_ratios: list[float] | None,
-    sample_seed: int,
     action_space: str,
     normalize: bool,) -> tuple[PickPlaceDataset, NormStats]:
     dataset = PickPlaceDataset(
         data_dirs=npz_folders,
         sample_ratios=sample_ratios,
-        seed=sample_seed,
     )
 
     if action_space == "joint_delta":
@@ -196,15 +194,34 @@ def prepare_dataset(
 
     dataset.obs_targets = dataset.obs.copy()
 
+    arm_action_targets = dataset.action_targets[:, 0:ACTION_DIMS-1]
+    arm_actions_mean = np.average(
+        arm_action_targets,
+        axis=0,
+        weights=dataset.sample_weights,
+    )[None, :].astype(np.float32)
+    arm_obs_mean = np.average(
+        dataset.obs_targets,
+        axis=0,
+        weights=dataset.sample_weights,
+    )[None, :].astype(np.float32)
     norm_stats: NormStats = {
-        "arm_actions_mean": np.mean(
-            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
-        ),
-        "arm_actions_std": np.std(
-            dataset.action_targets[:, 0:ACTION_DIMS-1], axis=0, keepdims=True
-        ),
-        "arm_obs_mean": np.mean(dataset.obs_targets, axis=0, keepdims=True),
-        "arm_obs_std": np.std(dataset.obs_targets, axis=0, keepdims=True),
+        "arm_actions_mean": arm_actions_mean,
+        "arm_actions_std": np.sqrt(
+            np.average(
+                np.square(arm_action_targets - arm_actions_mean),
+                axis=0,
+                weights=dataset.sample_weights,
+            )
+        )[None, :].astype(np.float32),
+        "arm_obs_mean": arm_obs_mean,
+        "arm_obs_std": np.sqrt(
+            np.average(
+                np.square(dataset.obs_targets - arm_obs_mean),
+                axis=0,
+                weights=dataset.sample_weights,
+            )
+        )[None, :].astype(np.float32),
     }
 
     if normalize:
@@ -282,14 +299,19 @@ def train(
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
         sample_ratios=sample_ratios,
-        sample_seed=sample_seed,
         action_space=action_space,
         normalize=normalize,
+    )
+    sampler = WeightedRandomSampler(
+        weights=dataset.sample_weights,
+        num_samples=dataset.samples_per_epoch,
+        replacement=True,
+        generator=torch.Generator().manual_seed(sample_seed),
     )
     dataloader = DataLoader(
         dataset=dataset,
         batch_size=200,
-        shuffle=True,
+        sampler=sampler,
     )
 
 

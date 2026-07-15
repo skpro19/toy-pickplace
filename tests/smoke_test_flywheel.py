@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 import tempfile
+import threading
 
 import torch
 
@@ -11,6 +13,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from flywheel import (  # noqa: E402
     append_round_metrics,
     make_dagger_round_seeds,
+    next_flywheel_run_name,
     select_best_round,
 )
 from eval import (  # noqa: E402
@@ -76,6 +79,37 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
+        data_root = root / "data"
+        checkpoint_root = root / "checkpoints"
+        results_root = root / "results"
+        (checkpoint_root / "run-001").mkdir(parents=True)
+        (results_root / "run-003").mkdir(parents=True)
+
+        assert next_flywheel_run_name(
+            root=data_root,
+            occupied_roots=[checkpoint_root, results_root],
+        ) == "run-004"
+        assert (data_root / "run-004").is_dir()
+        assert next_flywheel_run_name(
+            root=data_root,
+            occupied_roots=[checkpoint_root, results_root],
+        ) == "run-005"
+
+        barrier = threading.Barrier(2)
+
+        def reserve_concurrently() -> str:
+            barrier.wait()
+            return next_flywheel_run_name(
+                root=data_root,
+                occupied_roots=[checkpoint_root, results_root],
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            reserved_names = list(
+                executor.map(lambda _: reserve_concurrently(), range(2))
+            )
+        assert sorted(reserved_names) == ["run-006", "run-007"]
+
         metrics_path = root / "metrics.json"
         checkpoint_path = root / "best.pt"
         rounds: list[dict[str, object]] = []
@@ -128,7 +162,7 @@ def main() -> None:
                 "epoch": 1,
                 "eval_score": 0.6,
                 "eval_metric_version": EVAL_METRIC_VERSION,
-                "eval_selection_mode": "mode-b",
+                "eval_selection_mode": "mode-a",
                 "eval_metrics": {"placement_success_rate": 0.5},
             },
             checkpoint_path,

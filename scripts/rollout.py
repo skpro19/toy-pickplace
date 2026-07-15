@@ -161,6 +161,12 @@ class TaskMetricsTracker:
 
 class EpisodeResult(TypedDict):
     steps: int
+    seed: int | None
+    phases: list[int]
+    arm_disagreement: list[float]
+    gripper_disagreement: list[bool]
+    terminal_reason: str
+    final_phase: int
     cube_init_pos: np.ndarray
     tray_init_pos: np.ndarray
     log_buffers: dict[str, list[np.ndarray]]
@@ -226,6 +232,7 @@ def run_dagger_worker(
             dagger=True,
             beta=beta,
             rng=rng,
+            episode_seed=seed,
         )
     save_dagger_episode(
         dagger_dir=Path(dagger_dir),
@@ -406,6 +413,17 @@ def save_dagger_episode(
         policy_actions=np.asarray(result["policy_actions"], dtype=np.float32),
         executed_actions=np.asarray(result["executed_actions"], dtype=np.float32),
         execute_expert=np.asarray(result["expert_action_mask"], dtype=np.bool_),
+        phases=np.asarray(result["phases"], dtype=np.int8),
+        arm_disagreement=np.asarray(result["arm_disagreement"], dtype=np.float32),
+        gripper_disagreement=np.asarray(result["gripper_disagreement"], dtype=np.bool_),
+        terminal_reason=np.asarray(result["terminal_reason"]),
+        final_phase=np.asarray(result["final_phase"], dtype=np.int8),
+        seed=np.asarray(result["seed"], dtype=np.uint32),
+        steps=np.asarray(result["steps"], dtype=np.int32),
+        **{
+            name: np.asarray(value, dtype=np.bool_)
+            for name, value in result["task_metrics"].items()
+        },
         beta=np.asarray(beta, dtype=np.float32),
         cube_init_pos=np.asarray(result["cube_init_pos"], dtype=np.float32),
         tray_init_pos=np.asarray(result["tray_init_pos"], dtype=np.float32),
@@ -464,6 +482,7 @@ def run_policy_episode(
     dagger: bool = False,
     beta: float = 0.0,
     rng: np.random.Generator,
+    episode_seed: int | None = None,
     log_rollout: bool = False,
     viewer=None,
     should_stop=None,
@@ -474,6 +493,9 @@ def run_policy_episode(
     policy_action_history: list[np.ndarray] = []
     executed_actions: list[np.ndarray] = []
     expert_action_mask: list[bool] = []
+    phases: list[int] = []
+    arm_disagreement: list[float] = []
+    gripper_disagreement: list[bool] = []
 
     sim.reset_episode()
     cube_init_pos = sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3].copy()
@@ -513,6 +535,9 @@ def run_policy_episode(
         obs = sim.build_observation()
         if dagger:
             observations.append(obs.copy())
+            if controller is None:
+                raise RuntimeError("DAgger rollout requires a controller")
+            phases.append(controller.phase.value)
 
         obs_tensor, policy_actions, joints_pred, joints_pred_unnorm = (
             predict_policy_action(
@@ -531,6 +556,20 @@ def run_policy_episode(
         if dagger and controller is not None:
             expert_action = controller.compute_actions()
             expert_actions.append(expert_action)
+            arm_disagreement.append(
+                float(
+                    np.linalg.norm(
+                        expert_action[: ACTION_DIMS - 1]
+                        - policy_action_np[: ACTION_DIMS - 1]
+                    )
+                )
+            )
+            gripper_disagreement.append(
+                bool(
+                    (expert_action[ACTION_DIMS - 1] >= 127.5)
+                    != (policy_action_np[ACTION_DIMS - 1] >= 127.5)
+                )
+            )
             execute_expert_action = rng.random() < beta
 
         action_to_execute = expert_action if execute_expert_action else policy_action_np
@@ -569,11 +608,25 @@ def run_policy_episode(
         == len(policy_action_history)
         == len(executed_actions)
         == len(expert_action_mask)
+        == len(phases)
+        == len(arm_disagreement)
+        == len(gripper_disagreement)
     ):
         raise ValueError("Dagger episode buffers have mismatched lengths")
 
+    final_phase = controller.phase.value if controller is not None else -1
+    terminal_reason = (
+        "success" if controller is not None and controller.phase == Phase.DONE else "max_steps"
+    )
+
     return {
         "steps": steps,
+        "seed": episode_seed,
+        "phases": phases,
+        "arm_disagreement": arm_disagreement,
+        "gripper_disagreement": gripper_disagreement,
+        "terminal_reason": terminal_reason,
+        "final_phase": final_phase,
         "cube_init_pos": cube_init_pos,
         "tray_init_pos": tray_init_pos,
         "log_buffers": log_buffers,
@@ -698,7 +751,11 @@ def rollout(
                 if progress_is_tty:
                     episode_pbar.set_postfix_str(f"step={step} phase={phase.name}")
 
+            episode_seeds = make_episode_seeds(seed=seed, episodes=episodes) if dagger else []
             for episode in episode_pbar:
+                episode_seed = episode_seeds[episode] if episode_seeds else None
+                if episode_seed is not None:
+                    sim.rng = np.random.default_rng(episode_seed)
                 result = run_policy_episode(
                     sim=sim,
                     model=model,
@@ -710,7 +767,8 @@ def rollout(
                     track_phase=dagger,
                     dagger=dagger,
                     beta=beta,
-                    rng=rng,
+                    rng=np.random.default_rng(episode_seed) if episode_seed is not None else rng,
+                    episode_seed=episode_seed,
                     log_rollout=log_rollout and log_dir is not None,
                     viewer=viewer,
                     should_stop=lambda: quit_requested,
