@@ -8,7 +8,7 @@ Beta mode randomly executes the expert with the given probability::
         --dagger --dagger-mode beta --beta 0.5 --no-log-rollout
 
 Threshold mode starts a fixed expert burst when the L2 arm-action
-disagreement crosses the threshold from below::
+disagreement exceeds the threshold while no burst is active::
 
     uv run scripts/rollout.py --model checkpoints/run/best.pt \
         --dagger --dagger-mode threshold --intervention-threshold 0.2 \
@@ -216,32 +216,23 @@ def select_dagger_control(
     intervention_threshold: float | None,
     intervention_steps: int,
     intervention_steps_remaining: int,
-    disagreement_was_above_threshold: bool,
     rng: np.random.Generator,
-) -> tuple[bool, int, bool]:
+) -> tuple[bool, int]:
     if mode == "beta":
-        return rng.random() < beta, 0, False
+        return rng.random() < beta, 0
     if mode != "threshold":
         raise ValueError(f"Unsupported DAgger intervention mode: {mode!r}")
     if intervention_threshold is None:
         raise ValueError("Threshold intervention mode requires a threshold")
 
     disagreement_is_above_threshold = arm_disagreement > intervention_threshold
-    crossed_threshold = (
-        disagreement_is_above_threshold
-        and not disagreement_was_above_threshold
-    )
-    if crossed_threshold and intervention_steps_remaining == 0:
+    if disagreement_is_above_threshold and intervention_steps_remaining == 0:
         intervention_steps_remaining = intervention_steps
 
     execute_expert = intervention_steps_remaining > 0
     if execute_expert:
         intervention_steps_remaining -= 1
-    return (
-        execute_expert,
-        intervention_steps_remaining,
-        disagreement_is_above_threshold,
-    )
+    return execute_expert, intervention_steps_remaining
 
 
 def initialize_dagger_worker(config: tuple[str, bool]) -> None:
@@ -599,7 +590,6 @@ def run_policy_episode(
     arm_disagreement: list[float] = []
     gripper_disagreement: list[bool] = []
     intervention_steps_remaining = 0
-    disagreement_was_above_threshold = False
 
     sim.reset_episode()
     cube_init_pos = sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3].copy()
@@ -676,7 +666,6 @@ def run_policy_episode(
             (
                 execute_expert_action,
                 intervention_steps_remaining,
-                disagreement_was_above_threshold,
             ) = select_dagger_control(
                 mode=intervention_mode,
                 beta=beta,
@@ -684,7 +673,6 @@ def run_policy_episode(
                 intervention_threshold=intervention_threshold,
                 intervention_steps=intervention_steps,
                 intervention_steps_remaining=intervention_steps_remaining,
-                disagreement_was_above_threshold=disagreement_was_above_threshold,
                 rng=rng,
             )
 
@@ -1049,7 +1037,7 @@ def parse_args():
         "--intervention-steps",
         type=int,
         default=DEFAULT_INTERVENTION_STEPS,
-        help="Consecutive expert steps after a threshold crossing",
+        help="Minimum expert burst after disagreement exceeds the threshold",
     )
     parser.add_argument(
         "--headless", action=argparse.BooleanOptionalAction, default=False

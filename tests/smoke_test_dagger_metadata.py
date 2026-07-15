@@ -14,21 +14,19 @@ from rollout import save_dagger_episode, select_dagger_control  # noqa: E402
 def main() -> None:
     rng = np.random.default_rng(0)
     remaining = 0
-    was_above = False
     execute_expert = []
     for disagreement in (0.5, 1.1, 2.0, 2.0, 2.0, 0.5, 1.2):
-        execute, remaining, was_above = select_dagger_control(
+        execute, remaining = select_dagger_control(
             mode="threshold",
             beta=0.0,
             arm_disagreement=disagreement,
             intervention_threshold=1.0,
             intervention_steps=3,
             intervention_steps_remaining=remaining,
-            disagreement_was_above_threshold=was_above,
             rng=rng,
         )
         execute_expert.append(execute)
-    assert execute_expert == [False, True, True, True, False, False, True]
+    assert execute_expert == [False, True, True, True, True, True, True]
 
     with tempfile.TemporaryDirectory() as temp_dir:
         save_dagger_episode(
