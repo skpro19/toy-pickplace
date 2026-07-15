@@ -8,15 +8,36 @@ import numpy as np
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from rollout import save_dagger_episode  # noqa: E402
+from rollout import save_dagger_episode, select_dagger_control  # noqa: E402
 
 
 def main() -> None:
+    rng = np.random.default_rng(0)
+    remaining = 0
+    was_above = False
+    execute_expert = []
+    for disagreement in (0.5, 1.1, 2.0, 2.0, 2.0, 0.5, 1.2):
+        execute, remaining, was_above = select_dagger_control(
+            mode="threshold",
+            beta=0.0,
+            arm_disagreement=disagreement,
+            intervention_threshold=1.0,
+            intervention_steps=3,
+            intervention_steps_remaining=remaining,
+            disagreement_was_above_threshold=was_above,
+            rng=rng,
+        )
+        execute_expert.append(execute)
+    assert execute_expert == [False, True, True, True, False, False, True]
+
     with tempfile.TemporaryDirectory() as temp_dir:
         save_dagger_episode(
             dagger_dir=Path(temp_dir),
             episode_idx=0,
-            beta=0.5,
+            beta=0.0,
+            intervention_mode="threshold",
+            intervention_threshold=1.0,
+            intervention_steps=3,
             result={
                 "steps": 2,
                 "seed": 123,
@@ -51,6 +72,9 @@ def main() -> None:
             assert data["final_phase"].item() == 2
             assert data["seed"].item() == 123
             assert data["grasped"].item()
+            assert data["intervention_mode"].item() == "threshold"
+            assert data["intervention_threshold"].item() == 1.0
+            assert data["intervention_steps"].item() == 3
 
     print("DAgger metadata smoke test passed.")
 

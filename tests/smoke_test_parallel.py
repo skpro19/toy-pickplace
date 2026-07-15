@@ -154,6 +154,31 @@ def main() -> None:
         output_names = sorted(path.name for path in dagger_dir.glob("*.npz"))
         assert output_names == ["pick_place_000000.npz", "pick_place_000001.npz"]
 
+        threshold_dagger_dir = root / "threshold-dagger"
+        rollout(
+            model_path=str(checkpoint_path),
+            randomize_scene=True,
+            seed=42,
+            episodes=1,
+            max_steps=5,
+            log_root=None,
+            train_npz_dir=None,
+            log_rollout=False,
+            dagger=True,
+            dagger_root=threshold_dagger_dir,
+            beta=0.0,
+            intervention_mode="threshold",
+            intervention_threshold=0.0,
+            intervention_steps=2,
+            create_dagger_subdir=False,
+            headless=True,
+            workers=2,
+        )
+        with np.load(threshold_dagger_dir / "pick_place_000000.npz") as data:
+            assert data["intervention_mode"].item() == "threshold"
+            assert data["intervention_threshold"].item() == 0.0
+            assert data["intervention_steps"].item() == 2
+
     print("Parallel evaluation and DAgger smoke test passed.")
 
 

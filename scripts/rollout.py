@@ -1,5 +1,25 @@
+"""Run policy and DAgger rollouts.
+
+Examples using the viewer and saving DAgger samples:
+
+Beta mode randomly executes the expert with the given probability::
+
+    uv run scripts/rollout.py --model checkpoints/run/best.pt \
+        --dagger --dagger-mode beta --beta 0.5 --no-log-rollout
+
+Threshold mode starts a fixed expert burst when the L2 arm-action
+disagreement crosses the threshold from below::
+
+    uv run scripts/rollout.py --model checkpoints/run/best.pt \
+        --dagger --dagger-mode threshold --intervention-threshold 0.2 \
+        --intervention-steps 50 --no-log-rollout
+
+The viewer is enabled unless ``--headless`` is provided.
+"""
+
 import argparse
 import multiprocessing
+import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -29,6 +49,8 @@ from sim import SimEnv
 
 
 DEFAULT_DAGGER_DIR = Path("data/dagger")
+DAGGER_INTERVENTION_MODES = ("beta", "threshold")
+DEFAULT_INTERVENTION_STEPS = 50
 GRASP_STABLE_STEPS = 5
 LOWERING_STABLE_STEPS = 5
 RELEASE_STABLE_STEPS = 5
@@ -186,6 +208,42 @@ def make_episode_seeds(*, seed: int, episodes: int) -> list[int]:
     ]
 
 
+def select_dagger_control(
+    *,
+    mode: str,
+    beta: float,
+    arm_disagreement: float,
+    intervention_threshold: float | None,
+    intervention_steps: int,
+    intervention_steps_remaining: int,
+    disagreement_was_above_threshold: bool,
+    rng: np.random.Generator,
+) -> tuple[bool, int, bool]:
+    if mode == "beta":
+        return rng.random() < beta, 0, False
+    if mode != "threshold":
+        raise ValueError(f"Unsupported DAgger intervention mode: {mode!r}")
+    if intervention_threshold is None:
+        raise ValueError("Threshold intervention mode requires a threshold")
+
+    disagreement_is_above_threshold = arm_disagreement > intervention_threshold
+    crossed_threshold = (
+        disagreement_is_above_threshold
+        and not disagreement_was_above_threshold
+    )
+    if crossed_threshold and intervention_steps_remaining == 0:
+        intervention_steps_remaining = intervention_steps
+
+    execute_expert = intervention_steps_remaining > 0
+    if execute_expert:
+        intervention_steps_remaining -= 1
+    return (
+        execute_expert,
+        intervention_steps_remaining,
+        disagreement_is_above_threshold,
+    )
+
+
 def initialize_dagger_worker(config: tuple[str, bool]) -> None:
     global _dagger_worker_state
 
@@ -209,12 +267,21 @@ def initialize_dagger_worker(config: tuple[str, bool]) -> None:
 
 
 def run_dagger_worker(
-    task: tuple[int, int, int, float, str],
+    task: tuple[int, int, int, float, str, str, float | None, int],
 ) -> tuple[int, int]:
     if _dagger_worker_state is None:
         raise RuntimeError("DAgger worker was not initialized")
 
-    episode_idx, seed, max_steps, beta, dagger_dir = task
+    (
+        episode_idx,
+        seed,
+        max_steps,
+        beta,
+        dagger_dir,
+        intervention_mode,
+        intervention_threshold,
+        intervention_steps,
+    ) = task
     sim, model, device, normalize, action_space, norm_dict = _dagger_worker_state
     sim.rng = np.random.default_rng(seed)
     rng = np.random.default_rng(seed)
@@ -231,6 +298,9 @@ def run_dagger_worker(
             track_phase=True,
             dagger=True,
             beta=beta,
+            intervention_mode=intervention_mode,
+            intervention_threshold=intervention_threshold,
+            intervention_steps=intervention_steps,
             rng=rng,
             episode_seed=seed,
         )
@@ -238,6 +308,9 @@ def run_dagger_worker(
         dagger_dir=Path(dagger_dir),
         episode_idx=episode_idx,
         beta=beta,
+        intervention_mode=intervention_mode,
+        intervention_threshold=intervention_threshold,
+        intervention_steps=intervention_steps,
         result=result,
     )
     return episode_idx, result["steps"]
@@ -270,11 +343,23 @@ def make_rollout_log_dir(*, log_root: Path, model_path: Path) -> Path:
     return log_root / f"{timestamp}_{checkpoint_name}"
 
 
-def make_dagger_log_dir(*, dagger_root: Path, model_path: Path, beta: float) -> Path:
+def make_dagger_log_dir(
+    *,
+    dagger_root: Path,
+    model_path: Path,
+    beta: float,
+    intervention_mode: str,
+    intervention_threshold: float | None,
+) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_name = model_path.parent.name or model_path.stem
-    beta_name = f"beta{beta:.2f}".replace(".", "p")
-    return dagger_root / f"{timestamp}_{checkpoint_name}_{beta_name}"
+    if intervention_mode == "threshold":
+        if intervention_threshold is None:
+            raise ValueError("Threshold intervention mode requires a threshold")
+        intervention_name = f"threshold{intervention_threshold:g}".replace(".", "p")
+    else:
+        intervention_name = f"beta{beta:.2f}".replace(".", "p")
+    return dagger_root / f"{timestamp}_{checkpoint_name}_{intervention_name}"
 
 
 def prepare_rollout_log_dir(
@@ -300,6 +385,8 @@ def prepare_dagger_dir(
     dagger_root: Path,
     model_path: Path,
     beta: float,
+    intervention_mode: str,
+    intervention_threshold: float | None,
     create_subdir: bool = True,) -> Path | None:
     if not enabled:
         return None
@@ -313,6 +400,8 @@ def prepare_dagger_dir(
         dagger_root=dagger_root,
         model_path=model_path,
         beta=beta,
+        intervention_mode=intervention_mode,
+        intervention_threshold=intervention_threshold,
     )
     dagger_dir.mkdir(parents=True, exist_ok=False)
     print(f"Dagger log dir: {dagger_dir}")
@@ -404,6 +493,9 @@ def save_dagger_episode(
     dagger_dir: Path,
     episode_idx: int,
     beta: float,
+    intervention_mode: str = "beta",
+    intervention_threshold: float | None = None,
+    intervention_steps: int = DEFAULT_INTERVENTION_STEPS,
     result: EpisodeResult,) -> None:
     dagger_path = dagger_dir / f"pick_place_{episode_idx:06d}.npz"
     np.savez_compressed(
@@ -425,6 +517,12 @@ def save_dagger_episode(
             for name, value in result["task_metrics"].items()
         },
         beta=np.asarray(beta, dtype=np.float32),
+        intervention_mode=np.asarray(intervention_mode),
+        intervention_threshold=np.asarray(
+            np.nan if intervention_threshold is None else intervention_threshold,
+            dtype=np.float32,
+        ),
+        intervention_steps=np.asarray(intervention_steps, dtype=np.int32),
         cube_init_pos=np.asarray(result["cube_init_pos"], dtype=np.float32),
         tray_init_pos=np.asarray(result["tray_init_pos"], dtype=np.float32),
     )
@@ -481,12 +579,16 @@ def run_policy_episode(
     track_phase: bool = False,
     dagger: bool = False,
     beta: float = 0.0,
+    intervention_mode: str = "beta",
+    intervention_threshold: float | None = None,
+    intervention_steps: int = DEFAULT_INTERVENTION_STEPS,
     rng: np.random.Generator,
     episode_seed: int | None = None,
     log_rollout: bool = False,
     viewer=None,
     should_stop=None,
-    phase_callback=None,) -> EpisodeResult:
+    phase_callback=None,
+    control_callback=None,) -> EpisodeResult:
     """Run one policy episode, stopping when the controller reaches DONE."""
     observations: list[np.ndarray] = []
     expert_actions: list[np.ndarray] = []
@@ -496,6 +598,8 @@ def run_policy_episode(
     phases: list[int] = []
     arm_disagreement: list[float] = []
     gripper_disagreement: list[bool] = []
+    intervention_steps_remaining = 0
+    disagreement_was_above_threshold = False
 
     sim.reset_episode()
     cube_init_pos = sim.data.qpos[sim.cube_qpos_addr : sim.cube_qpos_addr + 3].copy()
@@ -556,23 +660,37 @@ def run_policy_episode(
         if dagger and controller is not None:
             expert_action = controller.compute_actions()
             expert_actions.append(expert_action)
-            arm_disagreement.append(
-                float(
-                    np.linalg.norm(
-                        expert_action[: ACTION_DIMS - 1]
-                        - policy_action_np[: ACTION_DIMS - 1]
-                    )
+            current_arm_disagreement = float(
+                np.linalg.norm(
+                    expert_action[: ACTION_DIMS - 1]
+                    - policy_action_np[: ACTION_DIMS - 1]
                 )
             )
+            arm_disagreement.append(current_arm_disagreement)
             gripper_disagreement.append(
                 bool(
                     (expert_action[ACTION_DIMS - 1] >= 127.5)
                     != (policy_action_np[ACTION_DIMS - 1] >= 127.5)
                 )
             )
-            execute_expert_action = rng.random() < beta
+            (
+                execute_expert_action,
+                intervention_steps_remaining,
+                disagreement_was_above_threshold,
+            ) = select_dagger_control(
+                mode=intervention_mode,
+                beta=beta,
+                arm_disagreement=current_arm_disagreement,
+                intervention_threshold=intervention_threshold,
+                intervention_steps=intervention_steps,
+                intervention_steps_remaining=intervention_steps_remaining,
+                disagreement_was_above_threshold=disagreement_was_above_threshold,
+                rng=rng,
+            )
 
         action_to_execute = expert_action if execute_expert_action else policy_action_np
+        if control_callback is not None:
+            control_callback(steps, execute_expert_action)
         if dagger:
             policy_action_history.append(policy_action_np.copy())
             executed_actions.append(action_to_execute.copy())
@@ -652,6 +770,9 @@ def rollout(
     dagger: bool,
     dagger_root: str | Path,
     beta: float,
+    intervention_mode: str = "beta",
+    intervention_threshold: float | None = None,
+    intervention_steps: int = DEFAULT_INTERVENTION_STEPS,
     create_dagger_subdir: bool = True,
     headless: bool,
     workers: int = 1,):
@@ -659,6 +780,16 @@ def rollout(
         raise ValueError("workers must be at least 1")
     if episodes < 1:
         raise ValueError("episodes must be at least 1")
+    if intervention_mode not in DAGGER_INTERVENTION_MODES:
+        raise ValueError(
+            f"Unsupported DAgger intervention mode: {intervention_mode!r}"
+        )
+    if intervention_mode == "threshold" and intervention_threshold is None:
+        raise ValueError("Threshold intervention mode requires a threshold")
+    if intervention_threshold is not None and intervention_threshold < 0.0:
+        raise ValueError("intervention threshold must be non-negative")
+    if intervention_steps < 1:
+        raise ValueError("intervention steps must be at least 1")
 
     if workers > 1:
         if not headless or not dagger or log_rollout:
@@ -672,6 +803,8 @@ def rollout(
             dagger_root=Path(dagger_root),
             model_path=model_path,
             beta=beta,
+            intervention_mode=intervention_mode,
+            intervention_threshold=intervention_threshold,
             create_subdir=create_dagger_subdir,
         )
         if dagger_dir is None:
@@ -679,7 +812,16 @@ def rollout(
 
         episode_seeds = make_episode_seeds(seed=seed, episodes=episodes)
         tasks = [
-            (episode_idx, episode_seed, max_steps, beta, str(dagger_dir))
+            (
+                episode_idx,
+                episode_seed,
+                max_steps,
+                beta,
+                str(dagger_dir),
+                intervention_mode,
+                intervention_threshold,
+                intervention_steps,
+            )
             for episode_idx, episode_seed in enumerate(episode_seeds)
         ]
         worker_count = min(workers, episodes)
@@ -727,6 +869,8 @@ def rollout(
         dagger_root=Path(dagger_root),
         model_path=model_path,
         beta=beta,
+        intervention_mode=intervention_mode,
+        intervention_threshold=intervention_threshold,
         create_subdir=create_dagger_subdir,
     )
 
@@ -747,12 +891,55 @@ def rollout(
                 disable=not progress_is_tty,
             )
 
+            current_phase = None
+            current_step = 0
+            expert_was_executing = False
+            last_expert_sound_at = float("-inf")
+
+            def update_progress() -> None:
+                if not progress_is_tty:
+                    return
+                phase_name = current_phase.name if current_phase is not None else "-"
+                control_name = "expert" if expert_was_executing else "policy"
+                episode_pbar.set_postfix_str(
+                    f"step={current_step} phase={phase_name} control={control_name}"
+                )
+
             def update_phase_progress(step, phase) -> None:
-                if progress_is_tty:
-                    episode_pbar.set_postfix_str(f"step={step} phase={phase.name}")
+                nonlocal current_phase, current_step
+                current_step = step
+                current_phase = phase
+                update_progress()
+
+            def update_control_progress(step, execute_expert) -> None:
+                nonlocal current_step, expert_was_executing, last_expert_sound_at
+                current_step = step
+                now = time.monotonic()
+                if (
+                    progress_is_tty
+                    and execute_expert
+                    and not expert_was_executing
+                    and now - last_expert_sound_at >= 0.25
+                ):
+                    try:
+                        subprocess.Popen(
+                            ["canberra-gtk-play", "--id=bell"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except OSError:
+                        sys.stderr.write("\a")
+                        sys.stderr.flush()
+                    last_expert_sound_at = now
+                expert_was_executing = execute_expert
+                update_progress()
 
             episode_seeds = make_episode_seeds(seed=seed, episodes=episodes) if dagger else []
             for episode in episode_pbar:
+                current_phase = None
+                current_step = 0
+                expert_was_executing = False
+                last_expert_sound_at = float("-inf")
                 episode_seed = episode_seeds[episode] if episode_seeds else None
                 if episode_seed is not None:
                     sim.rng = np.random.default_rng(episode_seed)
@@ -767,12 +954,16 @@ def rollout(
                     track_phase=dagger,
                     dagger=dagger,
                     beta=beta,
+                    intervention_mode=intervention_mode,
+                    intervention_threshold=intervention_threshold,
+                    intervention_steps=intervention_steps,
                     rng=np.random.default_rng(episode_seed) if episode_seed is not None else rng,
                     episode_seed=episode_seed,
                     log_rollout=log_rollout and log_dir is not None,
                     viewer=viewer,
                     should_stop=lambda: quit_requested,
                     phase_callback=update_phase_progress,
+                    control_callback=update_control_progress,
                 )
 
                 if log_rollout and log_dir is not None:
@@ -789,6 +980,9 @@ def rollout(
                         dagger_dir=dagger_dir,
                         episode_idx=episode,
                         beta=beta,
+                        intervention_mode=intervention_mode,
+                        intervention_threshold=intervention_threshold,
+                        intervention_steps=intervention_steps,
                         result=result,
                     )
 
@@ -840,6 +1034,24 @@ def parse_args():
     parser.add_argument("--dagger-dir", type=Path, default=DEFAULT_DAGGER_DIR)
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument(
+        "--dagger-mode",
+        choices=DAGGER_INTERVENTION_MODES,
+        default="beta",
+        help="Choose random beta mixing or disagreement-triggered interventions",
+    )
+    parser.add_argument(
+        "--intervention-threshold",
+        type=float,
+        default=None,
+        help="L2 arm-action disagreement that triggers threshold intervention",
+    )
+    parser.add_argument(
+        "--intervention-steps",
+        type=int,
+        default=DEFAULT_INTERVENTION_STEPS,
+        help="Consecutive expert steps after a threshold crossing",
+    )
+    parser.add_argument(
         "--headless", action=argparse.BooleanOptionalAction, default=False
     )
     parser.add_argument("--workers", type=int, default=1)
@@ -849,6 +1061,17 @@ def parse_args():
         parser.error(f"--beta must be in [0.0, 1.0], got {args.beta}")
     if args.beta > 0.0 and not args.dagger:
         parser.error("--beta requires --dagger")
+    if args.dagger_mode != "beta" and not args.dagger:
+        parser.error("--dagger-mode requires --dagger")
+    if args.dagger_mode == "threshold":
+        if args.intervention_threshold is None:
+            parser.error("threshold mode requires --intervention-threshold")
+        if args.beta != 0.0:
+            parser.error("--beta cannot be used with threshold mode")
+    if args.intervention_threshold is not None and args.intervention_threshold < 0.0:
+        parser.error("--intervention-threshold must be non-negative")
+    if args.intervention_steps < 1:
+        parser.error("--intervention-steps must be at least 1")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
 
@@ -869,6 +1092,9 @@ def main():
         dagger=args.dagger,
         dagger_root=args.dagger_dir,
         beta=args.beta,
+        intervention_mode=args.dagger_mode,
+        intervention_threshold=args.intervention_threshold,
+        intervention_steps=args.intervention_steps,
         create_dagger_subdir=True,
         headless=args.headless,
         workers=args.workers,
