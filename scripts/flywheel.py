@@ -225,6 +225,7 @@ def run_flywheel(
     intervention_steps: int,
     expert_npz_dir: Path,
     num_epochs: int,
+    batch_size: int,
     dagger_episodes: int,
     rollout_max_steps: int,
     eval_interval: int,
@@ -256,6 +257,7 @@ def run_flywheel(
     config = {
         "expert_dir": str(expert_npz_dir),
         "epochs": num_epochs,
+        "batch_size": batch_size,
         "dagger_rounds": num_dagger_rounds,
         "dagger_mode": "threshold",
         "intervention_threshold": intervention_threshold,
@@ -277,7 +279,10 @@ def run_flywheel(
 
     print_section(title=f"Flywheel {run_name}")
     print(f"Expert data: {expert_npz_dir}")
-    print(f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs}")
+    print(
+        f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs} | "
+        f"Batch size: {batch_size}"
+    )
     print(
         f"Expert ratio: {expert_ratio:.2f} | "
         f"DAgger intervention ratio: {dagger_intervention_ratio:.2f} | "
@@ -313,6 +318,7 @@ def run_flywheel(
 
             torch.manual_seed(train_seed)
             train(num_epochs=num_epochs,
+                batch_size=batch_size,
                 npz_folders=[expert_npz_dir],
                 checkpoint_dir=ckpt_dir,
                 log_dir=runs_dir,
@@ -446,6 +452,7 @@ def run_flywheel(
 
             torch.manual_seed(train_seed)
             train(num_epochs=num_epochs,
+                batch_size=batch_size,
                 npz_folders=[expert_npz_dir, *dagger_dirs],
                 checkpoint_dir=ckpt_dir,
                 log_dir=runs_dir,
@@ -522,6 +529,7 @@ def parse_args():
         default=Path("data/expert/rand-100"),
     )
     parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--dagger-rounds", type=int, default=10)
     parser.add_argument(
         "--intervention-threshold",
@@ -576,6 +584,8 @@ def parse_args():
         parser.error(f"--expert-dir does not exist or is not a directory: {args.expert_dir}")
     if args.epochs < 1:
         parser.error("--epochs must be at least 1")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
     if args.dagger_rounds < 1:
         parser.error("--dagger-rounds must be at least 1")
     if args.intervention_threshold < 0.0:
@@ -625,6 +635,7 @@ def main():
         intervention_steps=args.intervention_steps,
         expert_npz_dir=args.expert_dir,
         num_epochs=args.epochs,
+        batch_size=args.batch_size,
         dagger_episodes=args.dagger_episodes,
         rollout_max_steps=args.rollout_max_steps,
         eval_interval=args.eval_interval,

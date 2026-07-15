@@ -282,6 +282,7 @@ def train_epoch(
 def train(
     *,
     num_epochs: int=10,
+    batch_size: int=200,
     npz_folders: list[Path],
     checkpoint_dir: Path,
     log_dir: Path,
@@ -314,7 +315,7 @@ def train(
     )
     dataloader = DataLoader(
         dataset=dataset,
-        batch_size=200,
+        batch_size=batch_size,
         sampler=sampler,
     )
 
@@ -467,6 +468,7 @@ def parse_args():
     parser.add_argument("--base", type=str, default="action-delta")
     parser.add_argument("--checkpoint_root", type=Path, default=Path("checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--log_root", type=Path, default=Path("runs"))
     parser.add_argument("--npz", type=Path, nargs="+", required=True, help="npz folder path(s)")
     parser.add_argument("--action_space", type=str, default="joint_delta", 
@@ -524,6 +526,8 @@ def parse_args():
     # args validation
     if args.epochs < 1:
         parser.error("--epochs must be at least 1")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
     if args.eval_interval < 1:
         parser.error("--eval-interval must be at least 1")
     if args.eval_episodes < 1:
@@ -563,6 +567,7 @@ def main():
 
     train(
         num_epochs=args.epochs, 
+        batch_size=args.batch_size,
         npz_folders=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
