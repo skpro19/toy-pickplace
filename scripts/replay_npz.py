@@ -85,6 +85,15 @@ def replay_actions(
                         f"Available keys: {sorted(data.files)}"
                     )
                 actions = data[action_key]
+                if "execute_expert" in data.files:
+                    execute_expert = np.asarray(data["execute_expert"], dtype=np.bool_)
+                    if len(execute_expert) != len(actions):
+                        raise ValueError(
+                            f"{fpath} has {len(actions)} actions but "
+                            f"{len(execute_expert)} execute_expert entries"
+                        )
+                else:
+                    execute_expert = None
                 if "cube_init_pos" in data.files and "tray_init_pos" in data.files:
                     restore_episode_layout(
                         sim=sim,
@@ -95,13 +104,24 @@ def replay_actions(
                     print("  layout metadata missing; replaying from reset layout")
                 # print(f"  {action_key}.shape => {actions.shape}")
 
-                for action in actions:
+                for step_index, action in enumerate(actions):
                     if quit_requested or not viewer.is_running():
                         break
+                    source = (
+                        "unknown"
+                        if execute_expert is None
+                        else "expert" if execute_expert[step_index] else "policy"
+                    )
+                    print(
+                        f"\r  Step {step_index + 1}/{len(actions)}: {source} executed",
+                        end="",
+                        flush=True,
+                    )
                     sim.data.ctrl[: sim.model.nu] = action
                     mujoco.mj_step(sim.model, sim.data)
                     time.sleep(sim.model.opt.timestep * 1)
                     viewer.sync()
+                print()
 
 
 def parse_args():
