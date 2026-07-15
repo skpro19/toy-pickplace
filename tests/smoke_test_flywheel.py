@@ -14,6 +14,7 @@ from flywheel import (  # noqa: E402
     append_round_metrics,
     make_dagger_round_seeds,
     next_flywheel_run_name,
+    parse_args,
     select_best_round,
 )
 from eval import (  # noqa: E402
@@ -112,6 +113,29 @@ def main() -> None:
 
         metrics_path = root / "metrics.json"
         checkpoint_path = root / "best.pt"
+
+        config_path = root / "flywheel.yaml"
+        config_path.write_text(
+            f"expert_dir: {data_root}\n"
+            "epochs: 7\n"
+            "dagger_intervention_ratio: 0.7\n"
+        )
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "flywheel.py",
+                "--config",
+                str(config_path),
+                "--epochs",
+                "9",
+            ]
+            args = parse_args()
+        finally:
+            sys.argv = original_argv
+        assert args.expert_dir == data_root
+        assert args.epochs == 9
+        assert args.dagger_intervention_ratio == 0.7
+
         rounds: list[dict[str, object]] = []
         common_args = {
             "metrics_path": metrics_path,

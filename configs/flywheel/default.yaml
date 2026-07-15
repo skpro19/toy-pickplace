@@ -1,0 +1,23 @@
+run_name: null
+expert_dir: data/expert/rand-100
+epochs: 1000
+dagger_rounds: 10
+
+intervention_threshold: 0.2
+intervention_steps: 50
+dagger_intervention_ratio: 0.8
+
+dagger_episodes: 50
+rollout_max_steps: 1400
+
+eval_interval: 20
+eval_seed: 42
+eval_episodes: 25
+eval_max_steps: 1400
+mode: mode-b
+
+workers: 6
+early_stop_patience: 50
+expert_ratio: 0.5
+train_seed: 0
+dagger_seed: 0

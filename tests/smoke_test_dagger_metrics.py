@@ -58,7 +58,7 @@ def main() -> None:
             path=dagger_dir / "pick_place_000001.npz",
             arm_disagreement=[0.2, 0.6],
             execute_expert=[True, False],
-            gripper_disagreement=[False, True],
+            gripper_disagreement=[True, False],
             placement_success=False,
         )
 
@@ -71,6 +71,7 @@ def main() -> None:
         assert np.isclose(summary["expert_action_fraction"], 0.6)
         assert np.isclose(summary["threshold_exceedance_fraction"], 0.6)
         assert np.isclose(summary["gripper_disagreement_fraction"], 0.4)
+        assert np.isclose(summary["intervention_trigger_fraction"], 0.8)
         assert summary["expert_control_segments"] == 2
         assert np.isclose(summary["expert_segment_steps"]["mean"], 1.5)
         assert summary["expert_segment_steps"]["max"] == 2

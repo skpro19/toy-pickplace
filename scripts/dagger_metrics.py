@@ -158,6 +158,11 @@ def summarize_dagger_round(
         "threshold_exceedance_fraction": float(
             np.mean(all_arm_disagreement > threshold)
         ),
+        "intervention_trigger_fraction": float(
+            np.mean(
+                (all_arm_disagreement > threshold) | all_gripper_disagreement
+            )
+        ),
         "arm_disagreement_quantiles": _quantiles(values=all_arm_disagreement),
         "gripper_disagreement_fraction": float(
             np.mean(all_gripper_disagreement)
@@ -308,6 +313,7 @@ def plot_dagger_round_trends(
 
     rate_series = {
         "expert action": "expert_action_fraction",
+        "intervention trigger": "intervention_trigger_fraction",
         "above threshold": "threshold_exceedance_fraction",
         "gripper disagreement": "gripper_disagreement_fraction",
     }

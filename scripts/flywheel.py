@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 
 from dagger_metrics import (
     plot_dagger_round,
@@ -233,6 +234,7 @@ def run_flywheel(
     workers: int,
     early_stop_patience: int,
     expert_ratio: float,
+    dagger_intervention_ratio: float,
     train_seed: int,
     dagger_seed: int,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
@@ -268,6 +270,7 @@ def run_flywheel(
         "workers": workers,
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
+        "dagger_intervention_ratio": dagger_intervention_ratio,
         "train_seed": train_seed,
         "dagger_seed": dagger_seed,
     }
@@ -277,6 +280,7 @@ def run_flywheel(
     print(f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs}")
     print(
         f"Expert ratio: {expert_ratio:.2f} | "
+        f"DAgger intervention ratio: {dagger_intervention_ratio:.2f} | "
         f"Threshold: {intervention_threshold:.3f} | "
         f"Intervention steps: {intervention_steps}"
     )
@@ -414,8 +418,8 @@ def run_flywheel(
             )
             print(
                 f'Expert actions: {float(dagger_summary["expert_action_fraction"]):.1%} | '
-                f'Above threshold: '
-                f'{float(dagger_summary["threshold_exceedance_fraction"]):.1%} | '
+                f'Triggers: '
+                f'{float(dagger_summary["intervention_trigger_fraction"]):.1%} | '
                 f'Segments: {int(dagger_summary["expert_control_segments"])}'
             )
 
@@ -437,11 +441,6 @@ def run_flywheel(
                 title=f"Round {round:03d}/{num_rounds - 1:03d}: retraining"
             )
             print(f"Datasets: {len(dagger_dirs) + 1}")
-            for data_dir, ratio in zip(
-                [expert_npz_dir, *dagger_dirs],
-                sample_ratios,
-            ):
-                print(f"  {ratio:.3f}  {data_dir}")
             print(f"Checkpoint: {ckpt_dir}")
             print(f"TensorBoard: {runs_dir}")
 
@@ -451,6 +450,7 @@ def run_flywheel(
                 checkpoint_dir=ckpt_dir,
                 log_dir=runs_dir,
                 sample_ratios=sample_ratios,
+                dagger_intervention_ratio=dagger_intervention_ratio,
                 sample_seed=train_seed,
                 eval_interval=eval_interval,
                 eval_seed=eval_seed,
@@ -497,7 +497,24 @@ def run_flywheel(
 
 
 def parse_args():
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=Path, default=None)
+    config_args, _ = config_parser.parse_known_args()
+
+    config: dict[str, object] = {}
+    if config_args.config is not None:
+        try:
+            loaded_config = yaml.safe_load(config_args.config.read_text())
+        except (OSError, yaml.YAMLError) as error:
+            config_parser.error(f"could not load --config: {error}")
+        if loaded_config is not None and not isinstance(loaded_config, dict):
+            config_parser.error("--config must contain a YAML mapping")
+        config = loaded_config or {}
+        if any(not isinstance(key, str) for key in config):
+            config_parser.error("--config keys must be strings")
+
     parser = argparse.ArgumentParser(description="Run the expert and DAgger data flywheel")
+    parser.add_argument("--config", type=Path, default=config_args.config)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
         "--expert-dir",
@@ -510,13 +527,13 @@ def parse_args():
         "--intervention-threshold",
         type=float,
         default=0.2,
-        help="L2 arm-action disagreement that triggers expert control",
+        help="L2 arm-action threshold; gripper disagreement also triggers control",
     )
     parser.add_argument(
         "--intervention-steps",
         type=int,
         default=50,
-        help="Minimum expert-control burst after crossing the threshold",
+        help="Minimum expert-control burst after an arm or gripper trigger",
     )
     parser.add_argument("--dagger-episodes", type=int, default=50)
     parser.add_argument("--rollout-max-steps", type=int, default=1400)
@@ -533,9 +550,27 @@ def parse_args():
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
+    parser.add_argument(
+        "--dagger-intervention-ratio",
+        type=float,
+        default=0.8,
+        help="Sampling share for execute_expert frames within DAgger data",
+    )
     parser.add_argument("--train-seed", type=int, default=0)
     parser.add_argument("--dagger-seed", type=int, default=0)
+
+    valid_config_keys = {
+        action.dest for action in parser._actions if action.dest not in {"help", "config"}
+    }
+    unknown_config_keys = set(config) - valid_config_keys
+    if unknown_config_keys:
+        parser.error(
+            f"unknown --config keys: {sorted(unknown_config_keys)}"
+        )
+    parser.set_defaults(**config)
     args = parser.parse_args()
+
+    args.expert_dir = Path(args.expert_dir)
 
     if not args.expert_dir.is_dir():
         parser.error(f"--expert-dir does not exist or is not a directory: {args.expert_dir}")
@@ -563,8 +598,12 @@ def parse_args():
         parser.error("--early-stop-patience must be non-negative")
     if not 0.0 < args.expert_ratio < 1.0:
         parser.error("--expert-ratio must be between 0 and 1")
+    if not 0.0 <= args.dagger_intervention_ratio <= 1.0:
+        parser.error("--dagger-intervention-ratio must be between 0 and 1")
     if args.dagger_seed < 0:
         parser.error("--dagger-seed must be non-negative")
+    if args.mode not in EVAL_SELECTION_MODES:
+        parser.error(f"--mode must be one of {EVAL_SELECTION_MODES}")
 
     return args
 
@@ -595,6 +634,7 @@ def main():
         workers=args.workers,
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
+        dagger_intervention_ratio=args.dagger_intervention_ratio,
         train_seed=args.train_seed,
         dagger_seed=args.dagger_seed,
         eval_selection_mode=args.mode,

@@ -213,6 +213,7 @@ def select_dagger_control(
     mode: str,
     beta: float,
     arm_disagreement: float,
+    gripper_disagreement: bool,
     intervention_threshold: float | None,
     intervention_steps: int,
     intervention_steps_remaining: int,
@@ -225,8 +226,10 @@ def select_dagger_control(
     if intervention_threshold is None:
         raise ValueError("Threshold intervention mode requires a threshold")
 
-    disagreement_is_above_threshold = arm_disagreement > intervention_threshold
-    if disagreement_is_above_threshold and intervention_steps_remaining == 0:
+    intervention_triggered = (
+        arm_disagreement > intervention_threshold or gripper_disagreement
+    )
+    if intervention_triggered and intervention_steps_remaining == 0:
         intervention_steps_remaining = intervention_steps
 
     execute_expert = intervention_steps_remaining > 0
@@ -657,12 +660,11 @@ def run_policy_episode(
                 )
             )
             arm_disagreement.append(current_arm_disagreement)
-            gripper_disagreement.append(
-                bool(
-                    (expert_action[ACTION_DIMS - 1] >= 127.5)
-                    != (policy_action_np[ACTION_DIMS - 1] >= 127.5)
-                )
+            current_gripper_disagreement = bool(
+                (expert_action[ACTION_DIMS - 1] >= 127.5)
+                != (policy_action_np[ACTION_DIMS - 1] >= 127.5)
             )
+            gripper_disagreement.append(current_gripper_disagreement)
             (
                 execute_expert_action,
                 intervention_steps_remaining,
@@ -670,6 +672,7 @@ def run_policy_episode(
                 mode=intervention_mode,
                 beta=beta,
                 arm_disagreement=current_arm_disagreement,
+                gripper_disagreement=current_gripper_disagreement,
                 intervention_threshold=intervention_threshold,
                 intervention_steps=intervention_steps,
                 intervention_steps_remaining=intervention_steps_remaining,

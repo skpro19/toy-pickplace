@@ -168,11 +168,13 @@ def prepare_dataset(
     *,
     npz_folders: list[Path],
     sample_ratios: list[float] | None,
+    dagger_intervention_ratio: float | None,
     action_space: str,
     normalize: bool,) -> tuple[PickPlaceDataset, NormStats]:
     dataset = PickPlaceDataset(
         data_dirs=npz_folders,
         sample_ratios=sample_ratios,
+        dagger_intervention_ratio=dagger_intervention_ratio,
     )
 
     if action_space == "joint_delta":
@@ -286,6 +288,7 @@ def train(
     normalize: bool=True,
     action_space: str="joint_delta",
     sample_ratios: list[float] | None = None,
+    dagger_intervention_ratio: float | None = None,
     sample_seed: int = 0,
     eval_interval: int = 1,
     eval_seed: int = 0,
@@ -299,6 +302,7 @@ def train(
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
         sample_ratios=sample_ratios,
+        dagger_intervention_ratio=dagger_intervention_ratio,
         action_space=action_space,
         normalize=normalize,
     )
@@ -313,6 +317,18 @@ def train(
         batch_size=200,
         sampler=sampler,
     )
+
+    print(f"Weighted samples per epoch: {dataset.samples_per_epoch:,}")
+    for data_dir, frame_count, source_ratio in zip(
+        npz_folders,
+        dataset.source_frame_counts,
+        dataset.source_ratios,
+    ):
+        expected_samples = dataset.samples_per_epoch * float(source_ratio)
+        print(
+            f"  {expected_samples:,.1f} expected samples | "
+            f"{int(frame_count):,} available frames | {data_dir}"
+        )
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -469,6 +485,12 @@ def parse_args():
         help="Random seed used when --sample-ratios is set",
     )
     parser.add_argument(
+        "--dagger-intervention-ratio",
+        type=float,
+        default=None,
+        help="Sampling share for execute_expert frames within DAgger directories",
+    )
+    parser.add_argument(
         "--normalize",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -517,6 +539,10 @@ def parse_args():
             f"--sample-ratios length ({len(args.sample_ratios)}) "
             f"must match --npz length ({len(args.npz)})"
         )
+    if args.dagger_intervention_ratio is not None and not (
+        0.0 <= args.dagger_intervention_ratio <= 1.0
+    ):
+        parser.error("--dagger-intervention-ratio must be between 0 and 1")
     for npz_folder in args.npz:
         if not npz_folder.is_dir():
             parser.error(f"--npz path is not a directory: {npz_folder}")
@@ -543,6 +569,7 @@ def main():
         action_space=args.action_space,
         normalize=args.normalize,
         sample_ratios=args.sample_ratios,
+        dagger_intervention_ratio=args.dagger_intervention_ratio,
         sample_seed=args.sample_seed,
         eval_interval=args.eval_interval,
         eval_seed=args.eval_seed,
