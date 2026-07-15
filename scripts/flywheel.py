@@ -9,6 +9,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from dagger_metrics import (
+    plot_dagger_round,
+    plot_dagger_round_trends,
+    summarize_dagger_round,
+    write_dagger_metrics,
+)
 from eval import (
     DEFAULT_EVAL_SELECTION_MODE,
     EVAL_SELECTION_MODES,
@@ -46,15 +52,19 @@ def print_final_summary(
 ) -> None:
     print_section(title="Final summary")
     print(
-        f"{'Round':<8}{'Beta':<10}{'Epoch':<10}{'Placement':<12}"
+        f"{'Round':<8}{'Threshold':<12}{'Epoch':<10}{'Placement':<12}"
         f"{'Score':<10}Checkpoint"
     )
     print("-" * SECTION_WIDTH)
     for item in rounds:
         round_label = f'{int(item["round"]):03d}'
-        beta = "-" if item["beta"] is None else f'{float(item["beta"]):.3f}'
+        threshold = (
+            "-"
+            if item["intervention_threshold"] is None
+            else f'{float(item["intervention_threshold"]):.3f}'
+        )
         print(
-            f'{round_label:<8}{beta:<10}{int(item["best_epoch"]):<10}'
+            f'{round_label:<8}{threshold:<12}{int(item["best_epoch"]):<10}'
             f'{float(item["best_placement_success_rate"]):<12.4f}'
             f'{float(item["best_score"]):<10.4f}{item["best_checkpoint"]}'
         )
@@ -90,21 +100,6 @@ def next_flywheel_run_name(*, root: Path, occupied_roots: list[Path]) -> str:
             continue
 
         return run_name
-
-
-def make_beta_schedule(
-    *,
-    beta_start: float,
-    beta_final: float,
-    num_dagger_rounds: int,) -> list[float]:
-    if num_dagger_rounds == 1:
-        return [beta_start]
-
-    return [
-        beta_start
-        + round_index * (beta_final - beta_start) / (num_dagger_rounds - 1)
-        for round_index in range(num_dagger_rounds)
-    ]
 
 
 def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:
@@ -147,8 +142,9 @@ def append_round_metrics(
     run_name: str,
     rounds: list[dict[str, object]],
     round_index: int,
-    beta: float | None,
+    intervention_threshold: float | None,
     dagger_seed: int | None,
+    dagger_metrics: dict[str, object] | None,
     data_dirs: list[Path],
     sample_ratios: list[float],
     best_checkpoint: Path,
@@ -180,8 +176,9 @@ def append_round_metrics(
 
     round_metrics = {
         "round": round_index,
-        "beta": beta,
+        "intervention_threshold": intervention_threshold,
         "dagger_seed": dagger_seed,
+        "dagger_metrics": dagger_metrics,
         "data_dirs": [str(path) for path in data_dirs],
         "sample_ratios": sample_ratios,
         "best_checkpoint": str(best_checkpoint),
@@ -223,8 +220,8 @@ def run_flywheel(
     *,
     run_name: str,
     num_dagger_rounds: int,
-    beta_start: float,
-    beta_final: float,
+    intervention_threshold: float,
+    intervention_steps: int,
     expert_npz_dir: Path,
     num_epochs: int,
     dagger_episodes: int,
@@ -247,24 +244,20 @@ def run_flywheel(
     results_root.mkdir(parents=True, exist_ok=True)
     metrics_path = results_root / "metrics.json"
 
-    beta_schedule = make_beta_schedule(
-        beta_start=beta_start,
-        beta_final=beta_final,
-        num_dagger_rounds=num_dagger_rounds,
-    )
     dagger_round_seeds = make_dagger_round_seeds(
         seed=dagger_seed,
         rounds=num_dagger_rounds,
     )
     dagger_dirs: list[Path] = []
+    dagger_summaries: list[dict[str, object]] = []
     round_metrics: list[dict[str, object]] = []
     config = {
         "expert_dir": str(expert_npz_dir),
         "epochs": num_epochs,
         "dagger_rounds": num_dagger_rounds,
-        "beta_start": beta_start,
-        "beta_final": beta_final,
-        "beta_schedule": beta_schedule,
+        "dagger_mode": "threshold",
+        "intervention_threshold": intervention_threshold,
+        "intervention_steps": intervention_steps,
         "dagger_episodes": dagger_episodes,
         "rollout_max_steps": rollout_max_steps,
         "eval_interval": eval_interval,
@@ -284,7 +277,8 @@ def run_flywheel(
     print(f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs}")
     print(
         f"Expert ratio: {expert_ratio:.2f} | "
-        f"Beta: {beta_start:.3f} -> {beta_final:.3f}"
+        f"Threshold: {intervention_threshold:.3f} | "
+        f"Intervention steps: {intervention_steps}"
     )
     print(
         f"Evaluation: {eval_episodes} episodes x {eval_max_steps} steps "
@@ -332,8 +326,9 @@ def run_flywheel(
                 run_name=run_name,
                 rounds=round_metrics,
                 round_index=round,
-                beta=None,
+                intervention_threshold=None,
                 dagger_seed=None,
+                dagger_metrics=None,
                 data_dirs=[expert_npz_dir],
                 sample_ratios=[1.0],
                 best_checkpoint=ckpt_dir / "best.pt",
@@ -351,7 +346,6 @@ def run_flywheel(
             )
 
         else:
-            beta = beta_schedule[round - 1]
             round_dagger_seed = dagger_round_seeds[round - 1]
 
             # generate dagger data
@@ -363,7 +357,11 @@ def run_flywheel(
                 title=f"Round {round:03d}/{num_rounds - 1:03d}: DAgger collection"
             )
             print(f"Policy: {model_path}")
-            print(f"Beta: {beta:.3f} | Seed: {round_dagger_seed}")
+            print(
+                f"Threshold: {intervention_threshold:.3f} | "
+                f"Intervention steps: {intervention_steps} | "
+                f"Seed: {round_dagger_seed}"
+            )
             print(
                 f"Episodes: {dagger_episodes} | "
                 f"Max steps: {rollout_max_steps}"
@@ -372,24 +370,53 @@ def run_flywheel(
 
             # use dagger to collect data
             collection_started_at = time.perf_counter()
-            rollout(model_path=model_path,
-                    randomize_scene=True,
-                    seed=round_dagger_seed,
-                    episodes=dagger_episodes,
-                    max_steps=rollout_max_steps,
-                    dagger=True,
-                    dagger_root=dagger_dir,
-                    beta=beta,
-                    create_dagger_subdir=False,
-                    headless=True,
-                    log_root=None,
-                    train_npz_dir=None,
-                    log_rollout=False,
-                    workers=workers,
-                    )
+            rollout(
+                model_path=model_path,
+                randomize_scene=True,
+                seed=round_dagger_seed,
+                episodes=dagger_episodes,
+                max_steps=rollout_max_steps,
+                dagger=True,
+                dagger_root=dagger_dir,
+                beta=0.0,
+                intervention_mode="threshold",
+                intervention_threshold=intervention_threshold,
+                intervention_steps=intervention_steps,
+                create_dagger_subdir=False,
+                headless=True,
+                log_root=None,
+                train_npz_dir=None,
+                log_rollout=False,
+                workers=workers,
+            )
+            dagger_summary, dagger_episodes_data = summarize_dagger_round(
+                dagger_dir=dagger_dir,
+                round_index=round,
+            )
+            write_dagger_metrics(
+                metrics_path=dagger_dir / "metrics.json",
+                metrics=dagger_summary,
+            )
+            plots_dir = results_root / "plots"
+            plot_dagger_round(
+                episodes=dagger_episodes_data,
+                summary=dagger_summary,
+                save_path=plots_dir / f"{round_name}-dagger.png",
+            )
+            dagger_summaries.append(dagger_summary)
+            plot_dagger_round_trends(
+                round_summaries=dagger_summaries,
+                save_path=plots_dir / "dagger-round-trends.png",
+            )
             print(
                 f"Collection complete | elapsed: "
                 f"{format_duration(seconds=time.perf_counter() - collection_started_at)}"
+            )
+            print(
+                f'Expert actions: {float(dagger_summary["expert_action_fraction"]):.1%} | '
+                f'Above threshold: '
+                f'{float(dagger_summary["threshold_exceedance_fraction"]):.1%} | '
+                f'Segments: {int(dagger_summary["expert_control_segments"])}'
             )
 
             # retrain with dagger data
@@ -438,8 +465,9 @@ def run_flywheel(
                 run_name=run_name,
                 rounds=round_metrics,
                 round_index=round,
-                beta=beta,
+                intervention_threshold=intervention_threshold,
                 dagger_seed=round_dagger_seed,
+                dagger_metrics=dagger_summary,
                 data_dirs=[expert_npz_dir, *dagger_dirs],
                 sample_ratios=sample_ratios,
                 best_checkpoint=ckpt_dir / "best.pt",
@@ -478,8 +506,18 @@ def parse_args():
     )
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--dagger-rounds", type=int, default=10)
-    parser.add_argument("--beta-start", type=float, default=0.7)
-    parser.add_argument("--beta-final", type=float, default=0.0)
+    parser.add_argument(
+        "--intervention-threshold",
+        type=float,
+        default=0.2,
+        help="L2 arm-action disagreement that triggers expert control",
+    )
+    parser.add_argument(
+        "--intervention-steps",
+        type=int,
+        default=50,
+        help="Minimum expert-control burst after crossing the threshold",
+    )
     parser.add_argument("--dagger-episodes", type=int, default=50)
     parser.add_argument("--rollout-max-steps", type=int, default=1400)
     parser.add_argument("--eval-interval", type=int, default=20)
@@ -505,12 +543,10 @@ def parse_args():
         parser.error("--epochs must be at least 1")
     if args.dagger_rounds < 1:
         parser.error("--dagger-rounds must be at least 1")
-    if not 0.0 <= args.beta_start <= 1.0:
-        parser.error("--beta-start must be in [0, 1]")
-    if not 0.0 <= args.beta_final <= 1.0:
-        parser.error("--beta-final must be in [0, 1]")
-    if args.beta_start < args.beta_final:
-        parser.error("--beta-start must be greater than or equal to --beta-final")
+    if args.intervention_threshold < 0.0:
+        parser.error("--intervention-threshold must be non-negative")
+    if args.intervention_steps < 1:
+        parser.error("--intervention-steps must be at least 1")
     if args.dagger_episodes < 1:
         parser.error("--dagger-episodes must be at least 1")
     if args.rollout_max_steps < 1:
@@ -546,8 +582,8 @@ def main():
     run_flywheel(
         run_name=run_name,
         num_dagger_rounds=args.dagger_rounds,
-        beta_start=args.beta_start,
-        beta_final=args.beta_final,
+        intervention_threshold=args.intervention_threshold,
+        intervention_steps=args.intervention_steps,
         expert_npz_dir=args.expert_dir,
         num_epochs=args.epochs,
         dagger_episodes=args.dagger_episodes,
