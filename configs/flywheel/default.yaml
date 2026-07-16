@@ -1,12 +1,14 @@
 run_name: null
 expert_dir: data/expert/rand-100
 epochs: 1000
-batch_size: 6
+batch_size: 200
+dataloader_workers: 2
 dagger_rounds: 10
 
 # dagger intervention parameters
 # dagger-mode -> threshold [hardcoded]
-intervention_threshold: 0.2
+# intervention_threshold: 0.2
+intervention_threshold: 0.1
 intervention_steps: 50
 # ratio of expert-executed actions from the dagger npz files included in sampling set
 dagger_intervention_ratio: 0.8  
@@ -20,7 +22,7 @@ eval_episodes: 25
 eval_max_steps: 1400
 mode: mode-b # compares placement performance 
 
-workers: 12
+workers: 6
 # early_stop_patience: 50
 early_stop_patience: 100
 expert_ratio: 0.5

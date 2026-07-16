@@ -233,6 +233,7 @@ def run_flywheel(
     eval_episodes: int,
     eval_max_steps: int,
     workers: int,
+    dataloader_workers: int = 0,
     early_stop_patience: int,
     expert_ratio: float,
     dagger_intervention_ratio: float,
@@ -270,6 +271,7 @@ def run_flywheel(
         "eval_max_steps": eval_max_steps,
         "eval_selection_mode": eval_selection_mode,
         "workers": workers,
+        "dataloader_workers": dataloader_workers,
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "dagger_intervention_ratio": dagger_intervention_ratio,
@@ -281,7 +283,8 @@ def run_flywheel(
     print(f"Expert data: {expert_npz_dir}")
     print(
         f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs} | "
-        f"Batch size: {batch_size}"
+        f"Batch size: {batch_size} | "
+        f"DataLoader workers: {dataloader_workers}"
     )
     print(
         f"Expert ratio: {expert_ratio:.2f} | "
@@ -328,6 +331,7 @@ def run_flywheel(
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
                 eval_workers=workers,
+                dataloader_workers=dataloader_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
                 )
@@ -464,6 +468,7 @@ def run_flywheel(
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
                 eval_workers=workers,
+                dataloader_workers=dataloader_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
                 )
@@ -556,6 +561,7 @@ def parse_args():
         help="Select checkpoints by weighted score or placement rate first",
     )
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--dataloader-workers", type=int, default=0)
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
     parser.add_argument(
@@ -604,6 +610,8 @@ def parse_args():
         parser.error("--eval-max-steps must be at least 1")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.dataloader_workers < 0:
+        parser.error("--dataloader-workers must be non-negative")
     if args.early_stop_patience < 0:
         parser.error("--early-stop-patience must be non-negative")
     if not 0.0 < args.expert_ratio < 1.0:
@@ -643,6 +651,7 @@ def main():
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
         workers=args.workers,
+        dataloader_workers=args.dataloader_workers,
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         dagger_intervention_ratio=args.dagger_intervention_ratio,

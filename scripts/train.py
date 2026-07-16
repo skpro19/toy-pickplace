@@ -296,9 +296,12 @@ def train(
     eval_episodes: int = 100,
     eval_max_steps: int = 1400,
     eval_workers: int = 1,
+    dataloader_workers: int = 0,
     early_stop_patience: int = 50,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
 ) -> str:
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset, norm_stats = prepare_dataset(
         npz_folders=npz_folders,
@@ -317,6 +320,8 @@ def train(
         dataset=dataset,
         batch_size=batch_size,
         sampler=sampler,
+        num_workers=dataloader_workers,
+        pin_memory=device.type == "cuda" and dataloader_workers > 0,
     )
 
     print(f"Weighted samples per epoch: {dataset.samples_per_epoch:,}")
@@ -332,7 +337,6 @@ def train(
         )
 
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     print(f"TensorBoard log dir: {log_dir}")
     print(f"Checkpoint dir: {checkpoint_dir}")
@@ -509,6 +513,7 @@ def parse_args():
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
     parser.add_argument("--eval-workers", type=int, default=1)
+    parser.add_argument("--dataloader-workers", type=int, default=0)
     parser.add_argument(
         "--early-stop-patience",
         type=int,
@@ -581,6 +586,7 @@ def main():
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
         eval_workers=args.eval_workers,
+        dataloader_workers=args.dataloader_workers,
         early_stop_patience=args.early_stop_patience,
         eval_selection_mode=args.eval_selection_mode,
     )
