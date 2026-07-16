@@ -1,7 +1,7 @@
 run_name: null
 expert_dir: data/expert/rand-100
 epochs: 1000
-batch_size: 768
+batch_size: 6
 dagger_rounds: 10
 
 # dagger intervention parameters
