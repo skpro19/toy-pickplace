@@ -5,6 +5,27 @@ agent: build
 
 Provision and set up a Vast.ai instance to run the flywheel training pipeline.
 
+## Workload profile
+
+The optional first command argument selects the workload profile:
+
+| Invocation | Profile | Instance label | Workload session | Local TensorBoard tunnel |
+|---|---|---|---|---|
+| `/flywheel-4090` or `/flywheel-4090 standard` | Standard flywheel | `toy-pickplace-flywheel` | `flywheel` | `tb-setup` |
+| `/flywheel-4090 intervention-threshold` | Intervention-threshold ablation | `toy-pickplace-ablation-intervention-threshold` | `ablation-sweep` | `tb-ablation` |
+
+Requested profile: `$1`
+
+Treat an empty argument as `standard`. Accept only `standard` and
+`intervention-threshold`; for any other value, ask the user to choose a
+supported profile and stop. Set `INSTANCE_LABEL` to the label in the table
+before creating the instance.
+
+For the `intervention-threshold` profile, this command owns shared
+provisioning and instance setup. The ablation-specific sweep, TensorBoard
+launch, backup prefix, local tunnel, and follow-up commands are defined in
+@docs/ablation/intervention-threshold.md.
+
 This command is the source of truth for provisioning control flow, confirmation
 gates, failure handling, and setup commands.
 
@@ -35,7 +56,7 @@ Run this search command and parse the output:
 
 ```bash
 vastai search offers \
-  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 cpu_cores_effective>=16 rentable=true verification=verified' \
+  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 cpu_cores_effective>=24 rentable=true verification=verified' \
   --order dph_total+
 ```
 
@@ -44,7 +65,7 @@ Show results as a table with exactly these columns:
 | Offer ID | GPU frac | VRAM | Effective vCPUs | CPU GHz | $/hr | Host reliability | Driver | Location |
 
 Recommend the best offer using this deterministic ordering:
-1. **CPU tier** (>= 32 effective vCPUs first; otherwise 24-31, then 16-23)
+1. **CPU tier** (>= 32 effective vCPUs first; otherwise 24-31)
 2. **$/hr** (lowest first within the CPU tier)
 3. **CPU GHz** (higher first when prices tie)
 4. **Host reliability** (higher first when the preceding values tie; call out
@@ -74,7 +95,7 @@ OFFER_IDS=(OFFER_1 OFFER_2 OFFER_3) # Include every user-confirmed offer (3-5).
 for id in "${OFFER_IDS[@]}"; do
   output=$(vastai create instance "$id" \
     --image pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
-    --disk 100 --ssh --direct --label toy-pickplace-flywheel \
+    --disk 100 --ssh --direct --label "$INSTANCE_LABEL" \
     --cancel-unavail 2>&1)
   if echo "$output" | grep -q "new_contract"; then
     INSTANCE_ID=$(echo "$output" | grep -oP "new_contract': \K\d+")
@@ -97,7 +118,7 @@ Do not poll, clean up, or run setup commands with an empty instance ID.
 ### 4. Post-create duplicate cleanup
 
 Check `vastai show instances` for other instances with the same label
-(`toy-pickplace-flywheel`). If more than one exists (e.g. from a previous
+(`$INSTANCE_LABEL`). If more than one exists (e.g. from a previous
 attempt that wasn't cleaned up), ask the user which to keep and destroy the
 rest, OR keep the one with the best specs and destroy the others
 automatically after listing them.
@@ -173,13 +194,12 @@ host using the original create command is the recovery path.
 
 ### 6. Tune config
 
-Based on the provisioned instance's effective vCPUs, recommend these overrides
-for `configs/flywheel/default.yaml`:
+All accepted offers have at least 24 effective vCPUs. Recommend these
+overrides for `configs/flywheel/default.yaml`:
 
-| Effective vCPUs | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` (optional) |
+| Effective vCPUs | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
 |---|---:|---:|---:|
 | >= 24 | 12 | 0 | 768 (benchmarked best) |
-| 16-23 | 6 | 0 | 768 (benchmarked best) |
 
 Benchmark reference (`docs/vast-ai/vast-ai-1.md`):
 - `workers: 12` — 12% faster evaluation, 31% faster DAgger collection vs 6
@@ -192,7 +212,7 @@ Benchmark reference (`docs/vast-ai/vast-ai-1.md`):
 **Do NOT edit, commit, push, or copy the local config file** — these are
 instance-specific tuning values, not repository changes. Apply the overrides
 only on the cloned repository on the instance via SSH after cloning (for
-example, `sed -i 's/workers: 6/workers: 12/' ...`). Verify the instance-side
+example, `sed -i -E 's/^workers:.*/workers: 12/' ...`). Verify the instance-side
 overrides with `grep -E 'workers:|batch_size:|dataloader_workers:'`.
 
 ### 7. Setup on the instance
@@ -227,13 +247,19 @@ ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
    grep -E '^(workers|batch_size|dataloader_workers):' \
      configs/flywheel/default.yaml"
 
-# Batch 3: launch flywheel and TensorBoard
+# Batch 3: standard profile only -- launch flywheel and TensorBoard
 ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
   "tmux new-session -d -s flywheel \
      'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python scripts/flywheel.py --config configs/flywheel/default.yaml' && \
    tmux new-session -d -s tensorboard \
-     'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
+      'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
 ```
+
+Run Batch 3 only for the `standard` profile. For `intervention-threshold`, do
+not start the `flywheel` session or this TensorBoard session; after Batches 1
+and 2, complete its Batches 1-4 in
+@docs/ablation/intervention-threshold.md.
+Then return to Step 8 and create `vast-ssh` only.
 
 **ckpt-bkp critical details** (based on `scripts/hf_backup.py`):
 - `--repo` flag must come **before** the `upload` subcommand, not after  
@@ -244,6 +270,12 @@ ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
 - Transfer `HF_TOKEN` over SSH standard input. Never interpolate its value into
   the SSH command string, command arguments, or output. Set it in the remote
   tmux server environment so the backup session inherits it.
+
+For the `standard` profile, start this backup session after Batch 3 with the
+timestamp prefix shown below. For `intervention-threshold`, start it only after
+the ablation sweep and TensorBoard sessions have been launched, using the
+ablation-specific prefix specified in the ablation document. Do not start a
+second `ckpt-bkp` session.
 
 Example:
 ```bash
@@ -270,14 +302,15 @@ token nor the contents of `.env` appear in command output.
 
 Verify the backup is working:
 `ssh -p "$PORT" "root@$HOST" "tmux capture-pane -t ckpt-bkp -p -S -10"`.
-Verify all three instance-side sessions exist:
+Verify the profile-specific instance-side sessions exist with:
 `ssh -p "$PORT" "root@$HOST" "tmux ls"`.
 
 ### 8. Local tmux wrappers
 
-On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create:
-- tmux:`vast-ssh` (SSH shell into the instance, use `ServerAliveInterval=30` to prevent idle disconnects)
-- tmux:`tb-setup` (TensorBoard port tunnel)
+On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create
+`vast-ssh` (SSH shell into the instance, using `ServerAliveInterval=30` to
+prevent idle disconnects). For the `standard` profile, also create `tb-setup`.
+For `intervention-threshold`, create `tb-ablation` from the ablation document.
 
 ```bash
 SSH_URL=$(vastai ssh-url "$INSTANCE_ID")
@@ -290,11 +323,14 @@ tmux new-session -d -s tb-setup \
   "ssh -N -L 6006:127.0.0.1:6006 -p $PORT root@$HOST"
 ```
 
+Run the `tb-setup` command only for the `standard` profile.
+
 ### 9. Local download and replay (follow-up)
 
-Do not wait for training or a checkpoint before completing this provisioning
-command. Print these as follow-up commands to run after flywheel has produced at
-least one checkpoint (or after the run completes):
+Do not wait for training or a checkpoint before completing the `standard`
+profile. Print these as follow-up commands after flywheel has produced at least
+one checkpoint (or after the run completes). For `intervention-threshold`, use
+the offline download and replay instructions in the ablation document.
 
 ```bash
 # List available sessions in the HF repo
@@ -313,13 +349,14 @@ uv run python scripts/final_score.py --run-name run-003
 
 ## Final output
 
-Provisioning is complete after the instance-side sessions and the two local
-tmux wrappers have been verified. Then print a summary with:
+Provisioning is complete after the profile-specific instance-side sessions and
+local tmux wrappers have been verified. Then print a summary with:
 - Instance ID
 - SSH URL retrieval command (`vastai ssh-url INSTANCE_ID`)
-- Local attach commands for `vast-ssh` and `tb-setup`
-- SSH commands that attach directly to the remote `flywheel`, `tensorboard`,
-  and `ckpt-bkp` sessions (for example,
+- Local attach commands for `vast-ssh` and the profile-specific TensorBoard
+  tunnel (`tb-setup` or `tb-ablation`)
+- SSH commands that attach directly to the remote workload session (`flywheel`
+  or `ablation-sweep`), `tensorboard`, and `ckpt-bkp` (for example,
   `ssh -t -p "$PORT" "root@$HOST" 'tmux attach -t flywheel'`)
 - TensorBoard URL
 - Download command (`uv run python scripts/hf_backup.py --repo REPO download ...`)
