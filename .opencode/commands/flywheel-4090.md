@@ -29,6 +29,10 @@ launch, backup prefix, local tunnel, and follow-up commands are defined in
 This command is the source of truth for provisioning control flow, confirmation
 gates, failure handling, and setup commands.
 
+Use @docs/vast-ai/instance-filter-criteria.md as the source of truth for offer
+filtering, CPU-family ranking, and post-provision hardware acceptance. Do not
+weaken its hard requirements without explicit user approval.
+
 ## Prerequisites
 
 Before starting, ensure these are available on the dev machine:
@@ -52,26 +56,40 @@ If either is missing, print instructions pointing to `.env.example` and stop.
 
 ### 1. Search offers
 
-Run this search command and parse the output:
+Run this search command and parse the raw JSON output:
 
 ```bash
 vastai search offers \
-  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 cpu_cores_effective>=24 rentable=true verification=verified' \
-  --order dph_total+
+  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 gpu_ram>=24 gpu_max_power>=400 compute_cap>=890 total_flops>=80 cpu_cores_effective>=24 cpu_ram>=64 disk_bw>=1000 pci_gen>=4 pcie_bw>=20 inet_down>=500 inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false' \
+  --order dph_total+ \
+  --raw
 ```
 
 Show results as a table with exactly these columns:
 
-| Offer ID | GPU frac | VRAM | Effective vCPUs | CPU GHz | $/hr | Host reliability | Driver | Location |
+| Offer ID | CPU model | Effective vCPUs | RAM | Disk MB/s | PCIe GB/s | GPU power | Down/Up Mb/s | Reliability | $/hr | Location |
 
 Recommend the best offer using this deterministic ordering:
-1. **CPU tier** (>= 32 effective vCPUs first; otherwise 24-31)
-2. **$/hr** (lowest first within the CPU tier)
-3. **CPU GHz** (higher first when prices tie)
-4. **Host reliability** (higher first when the preceding values tie; call out
-   reliability below 99%)
+1. **CPU generation**: EPYC 9005, EPYC 9004, Threadripper 7000, then EPYC
+   7003. Modern Ryzen 7000/9000 is eligible only when its published physical
+   core count is at least 24, but actual allocation still requires the
+   post-provision check.
+2. **$/hr** (lowest first within the CPU-generation tier).
+3. **Disk bandwidth** (higher first when prices tie).
+4. **Host reliability** (higher first when the preceding values tie).
 
-Show the recommendation with a brief rationale, then **ask the user to confirm** or select a different offer before proceeding.
+Reject EPYC 7001/7002 and CPU models whose published physical-core count is
+below 24. Treat raw `cpu_name` as a ranking hint only because offer metadata
+can be stale or inconsistent; the SSH acceptance gate is authoritative. Do not
+use `cpu_ghz` as a ranking criterion.
+
+If the query returns no offers, show that no candidate meets all hard filters
+and ask whether the user wants to wait or explicitly relax named criteria. Do
+not silently remove or lower filters. If the user approves a relaxation, state
+which criteria changed and preserve every other hard filter.
+
+Show the recommendation with a brief rationale, then **ask the user to confirm**
+or select a different offer before proceeding.
 
 ### 2. User confirms priority list
 
@@ -192,12 +210,76 @@ Do not change the image, add SSH installation commands, reboot repeatedly, or
 otherwise modify the provisioning command as an SSH workaround. A replacement
 host using the original create command is the recovery path.
 
-### 6. Tune config
+### 6. Verify provisioned hardware
 
-All accepted offers have at least 24 effective vCPUs. Recommend these
+Treat every new rental as provisional. After SSH becomes ready, run these
+checks before cloning the repository, tuning configuration, generating data,
+or launching a workload:
+
+```bash
+ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" '
+  set -e
+  echo "=== CPU topology ==="
+  lscpu
+  echo "=== Physical cores ==="
+  lscpu -p=CORE,SOCKET | grep -v "^#" | sort -u | wc -l
+  echo "=== Logical CPUs ==="
+  nproc
+  echo "=== CPU quota ==="
+  if [ -r /sys/fs/cgroup/cpu.max ]; then
+    cat /sys/fs/cgroup/cpu.max
+  elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+    cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us
+    cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
+  else
+    echo "No readable CPU quota file"
+  fi
+  echo "=== GPU and PCIe ==="
+  nvidia-smi --query-gpu=name,memory.total,power.limit,power.default_limit,pcie.link.gen.max,pcie.link.width.max,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.hw_power_brake_slowdown --format=csv
+'
+```
+
+Parse and show the results as an acceptance table. Compare actual values with
+the selected offer and enforce all of these requirements:
+
+| Check | Requirement |
+|---|---|
+| Physical cores | At least 24 unique `(CORE, SOCKET)` pairs |
+| CPU generation | Zen 3 or newer; reject EPYC 7001/7002 |
+| SMT | Prefer `Thread(s) per core: 1`; call out SMT when physical-core count still passes |
+| CPU quota | At least 90% of advertised `cpu_cores_effective` |
+| GPU | Exactly one RTX 4090 with approximately 24 GB VRAM |
+| GPU power | At least 400 W |
+| PCIe capability | At least Gen4 x16; measured offer `pcie_bw` at least 20 GB/s |
+| Throttling | Hardware thermal and power-brake slowdown both inactive |
+
+For cgroup v2, `cpu.max` contains `QUOTA PERIOD`; `max PERIOD` means no quota.
+For cgroup v1, divide `cpu.cfs_quota_us` by `cpu.cfs_period_us`. Values between
+90% and 100% of the advertised effective vCPUs pass but must be called out. A
+finite quota that is below 90%, or an unreadable quota with no way to establish
+the allocation, fails acceptance.
+
+The active PCIe generation may downshift while idle. Do not reject an instance
+solely because `pcie.link.gen.current` is below Gen4 at idle when the maximum
+link is Gen4 x16 and the offer's measured `pcie_bw` passes. Recheck under CUDA
+load if other evidence suggests a restricted link.
+
+If any hard requirement fails, stop before setup, list every failed criterion,
+and ask whether to destroy the provisional instance and return to Step 1. Do
+not destroy it without confirmation. If confirmed, destroy it, verify it no
+longer appears in `vastai show instances`, and obtain a fresh offer snapshot.
+
+The repository does not currently provide a dedicated short workload
+acceptance benchmark. Do not claim that workload throughput was validated by
+the hardware checks above; use the documented benchmark as a separate manual
+gate when one is available.
+
+### 7. Tune config
+
+All accepted offers have at least 24 verified physical cores. Recommend these
 overrides for `configs/flywheel/default.yaml`:
 
-| Effective vCPUs | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
+| Physical cores | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
 |---|---:|---:|---:|
 | >= 24 | 12 | 0 | 768 (benchmarked best) |
 
@@ -215,7 +297,7 @@ only on the cloned repository on the instance via SSH after cloning (for
 example, `sed -i -E 's/^workers:.*/workers: 12/' ...`). Verify the instance-side
 overrides with `grep -E 'workers:|batch_size:|dataloader_workers:'`.
 
-### 7. Setup on the instance
+### 8. Setup on the instance
 
 Use the SSH URL from `vastai ssh-url INSTANCE_ID` (host and port may differ from
 the create output). Break the setup into batches to avoid overly long SSH
@@ -259,7 +341,7 @@ Run Batch 3 only for the `standard` profile. For `intervention-threshold`, do
 not start the `flywheel` session or this TensorBoard session; after Batches 1
 and 2, complete its Batches 1-4 in
 @docs/ablation/intervention-threshold.md.
-Then return to Step 8 and create `vast-ssh` only.
+Then return to Step 9 and create `vast-ssh` only.
 
 **ckpt-bkp critical details** (based on `scripts/hf_backup.py`):
 - `--repo` flag must come **before** the `upload` subcommand, not after  
@@ -305,7 +387,7 @@ Verify the backup is working:
 Verify the profile-specific instance-side sessions exist with:
 `ssh -p "$PORT" "root@$HOST" "tmux ls"`.
 
-### 8. Local tmux wrappers
+### 9. Local tmux wrappers
 
 On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create
 `vast-ssh` (SSH shell into the instance, using `ServerAliveInterval=30` to
@@ -325,7 +407,7 @@ tmux new-session -d -s tb-setup \
 
 Run the `tb-setup` command only for the `standard` profile.
 
-### 9. Local download and replay (follow-up)
+### 10. Local download and replay (follow-up)
 
 Do not wait for training or a checkpoint before completing the `standard`
 profile. Print these as follow-up commands after flywheel has produced at least
