@@ -13,6 +13,5 @@ IDEAS.md
 logs/
 docs/
 results/
-.opencode/
 canvas/
 scripts/analyze_dagger_stalls.py
