@@ -57,6 +57,10 @@ COMPONENT_MAP: dict[str, tuple[Path, str]] = {
 }
 COMPONENT_DEFAULT = list(COMPONENT_MAP)
 
+# Remote subdirectory under the session prefix for each component.
+# Used by both upload remote_dir and download restore paths.
+COMPONENT_REMOTE: dict[str, str] = {n: p[1] for n, p in COMPONENT_MAP.items()}
+
 
 def _api(*, token: Optional[str] = None) -> HfApi:
     return HfApi(token=token)
@@ -114,10 +118,17 @@ def cmd_download(args: argparse.Namespace) -> None:
     prefix = parts[0]
     run_name = parts[1] if len(parts) > 1 else None
 
+    selected = COMPONENT_DEFAULT if args.components == "all" else args.components.split(",")
+    selected_remotes = [COMPONENT_REMOTE[n] for n in selected if n in COMPONENT_REMOTE]
+
+    if not selected_remotes:
+        print("No valid components selected", file=sys.stderr)
+        sys.exit(1)
+
     output_root = Path(args.output or ".")
     tmp = Path(tempfile.mkdtemp())
 
-    allow_patterns = [f"{prefix}/**"]
+    allow_patterns = [f"{prefix}/{r}/**" for r in selected_remotes]
     success = False
     try:
         snapshot_download(
@@ -141,7 +152,7 @@ def cmd_download(args: argparse.Namespace) -> None:
             shutil.rmtree(tmp)
             sys.exit(1)
 
-        matched = [f for f in files if f.startswith(prefix)]
+        matched = [f for f in files if any(f.startswith(f"{prefix}/{r}/") for r in selected_remotes)]
         if not matched:
             print(f"No files found for prefix {prefix}", file=sys.stderr)
             shutil.rmtree(tmp)
@@ -178,22 +189,23 @@ def cmd_download(args: argparse.Namespace) -> None:
             for item in src_base.iterdir():
                 shutil.copytree(item, dst_base / prefix / item.name, dirs_exist_ok=True)
 
+    # Restore only the selected components
     _restore(
         src_base=snap / prefix / "checkpoints",
         dst_base=output_root / "checkpoints" / "flywheel",
-    )
+    ) if "checkpoints" in selected else None
     _restore(
         src_base=snap / prefix / "runs",
         dst_base=output_root / "runs" / "flywheel",
-    )
+    ) if "runs" in selected else None
     _restore(
         src_base=snap / prefix / "data" / "flywheel",
         dst_base=output_root / "data" / "flywheel",
-    )
+    ) if "dagger" in selected else None
     _restore(
         src_base=snap / prefix / "results",
         dst_base=output_root / "results" / "flywheel",
-    )
+    ) if "results" in selected else None
 
     shutil.rmtree(tmp)
     print(f"Downloaded {args.path}")
@@ -271,8 +283,12 @@ def main() -> None:
     )
     up.add_argument("run", nargs="?", help="Specific run (e.g. run-003); omit to upload all")
 
-    dl = sub.add_parser("download", help="Download checkpoints/runs from HF Hub")
+    dl = sub.add_parser("download", help="Download checkpoints/runs/dagger/results from HF Hub")
     dl.add_argument("path", help="Path, e.g. 20260717-153000 or 20260717-153000/run-003")
+    dl.add_argument(
+        "--components", default="all",
+        help="Comma-separated components to download: checkpoints,runs,dagger,results (default: all)",
+    )
     dl.add_argument("--output", default=".", help="Output directory (default: current dir)")
 
     _ = sub.add_parser("list", help="List available backups in the repo")
