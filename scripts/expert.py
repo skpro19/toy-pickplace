@@ -8,6 +8,7 @@ import mujoco
 import mink
 import numpy as np
 
+from constant import CUBE_LIFT_MIN_DELTA, TRAY_PLACE_TOL
 from sim import SimEnv
 
 ARM_DOF = 7
@@ -24,8 +25,6 @@ RELEASE_SETTLE_STEPS = 100
 IK_SOLVER = "daqp"
 IK_DAMPING = 1e-3
 MAX_IK_ITERS = 20
-CUBE_LIFT_MIN_DELTA = 0.05
-TRAY_PLACE_TOL = 0.08
 HOME_JOINT_TOL = 0.03
 
 CUBE_GRASP_OFFSET = np.array([0.0, 0.0, 0.03])

@@ -35,12 +35,19 @@ from tqdm import tqdm
 
 from constant import (
     ACTION_DIMS,
+    CUBE_LIFT_MIN_DELTA,
     EPSILON,
+    GRASP_STABLE_STEPS,
+    LOWERING_STABLE_STEPS,
     MAX_ARM_DELTA,
+    PLACEMENT_MAX_SPEED,
+    PLACEMENT_STABLE_STEPS,
+    PLACEMENT_Z_TOL,
+    RELEASE_STABLE_STEPS,
+    TRAY_INNER_XY_TOL,
+    TRAY_PLACE_TOL,
 )
 from expert import (
-    CUBE_LIFT_MIN_DELTA,
-    TRAY_PLACE_TOL,
     Phase,
     PickPlaceController,
 )
@@ -51,13 +58,6 @@ from sim import SimEnv
 DEFAULT_DAGGER_DIR = Path("data/dagger")
 DAGGER_INTERVENTION_MODES = ("beta", "threshold")
 DEFAULT_INTERVENTION_STEPS = 50
-GRASP_STABLE_STEPS = 5
-LOWERING_STABLE_STEPS = 5
-RELEASE_STABLE_STEPS = 5
-PLACEMENT_STABLE_STEPS = 50
-PLACEMENT_MAX_SPEED = 0.05
-PLACEMENT_Z_TOL = 0.04
-TRAY_INNER_XY_TOL = 0.05
 
 
 _dagger_worker_state: tuple[
