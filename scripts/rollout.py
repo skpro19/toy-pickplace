@@ -885,13 +885,18 @@ def rollout(
     )
 
     quit_requested = False
+    advance_episode_requested = False
 
     def key_callback(keycode: int) -> None:
-        nonlocal quit_requested
-        if chr(keycode).lower() == "q":
+        nonlocal quit_requested, advance_episode_requested
+        key = chr(keycode).lower()
+        if key == "q":
             quit_requested = True
+        elif key == "n" and not dagger:
+            advance_episode_requested = True
 
     def run_rollouts(*, viewer=None) -> None:
+        nonlocal advance_episode_requested
         with torch.no_grad():
             progress_is_tty = sys.stderr.isatty()
             episode_pbar = tqdm(
@@ -946,6 +951,7 @@ def rollout(
 
             episode_seeds = make_episode_seeds(seed=seed, episodes=episodes) if dagger else []
             for episode in episode_pbar:
+                advance_episode_requested = False
                 current_phase = None
                 current_step = 0
                 expert_was_executing = False
@@ -971,7 +977,7 @@ def rollout(
                     episode_seed=episode_seed,
                     log_rollout=log_rollout and log_dir is not None,
                     viewer=viewer,
-                    should_stop=lambda: quit_requested,
+                    should_stop=lambda: quit_requested or advance_episode_requested,
                     phase_callback=update_phase_progress,
                     control_callback=update_control_progress,
                 )
