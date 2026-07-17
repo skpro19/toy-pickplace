@@ -13,24 +13,27 @@ The optional first command argument selects the workload profile:
 |---|---|---|---|---|
 | `/flywheel-4090` or `/flywheel-4090 standard` | Standard flywheel | `toy-pickplace-flywheel` | `flywheel` | `tb-setup` |
 | `/flywheel-4090 intervention-threshold` | Intervention-threshold ablation (parallel default) | `toy-pickplace-ablation-intervention-threshold` | `ablation-0.05` … `ablation-0.3` | `tb-ablation` |
+| `/flywheel-4090 dagger-intervention-ratio` | Dagger-intervention-ratio ablation (parallel default) | `toy-pickplace-ablation-dagger-intervention-ratio` | `ablation-0.2` … `ablation-1.0` | `tb-ablation` |
 
 Requested profile: `$1`
 
-Treat an empty argument as `standard`. Accept only `standard` and
-`intervention-threshold`; for any other value, ask the user to choose a
-supported profile and stop. Set `INSTANCE_LABEL` to the label in the table
-before creating the instance.
+Treat an empty argument as `standard`. Accept only `standard`,
+`intervention-threshold`, and `dagger-intervention-ratio`; for any other value,
+ask the user to choose a supported profile and stop. Set `INSTANCE_LABEL` to
+the label in the table before creating the instance.
 
-For the `intervention-threshold` profile, this command owns shared
-provisioning, instance setup, and sweep launch. The ablation-specific launch
-commands, TensorBoard setup, backup prefix, local tunnel, and follow-up
-commands are defined in @docs/ablation/intervention-threshold.md.
+For ablation profiles (`intervention-threshold`, `dagger-intervention-ratio`),
+this command owns shared provisioning, instance setup, and sweep launch. The
+ablation-specific launch commands, TensorBoard setup, backup prefix, local
+tunnel, and follow-up commands are defined in the matching ablation document:
+- `intervention-threshold` → @docs/ablation/intervention-threshold.md
+- `dagger-intervention-ratio` → @docs/ablation/dagger-intervention-ratio.md
 
-**Intervention-threshold sweep mode:** launch the **parallel** batch (four
-concurrent tmux sessions on one instance) by default. Fall back to the
-**sequential** batch only when the user explicitly requests it or the accepted
-instance has fewer than 32 effective vCPUs after the hardware gate in Step 6.
-Do not provision one instance per threshold value in either mode.
+**Ablation sweep mode:** launch the **parallel** batch (four concurrent tmux
+sessions on one instance) by default. Fall back to the **sequential** batch
+only when the user explicitly requests it or the accepted instance has fewer
+than 32 effective vCPUs after the hardware gate in Step 6. Do not provision one
+instance per swept value in either mode.
 
 This command is the source of truth for provisioning control flow, confirmation
 gates, failure handling, and setup commands.
@@ -64,10 +67,10 @@ If either is missing, print instructions pointing to `.env.example` and stop.
 
 Run this search command and parse the raw JSON output.
 
-For `standard`, require `cpu_cores_effective>=24`. For `intervention-threshold`,
-require `cpu_cores_effective>=32` (parallel default). If the user explicitly
-requested sequential fallback for the ablation, use `cpu_cores_effective>=24`
-instead.
+For `standard`, require `cpu_cores_effective>=24`. For ablation profiles
+(`intervention-threshold`, `dagger-intervention-ratio`), require
+`cpu_cores_effective>=32` (parallel default). If the user explicitly requested
+sequential fallback for the ablation, use `cpu_cores_effective>=24` instead.
 
 ```bash
 vastai search offers \
@@ -76,7 +79,7 @@ vastai search offers \
   --raw
 ```
 
-Substitute `MIN_EFFECTIVE_VCPUS` with `32` for `intervention-threshold` unless
+Substitute `MIN_EFFECTIVE_VCPUS` with `32` for ablation profiles unless
 sequential fallback was requested, otherwise `24`. For `standard`, use `24`.
 
 Show results as a table with exactly these columns:
@@ -304,8 +307,8 @@ Benchmark reference (`docs/vast-ai/vast-ai-1.md`):
 - `batch_size: 768` — 49% faster training than 200, best placement (36%)
 - `dataloader_workers: 0` — dataset is in-memory; IPC overhead not justified
 
-**`intervention-threshold` profile — parallel (default)** — accepted instance has
-at least 32 effective vCPUs:
+**Ablation profiles — parallel (default)** (`intervention-threshold`,
+`dagger-intervention-ratio`) — accepted instance has at least 32 effective vCPUs:
 
 | Effective vCPUs | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
 |---|---:|---:|---:|
@@ -314,9 +317,8 @@ at least 32 effective vCPUs:
 Benchmark reference (`docs/vast-ai/ablation-study.md`): four concurrent runs on
 one RTX 4090; identical checkpoints vs sequential with ~3.8× end-to-end speedup.
 
-**`intervention-threshold` profile — sequential (fallback)** — use only when the
-user requested sequential or the accepted instance has fewer than 32 effective
-vCPUs:
+**Ablation profiles — sequential (fallback)** — use only when the user requested
+sequential or the accepted instance has fewer than 32 effective vCPUs:
 
 | Physical cores | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
 |---|---:|---:|---:|
@@ -374,14 +376,16 @@ ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
       'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
 ```
 
-Run Batch 3 only for the `standard` profile. For `intervention-threshold`, do
-not start the `flywheel` session or this TensorBoard session; after Batches 1
-and 2, run the ablation doc's Batch 1 verify step, then:
+Run Batch 3 only for the `standard` profile. For ablation profiles, do not start
+the `flywheel` session or this TensorBoard session; after Batches 1 and 2, run
+the matching ablation doc's Batch 1 verify step, then:
 - **parallel** (`ABLATION_SWEEP_MODE=parallel`): ablation doc parallel Batch 2
 - **sequential** (`ABLATION_SWEEP_MODE=sequential`): ablation doc sequential Batch 2
 
-Then complete ablation Batches 3–4 in @docs/ablation/intervention-threshold.md
-and return to Step 9 to create `vast-ssh` and `tb-ablation`.
+Then complete ablation Batches 3–4 in the profile's ablation document and
+return to Step 9 to create `vast-ssh` and `tb-ablation`:
+- `intervention-threshold` → @docs/ablation/intervention-threshold.md
+- `dagger-intervention-ratio` → @docs/ablation/dagger-intervention-ratio.md
 
 **ckpt-bkp critical details** (based on `scripts/hf_backup.py`):
 - `--repo` flag must come **before** the `upload` subcommand, not after  
@@ -394,10 +398,10 @@ and return to Step 9 to create `vast-ssh` and `tb-ablation`.
   tmux server environment so the backup session inherits it.
 
 For the `standard` profile, start this backup session after Batch 3 with the
-timestamp prefix shown below. For `intervention-threshold`, start it only after
-the ablation sweep and TensorBoard sessions have been launched, using the
-ablation-specific prefix specified in the ablation document. Do not start a
-second `ckpt-bkp` session.
+timestamp prefix shown below. For ablation profiles, start it only after the
+ablation sweep and TensorBoard sessions have been launched, using the
+ablation-specific prefix specified in the matching ablation document. Do not
+start a second `ckpt-bkp` session.
 
 Example:
 ```bash
@@ -432,7 +436,7 @@ Verify the profile-specific instance-side sessions exist with:
 On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create
 `vast-ssh` (SSH shell into the instance, using `ServerAliveInterval=30` to
 prevent idle disconnects). For the `standard` profile, also create `tb-setup`.
-For `intervention-threshold`, create `tb-ablation` from the ablation document.
+For ablation profiles, create `tb-ablation` from the matching ablation document.
 
 ```bash
 SSH_URL=$(vastai ssh-url "$INSTANCE_ID")
@@ -451,8 +455,8 @@ Run the `tb-setup` command only for the `standard` profile.
 
 Do not wait for training or a checkpoint before completing the `standard`
 profile. Print these as follow-up commands after flywheel has produced at least
-one checkpoint (or after the run completes). For `intervention-threshold`, use
-the offline download and replay instructions in the ablation document.
+one checkpoint (or after the run completes). For ablation profiles, use the
+offline download and replay instructions in the matching ablation document.
 
 ```bash
 # List available sessions in the HF repo
@@ -474,8 +478,9 @@ uv run python scripts/final_score.py --run-name run-003
 Provisioning is complete after the profile-specific instance-side sessions and
 local tmux wrappers have been verified. Then print a summary with:
 - Instance ID
-- For `intervention-threshold`: `ABLATION_SWEEP_MODE` (`parallel` or
-  `sequential`) and applied `workers` / `dataloader_workers` values
+- For ablation profiles: active profile name, `ABLATION_SWEEP_MODE`
+  (`parallel` or `sequential`), and applied `workers` / `dataloader_workers`
+  values
 - SSH URL retrieval command (`vastai ssh-url INSTANCE_ID`)
 - Local attach commands for `vast-ssh` and the profile-specific TensorBoard
   tunnel (`tb-setup` or `tb-ablation`)
@@ -484,6 +489,9 @@ local tmux wrappers have been verified. Then print a summary with:
   - `intervention-threshold` parallel: `ablation-0.05`, `ablation-0.1`,
     `ablation-0.2`, `ablation-0.3`
   - `intervention-threshold` sequential: `ablation-sweep`
+  - `dagger-intervention-ratio` parallel: `ablation-0.2`, `ablation-0.5`,
+    `ablation-0.8`, `ablation-1.0`
+  - `dagger-intervention-ratio` sequential: `ablation-sweep`
   - plus `tensorboard` and `ckpt-bkp` (for example,
     `ssh -t -p "$PORT" "root@$HOST" 'tmux attach -t flywheel'`)
 - TensorBoard URL
