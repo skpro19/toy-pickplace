@@ -39,13 +39,21 @@ Poll every 10 seconds until `actual_status` is `"running"`, then get the SSH URL
 
 ### 5. Tune config
 
-Based on the provisioned instance's effective vCPUs:
-- >= 24 vCPUs -> `workers: 12`, `dataloader_workers: 0`
-- 16-23 vCPUs -> `workers: 6`, `dataloader_workers: 0`
+Based on the provisioned instance's effective vCPUs, recommend these overrides
+for `configs/flywheel/default.yaml`:
 
-Optionally recommend `batch_size: 768` (49% faster, best placement per benchmarks in `vast-ai-1.md`).
+| Effective vCPUs | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` (optional) |
+|---|---:|---:|---:|
+| >= 24 | 12 | 0 | 768 (benchmarked best) |
+| 16-23 | 6 | 0 | 768 (benchmarked best) |
 
-**Ask the user to confirm** the config override before applying it to `configs/flywheel/default.yaml`.
+Benchmark reference (`docs/vast-ai/vast-ai-1.md`):
+- `workers: 12` — 12% faster evaluation, 31% faster DAgger collection vs 6
+- `batch_size: 768` — 49% faster training than 200, best placement (36%)
+- `dataloader_workers: 0` — dataset is in-memory; IPC overhead not justified
+
+**Ask the user to confirm** the recommendation or adjust before applying it to
+`configs/flywheel/default.yaml`.
 
 ### 6. Setup on the instance
 
@@ -63,7 +71,7 @@ SSH in and run all commands from the doc's "Setup on the instance" section in or
 ### 7. Local tmux wrappers
 
 On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create:
-- tmux:`vast-ssh` (SSH shell into the instance)
+- tmux:`vast-ssh` (SSH shell into the instance, use `ServerAliveInterval=30` to prevent idle disconnects)
 - tmux:`tb-setup` (TensorBoard port tunnel)
 
 Print the TensorBoard URL and attach commands.
