@@ -7,7 +7,26 @@ Provision and set up a Vast.ai instance to run the flywheel training pipeline.
 
 Read `docs/vast-ai/vast-ai-2.md` for the full runbook. Follow the "Provisioning workflow" section step by step.
 
+## Prerequisites
+
+Before starting, ensure these are available on the dev machine:
+
+| Tool / key | Check |
+|---|---|
+| `vastai` CLI | `which vastai` |
+| `VAST_API_KEY` | Set in `.env` file (copy `.env.example` → `.env` if missing) |
+| `HF_TOKEN` | Set in `.env` file |
+| `tmux` | `which tmux` |
+
+The agent will source `.env` at the start and abort if any key is missing.
+Instructions will be printed for missing items.
+
 ## Workflow
+
+### 0. Load secrets
+
+Source `.env` and verify both `VAST_API_KEY` and `HF_TOKEN` are non-empty.
+If either is missing, print instructions pointing to `.env.example` and stop.
 
 ### 1. Search offers
 
@@ -67,6 +86,7 @@ SSH in and run all commands from the doc's "Setup on the instance" section in or
 - Generate 100 expert episodes
 - Launch flywheel in tmux:`flywheel`
 - Launch TensorBoard in tmux:`tensorboard`
+- Launch HF backup in tmux:`ckpt-bkp` (syncs checkpoints + TB logs to HuggingFace Hub every 2 minutes)
 
 ### 7. Local tmux wrappers
 
@@ -74,15 +94,32 @@ On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create
 - tmux:`vast-ssh` (SSH shell into the instance, use `ServerAliveInterval=30` to prevent idle disconnects)
 - tmux:`tb-setup` (TensorBoard port tunnel)
 
-Print the TensorBoard URL and attach commands.
+### 8. Local download and replay
+
+After flywheel has produced at least one checkpoint (or after the run completes):
+
+```bash
+# List available sessions in the HF repo
+HF_TOKEN=<token> uv run python scripts/hf_backup.py list
+
+# Download a specific run from the latest session
+uv run python scripts/hf_backup.py download 20260717-153000/run-003
+
+# View TensorBoard locally (no SSH tunnel needed)
+tensorboard --logdir runs/flywheel/
+
+# Re-evaluate on held-out seeds
+uv run python scripts/final_score.py --run-name run-003
+```
 
 ## Final output
 
 When complete, print a summary with:
 - Instance ID
 - SSH URL retrieval command (`vastai ssh-url INSTANCE_ID`)
-- Attach commands for all 4 tmux sessions
+- Attach commands for all 5 tmux sessions (`vast-ssh`, `tb-setup`, `flywheel`, `tensorboard`, `ckpt-bkp`)
 - TensorBoard URL
+- Download command (`uv run python scripts/hf_backup.py download ...`)
 - Destroy command for cleanup
 
 ## Notes
