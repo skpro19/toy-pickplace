@@ -1,6 +1,6 @@
 ---
 description: Provision a Vast.ai RTX 4090 instance and start the flywheel pipeline
-agent: general
+agent: build
 ---
 
 Provision and set up a Vast.ai instance to run the flywheel training pipeline.
