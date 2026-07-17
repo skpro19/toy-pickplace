@@ -139,6 +139,36 @@ def main() -> None:
         assert args.max_steps == 5000
         assert args.epochs == 9
         assert args.dagger_intervention_ratio == 0.7
+        assert args.expert_seed == 0
+
+        config_path.write_text(
+            "train_seed: 11\n"
+            "expert_seed: 22\n"
+        )
+        try:
+            sys.argv = [
+                "flywheel.py",
+                "--config",
+                str(config_path),
+            ]
+            args = parse_args()
+        finally:
+            sys.argv = original_argv
+        assert args.train_seed == 11
+        assert args.expert_seed == 22
+
+        config_path.write_text("train_seed: 11\n")
+        try:
+            sys.argv = [
+                "flywheel.py",
+                "--config",
+                str(config_path),
+            ]
+            args = parse_args()
+        finally:
+            sys.argv = original_argv
+        assert args.train_seed == 11
+        assert args.expert_seed == 11
 
         expert_dir = expert_npz_dir_for_run(run_name="run-test")
         assert expert_dir == Path("data/flywheel/run-test/expert")

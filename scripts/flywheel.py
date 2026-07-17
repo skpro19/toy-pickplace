@@ -243,6 +243,7 @@ def run_flywheel(
     early_stop_patience: int,
     expert_ratio: float,
     dagger_intervention_ratio: float,
+    expert_seed: int,
     train_seed: int,
     dagger_seed: int,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
@@ -258,14 +259,14 @@ def run_flywheel(
     print_section(title=f"Flywheel {run_name}: expert collection")
     print(
         f"Episodes: {num_expert_episodes} | Max steps: {max_steps} | "
-        f"Seed: {train_seed}"
+        f"Seed: {expert_seed}"
     )
     print(f"Output: {expert_npz_dir}")
     collection_started_at = time.perf_counter()
     collect_expert_episodes(
         episodes=num_expert_episodes,
         out_dir=expert_npz_dir,
-        seed=train_seed,
+        seed=expert_seed,
         max_steps=max_steps,
     )
     print(
@@ -302,6 +303,7 @@ def run_flywheel(
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "dagger_intervention_ratio": dagger_intervention_ratio,
+        "expert_seed": expert_seed,
         "train_seed": train_seed,
         "dagger_seed": dagger_seed,
     }
@@ -602,6 +604,12 @@ def parse_args():
         default=0.8,
         help="Sampling share for execute_expert frames within DAgger data",
     )
+    parser.add_argument(
+        "--expert-seed",
+        type=int,
+        default=None,
+        help="Expert demo scene randomization seed (default: train_seed)",
+    )
     parser.add_argument("--train-seed", type=int, default=0)
     parser.add_argument("--dagger-seed", type=int, default=0)
 
@@ -615,6 +623,9 @@ def parse_args():
         )
     parser.set_defaults(**config)
     args = parser.parse_args()
+
+    if args.expert_seed is None:
+        args.expert_seed = args.train_seed
 
     if args.num_expert_episodes < 1:
         parser.error("--num-expert-episodes must be at least 1")
@@ -688,6 +699,7 @@ def main():
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         dagger_intervention_ratio=args.dagger_intervention_ratio,
+        expert_seed=args.expert_seed,
         train_seed=args.train_seed,
         dagger_seed=args.dagger_seed,
         eval_selection_mode=args.mode,

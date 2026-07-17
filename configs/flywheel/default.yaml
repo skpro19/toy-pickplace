@@ -1,31 +1,40 @@
+# run 
 run_name: null
-num_expert_episodes: 100
-max_steps: 8000
-epochs: 1000
-batch_size: 200
-dataloader_workers: 2
+
+# flywheel loop 
 dagger_rounds: 10
 
-# dagger intervention parameters
-# dagger-mode -> threshold [hardcoded]
-# intervention_threshold: 0.2
-intervention_threshold: 0.1
-intervention_steps: 50
-# ratio of expert-executed actions from the dagger npz files included in sampling set
-dagger_intervention_ratio: 0.8  
+# expert data collection
+num_expert_episodes: 100
+max_steps: 8000
+expert_seed: 0
 
+# training
+epochs: 1000
+batch_size: 200
+early_stop_patience: 50
+dataloader_workers: 2
+
+# dataset mixing (retrain rounds only; round 0 uses expert data only)
+expert_ratio: 0.5
+dagger_intervention_ratio: 0.8  # share of execute_expert frames in DAgger sampling
+
+# dagger rollout 
+intervention_threshold: 0.1  # L2 arm threshold; gripper disagreement also triggers
+intervention_steps: 50         # min expert-control burst after trigger
 dagger_episodes: 50
 rollout_max_steps: 1400
 
+#  evaluation / checkpoint selection 
 eval_interval: 20
-eval_seed: 42
 eval_episodes: 25
 eval_max_steps: 1400
-mode: mode-b # compares placement performance 
+mode: mode-b  # mode-a = score first; mode-b = placement rate first
 
+# parallelism 
 workers: 6
-early_stop_patience: 50
-# early_stop_patience: 100
-expert_ratio: 0.5
-train_seed: 0
+
+# seeds
+train_seed: 0  # model init + training batch sampling
 dagger_seed: 0
+eval_seed: 42
