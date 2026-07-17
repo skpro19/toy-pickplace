@@ -4,12 +4,18 @@ Environment:
   HF_TOKEN       HuggingFace API token (required for upload, optional for public downloads)
   HF_REPO_ID     Target repo (overrides the --repo default)
 
+Components (selectable via --components):
+  checkpoints    Model weights (.pt files) from checkpoints/flywheel/
+  runs           TensorBoard event logs from runs/flywheel/
+  dagger         DAgger datasets from data/flywheel/
+  results        Evaluation scores from results/flywheel/
+
 Usage:
-  # Upload all local runs under a session prefix
+  # Upload all components for all local runs
   uv run python scripts/hf_backup.py upload --prefix 20260717-153000
 
-  # Upload a specific run
-  uv run python scripts/hf_backup.py upload --prefix 20260717-153000 run-003
+  # Upload only checkpoints and dagger for a specific run
+  uv run python scripts/hf_backup.py upload --prefix 20260717-153000 --components checkpoints,dagger run-003
 
   # List available sessions and runs in the repo
   uv run python scripts/hf_backup.py list
@@ -34,12 +40,22 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 
 REPO_DEFAULT = "skpro19/toy-pickplace-flywheel"
 CKPT_ROOT = Path("checkpoints/flywheel")
 RUNS_ROOT = Path("runs/flywheel")
+DAGGER_ROOT = Path("data/flywheel")
+RESULTS_ROOT = Path("results/flywheel")
+
+COMPONENT_MAP: dict[str, tuple[Path, str]] = {
+    "checkpoints": (CKPT_ROOT, "checkpoints"),
+    "runs": (RUNS_ROOT, "runs"),
+    "dagger": (DAGGER_ROOT, "data/flywheel"),
+    "results": (RESULTS_ROOT, "results"),
+}
+COMPONENT_DEFAULT = list(COMPONENT_MAP)
 
 
 def _api(*, token: Optional[str] = None) -> HfApi:
@@ -59,26 +75,25 @@ def cmd_upload(args: argparse.Namespace) -> None:
     _ensure_repo(api=api, repo_id=args.repo)
 
     prefix = args.prefix
+    selected = COMPONENT_DEFAULT if args.components == "all" else args.components.split(",")
     srcs: list[tuple[Path, str]] = []
 
-    if args.run:
-        ckpt_src = CKPT_ROOT / args.run
-        runs_src = RUNS_ROOT / args.run
-        if ckpt_src.is_dir():
-            srcs.append((ckpt_src, f"{prefix}/checkpoints/{args.run}"))
-        if runs_src.is_dir():
-            srcs.append((runs_src, f"{prefix}/runs/{args.run}"))
-        if not srcs:
-            print(f"No data found for run {args.run}", file=sys.stderr)
+    for name in selected:
+        if name not in COMPONENT_MAP:
+            print(f"Unknown component: {name}", file=sys.stderr)
             sys.exit(1)
-    else:
-        if CKPT_ROOT.is_dir():
-            srcs.append((CKPT_ROOT, f"{prefix}/checkpoints"))
-        if RUNS_ROOT.is_dir():
-            srcs.append((RUNS_ROOT, f"{prefix}/runs"))
-        if not srcs:
-            print("No flywheel data found in checkpoints/flywheel/ or runs/flywheel/", file=sys.stderr)
-            sys.exit(1)
+        local_root, remote_dir = COMPONENT_MAP[name]
+        if args.run:
+            src = local_root / args.run
+            if src.is_dir():
+                srcs.append((src, f"{prefix}/{remote_dir}/{args.run}"))
+        else:
+            if local_root.is_dir():
+                srcs.append((local_root, f"{prefix}/{remote_dir}"))
+
+    if not srcs:
+        print("No data found for the selected components", file=sys.stderr)
+        sys.exit(1)
 
     for src, dst in srcs:
         print(f"Uploading {src}/ -> {args.repo}/{dst}/")
@@ -103,6 +118,7 @@ def cmd_download(args: argparse.Namespace) -> None:
     tmp = Path(tempfile.mkdtemp())
 
     allow_patterns = [f"{prefix}/**"]
+    success = False
     try:
         snapshot_download(
             repo_id=args.repo,
@@ -112,10 +128,39 @@ def cmd_download(args: argparse.Namespace) -> None:
             token=args.token,
             local_dir_use_symlinks=False,
         )
+        success = True
     except Exception as e:
-        print(f"Download failed: {e}", file=sys.stderr)
-        shutil.rmtree(tmp)
-        sys.exit(1)
+        print(f"snapshot_download failed ({e}), falling back to individual downloads...", file=sys.stderr)
+
+    if not success:
+        snap = tmp / "snap"
+        try:
+            files = api.list_repo_files(repo_id=args.repo, repo_type="model")
+        except Exception as e2:
+            print(f"Failed to list repo: {e2}", file=sys.stderr)
+            shutil.rmtree(tmp)
+            sys.exit(1)
+
+        matched = [f for f in files if f.startswith(prefix)]
+        if not matched:
+            print(f"No files found for prefix {prefix}", file=sys.stderr)
+            shutil.rmtree(tmp)
+            sys.exit(1)
+
+        for f in matched:
+            dest = snap / f
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                hf_hub_download(
+                    repo_id=args.repo,
+                    filename=f,
+                    local_dir=str(snap),
+                    repo_type="model",
+                    token=args.token,
+                    local_dir_use_symlinks=False,
+                )
+            except Exception as e3:
+                print(f"  WARNING: could not download {f}: {e3}", file=sys.stderr)
 
     snap = tmp / "snap"
 
@@ -125,13 +170,13 @@ def cmd_download(args: argparse.Namespace) -> None:
         if run_name:
             subdir = src_base / run_name
             if subdir.is_dir():
-                dst = dst_base / run_name
+                dst = dst_base / prefix / run_name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(subdir, dst, dirs_exist_ok=True)
         else:
             dst_base.mkdir(parents=True, exist_ok=True)
             for item in src_base.iterdir():
-                shutil.copytree(item, dst_base / item.name, dirs_exist_ok=True)
+                shutil.copytree(item, dst_base / prefix / item.name, dirs_exist_ok=True)
 
     _restore(
         src_base=snap / prefix / "checkpoints",
@@ -140,6 +185,14 @@ def cmd_download(args: argparse.Namespace) -> None:
     _restore(
         src_base=snap / prefix / "runs",
         dst_base=output_root / "runs" / "flywheel",
+    )
+    _restore(
+        src_base=snap / prefix / "data" / "flywheel",
+        dst_base=output_root / "data" / "flywheel",
+    )
+    _restore(
+        src_base=snap / prefix / "results",
+        dst_base=output_root / "results" / "flywheel",
     )
 
     shutil.rmtree(tmp)
@@ -158,7 +211,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         print("No backups found.")
         return
 
-    run_pattern = re.compile(r"^(?P<prefix>\d{8}-\d{6})/(?:checkpoints|runs)/(?P<run>run-\d+)/")
+    run_pattern = re.compile(r"^(?P<prefix>\d{8}-\d{6})/(?:checkpoints|runs|data/flywheel|results)/(?P<run>run-\d+)/")
     sessions: dict[str, set[str]] = {}
     for f in files:
         m = run_pattern.match(f)
@@ -207,10 +260,14 @@ def main() -> None:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    up = sub.add_parser("upload", help="Upload checkpoints/runs to HF Hub")
+    up = sub.add_parser("upload", help="Upload checkpoints/runs/dagger/results to HF Hub")
     up.add_argument(
         "--prefix", required=True,
         help="Backup session prefix, e.g. $(date +%%Y%%m%%d-%%H%%M%%S)",
+    )
+    up.add_argument(
+        "--components", default="all",
+        help="Comma-separated components to upload: checkpoints,runs,dagger,results (default: all)",
     )
     up.add_argument("run", nargs="?", help="Specific run (e.g. run-003); omit to upload all")
 
