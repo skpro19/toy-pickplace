@@ -106,11 +106,11 @@ Benchmark reference (`docs/vast-ai/vast-ai-1.md`):
 **Ask the user to confirm** the recommendation or adjust before applying it to
 `configs/flywheel/default.yaml`.
 
-**Do NOT commit or push the config changes** — they are instance-specific
-tuning, not part of the repo. Instead, apply the edits locally and copy the
-modified file to the instance via `scp`, or apply the overrides on the instance
-via SSH after cloning (e.g. `sed -i 's/workers: 6/workers: 12/' ...`). Verify
-the overrides with `grep -E 'workers:|batch_size:|dataloader_workers:'`.
+**Do NOT edit, commit, push, or copy the local config file** — these are
+instance-specific tuning values, not repository changes. Apply the overrides
+only on the cloned repository on the instance via SSH after cloning (for
+example, `sed -i 's/workers: 6/workers: 12/' ...`). Verify the instance-side
+overrides with `grep -E 'workers:|batch_size:|dataloader_workers:'`.
 
 ### 7. Setup on the instance
 
