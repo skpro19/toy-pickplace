@@ -12,11 +12,13 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from flywheel import (  # noqa: E402
     append_round_metrics,
+    expert_npz_dir_for_run,
     make_dagger_round_seeds,
     next_flywheel_run_name,
     parse_args,
     select_best_round,
 )
+from data import collect_expert_episodes  # noqa: E402
 from eval import (  # noqa: E402
     DEFAULT_EVAL_SELECTION_MODE,
     EVAL_METRIC_VERSION,
@@ -116,7 +118,8 @@ def main() -> None:
 
         config_path = root / "flywheel.yaml"
         config_path.write_text(
-            f"expert_dir: {data_root}\n"
+            "num_expert_episodes: 42\n"
+            "max_steps: 5000\n"
             "epochs: 7\n"
             "dagger_intervention_ratio: 0.7\n"
         )
@@ -132,9 +135,28 @@ def main() -> None:
             args = parse_args()
         finally:
             sys.argv = original_argv
-        assert args.expert_dir == data_root
+        assert args.num_expert_episodes == 42
+        assert args.max_steps == 5000
         assert args.epochs == 9
         assert args.dagger_intervention_ratio == 0.7
+
+        expert_dir = expert_npz_dir_for_run(run_name="run-test")
+        assert expert_dir == Path("data/flywheel/run-test/expert")
+        collect_expert_episodes(
+            episodes=1,
+            out_dir=root / "expert",
+            seed=0,
+            max_steps=5,
+        )
+        expert_files = sorted((root / "expert").glob("*.npz"))
+        assert len(expert_files) == 1
+        collect_expert_episodes(
+            episodes=1,
+            out_dir=root / "expert",
+            seed=0,
+            max_steps=5,
+        )
+        assert len(list((root / "expert").glob("*.npz"))) == 1
 
         rounds: list[dict[str, object]] = []
         common_args = {

@@ -1,5 +1,6 @@
 run_name: null
-expert_dir: data/expert/rand-100
+num_expert_episodes: 100
+max_steps: 8000
 epochs: 1000
 batch_size: 200
 dataloader_workers: 2

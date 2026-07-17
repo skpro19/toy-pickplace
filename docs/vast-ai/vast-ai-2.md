@@ -36,23 +36,25 @@ tmux new-session -d -s tb-setup \
 # Open in browser
 # http://127.0.0.1:6006
 
-# Attach to sessions
-tmux attach -t vast-ssh     # SSH shell on the instance
-tmux attach -t flywheel      # flywheel log (inside the instance)
-tmux attach -t tensorboard   # TensorBoard log (inside the instance)
-tmux attach -t ckpt-bkp      # HF Hub backup loop (inside the instance)
-tmux attach -t tb-setup      # SSH tunnel (on the dev machine)
+# Attach to local sessions
+tmux attach -t vast-ssh
+tmux attach -t tb-setup
+
+# Attach directly to sessions on the instance
+ssh -t -p PORT root@HOST 'tmux attach -t flywheel'
+ssh -t -p PORT root@HOST 'tmux attach -t tensorboard'
+ssh -t -p PORT root@HOST 'tmux attach -t ckpt-bkp'
 ```
 
 ### Download backed-up checkpoints
 
 ```bash
 # List available sessions in the HF repo
-uv run python scripts/hf_backup.py list --repo skpro19/toy-pickplace-flywheel
+uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel list
 
 # Download a specific run
-uv run python scripts/hf_backup.py download 20260717-153000/run-003 \
-  --repo skpro19/toy-pickplace-flywheel
+uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel \
+  download 20260717-153000/run-003
 
 # View TensorBoard locally
 tensorboard --logdir runs/flywheel/
@@ -105,37 +107,44 @@ Results must be presented as a table with **exactly these columns**:
 
 | Offer ID | GPU frac | VRAM | Effective vCPUs | CPU GHz | $/hr | Host reliability | Driver | Location |
 
-The command must recommend the best offer based on this priority:
-1. **$/hr** (lowest first)
-2. **Effective vCPUs** (≥ 32 preferred for 12-worker recommendation)
-3. **CPU GHz** (higher is better for simulator workers)
-4. **Host reliability** (≥ 99% preferred)
+The command must recommend the best offer using this deterministic ordering:
+1. **CPU tier** (≥ 32 effective vCPUs first; otherwise 24–31, then 16–23)
+2. **$/hr** (lowest first within the CPU tier)
+3. **CPU GHz** (higher first when prices tie)
+4. **Host reliability** (higher first when the preceding values tie; call out
+   reliability below 99%)
 
 Show the recommendation with a brief rationale, then **ask the user to confirm**
 or select a different offer from the table before proceeding.
 
-### Pre-creation availability check
-
-Confirm the chosen offer is still rentable before creating:
-
-```bash
-vastai search offers \
-  'id=OFFER_ID gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 cpu_cores_effective>=16 rentable=true verification=verified'
-```
-
-### Create instance
+### Create instance from a priority list
 
 Use `--cancel-unavail` so Vast.ai fails instead of creating a stopped instance
-if the offer is taken during launch:
+if an offer is taken during launch. Do not perform a separate availability
+check because RTX 4090 offers disappear quickly. Try the user-confirmed offers
+in priority order and stop after the first successful creation:
 
 ```bash
-vastai create instance OFFER_ID \
-  --image pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
-  --disk 100 \
-  --ssh \
-  --direct \
-  --label toy-pickplace-flywheel \
-  --cancel-unavail
+CREATED=false
+OFFER_IDS=(OFFER_1 OFFER_2 OFFER_3) # Include every user-confirmed offer (3-5).
+for id in "${OFFER_IDS[@]}"; do
+  output=$(vastai create instance "$id" \
+    --image pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
+    --disk 100 --ssh --direct --label toy-pickplace-flywheel \
+    --cancel-unavail 2>&1)
+  if echo "$output" | grep -q "new_contract"; then
+    INSTANCE_ID=$(echo "$output" | grep -oP "new_contract': \K\d+")
+    if [ -n "$INSTANCE_ID" ]; then
+      CREATED=true
+      break
+    fi
+  fi
+  sleep 1
+done
+[ "$CREATED" = true ] || {
+  echo "ERROR: Could not create any instance from the priority list" >&2
+  exit 1
+}
 ```
 
 ### Poll for running status and get SSH URL
@@ -148,6 +157,10 @@ for i in $(seq 1 30); do
   [ "$status" = "running" ] && { echo "READY"; break; }
   sleep 10
 done
+[ "$status" = "running" ] || {
+  echo "ERROR: Instance did not reach running state; latest status=$status" >&2
+  exit 1
+}
 vastai ssh-url INSTANCE_ID
 ```
 
@@ -193,10 +206,20 @@ tmux set-option -g mouse on
 # Generate expert data (100 episodes, ~30 s)
 /root/.local/bin/uv run python scripts/data.py \
   --episodes 100 --out-dir data/expert/rand-100 --seed 0 --max-steps 8000
+```
 
-# Set HF token for checkpoint backup (picked up from dev machine's .env)
-export HF_TOKEN="$HF_TOKEN"
+Apply the user-confirmed instance-specific values to
+`/workspace/toy-pickplace/configs/flywheel/default.yaml` now, without changing
+the dev machine's checkout. Verify the values before starting training:
 
+```bash
+grep -E '^(workers|batch_size|dataloader_workers):' \
+  /workspace/toy-pickplace/configs/flywheel/default.yaml
+```
+
+Only after that verification succeeds, launch the long-running sessions:
+
+```bash
 # Launch flywheel (tmux: flywheel)
 tmux new-session -d -s flywheel \
   'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python scripts/flywheel.py --config configs/flywheel/default.yaml'
@@ -204,16 +227,27 @@ tmux new-session -d -s flywheel \
 # Launch TensorBoard (tmux: tensorboard)
 tmux new-session -d -s tensorboard \
   'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'
+```
 
-# Launch HF Hub backup (tmux: ckpt-bkp)
-# Syncs checkpoints + TensorBoard logs to HuggingFace Hub every 2 minutes.
-# The prefix is a human-readable timestamp to avoid run-name conflicts.
+Launch the HF Hub backup from the dev machine. Transfer `HF_TOKEN` over SSH
+standard input rather than interpolating it into the SSH command. Do not enable
+shell tracing or print the token:
+
+```bash
+set -a
+. ./.env
+set +a
 BACKUP_PREFIX=$(date +%Y%m%d-%H%M%S)
-tmux new-session -d -s ckpt-bkp \
-  "cd /workspace/toy-pickplace && while true; do \
-    uv run python scripts/hf_backup.py upload --repo skpro19/toy-pickplace-flywheel --prefix \$BACKUP_PREFIX; \
-    sleep 120; \
-  done"
+printf '%s\n' "$HF_TOKEN" | ssh -o StrictHostKeyChecking=no -p PORT root@HOST "
+  IFS= read -r HF_TOKEN
+  tmux set-environment -g HF_TOKEN \"\$HF_TOKEN\"
+  tmux new-session -d -s ckpt-bkp \
+    'cd /workspace/toy-pickplace && while true; do \
+      /root/.local/bin/uv run python scripts/hf_backup.py \
+        --repo skpro19/toy-pickplace-flywheel upload --prefix $BACKUP_PREFIX; \
+      sleep 120; \
+    done'
+"
 ```
 
 ### Local tmux wrappers (on the dev machine)
@@ -231,7 +265,7 @@ PORT=$(echo "$SSH_URL" | sed 's/.*://')
 
 # Local tmux: SSH shell into the instance
 tmux new-session -d -s vast-ssh \
-  "ssh -o StrictHostKeyChecking=no -p $PORT root@$HOST"
+  "ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p $PORT root@$HOST"
 
 # Local tmux: TensorBoard tunnel
 tmux new-session -d -s tb-setup \
@@ -243,16 +277,17 @@ echo "TensorBoard: http://127.0.0.1:6006"
 
 ### Local download and replay
 
-After the flywheel run has produced checkpoints (or after the run completes),
-download from HuggingFace Hub and evaluate locally:
+Provisioning does not wait for training to finish. After the flywheel run has
+produced checkpoints (or after it completes), download from HuggingFace Hub and
+evaluate locally:
 
 ```bash
 # List available sessions
-uv run python scripts/hf_backup.py list --repo skpro19/toy-pickplace-flywheel
+uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel list
 
 # Download a specific run
-uv run python scripts/hf_backup.py download 20260717-153000/run-003 \
-  --repo skpro19/toy-pickplace-flywheel
+uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel \
+  download 20260717-153000/run-003
 
 # View TensorBoard on the downloaded logs (no SSH tunnel needed)
 tensorboard --logdir runs/flywheel/
@@ -283,5 +318,5 @@ continuously; always re-search before provisioning.
 
 **Selection rationale**: `40764560` was chosen for its balance of 32 vCPUs at
 5.5 GHz, $0.3214/hr, and 98.0% reliability. The original pick (`45101552`,
-$0.2947/hr) disappeared between search and creation — always re-confirm
-availability just before `vastai create instance` and use `--cancel-unavail`.
+$0.2947/hr) disappeared between search and creation. Create directly from a
+user-confirmed priority list and use `--cancel-unavail`.

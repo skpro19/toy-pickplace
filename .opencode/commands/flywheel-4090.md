@@ -5,7 +5,8 @@ agent: build
 
 Provision and set up a Vast.ai instance to run the flywheel training pipeline.
 
-Read `docs/vast-ai/vast-ai-2.md` for the full runbook. Follow the "Provisioning workflow" section step by step.
+This command is the source of truth for provisioning control flow, confirmation
+gates, failure handling, and setup commands.
 
 ## Prerequisites
 
@@ -30,25 +31,32 @@ If either is missing, print instructions pointing to `.env.example` and stop.
 
 ### 1. Search offers
 
-Run the search command from the doc. Parse the output.
+Run this search command and parse the output:
+
+```bash
+vastai search offers \
+  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 cpu_cores_effective>=16 rentable=true verification=verified' \
+  --order dph_total+
+```
 
 Show results as a table with exactly these columns:
 
 | Offer ID | GPU frac | VRAM | Effective vCPUs | CPU GHz | $/hr | Host reliability | Driver | Location |
 
-Recommend the best offer based on this priority:
-1. **$/hr** (lowest first)
-2. **Effective vCPUs** (>= 32 preferred)
-3. **CPU GHz** (higher is better)
-4. **Host reliability** (>= 99% preferred)
+Recommend the best offer using this deterministic ordering:
+1. **CPU tier** (>= 32 effective vCPUs first; otherwise 24-31, then 16-23)
+2. **$/hr** (lowest first within the CPU tier)
+3. **CPU GHz** (higher first when prices tie)
+4. **Host reliability** (higher first when the preceding values tie; call out
+   reliability below 99%)
 
 Show the recommendation with a brief rationale, then **ask the user to confirm** or select a different offer before proceeding.
 
 ### 2. User confirms priority list
 
 After the user picks a top offer (or a priority-ordered shortlist of 3-5 offers),
-note the ordered list. Do NOT check availability yet — offers disappear within
-seconds on RTX 4090.
+note the ordered list. Do not run a separate availability check; offers
+disappear within seconds on RTX 4090.
 
 ### 3. Rapid-fire create
 
@@ -62,19 +70,29 @@ instance ID.
 # IMPORTANT: The output is NOT valid JSON — it's a mix of "Started." prefix
 # and a Python dict literal. grep for 'new_contract' key as plain text.
 CREATED=false
-for id in OFFER_1 OFFER_2 OFFER_3; do
-  output=$(vastai create instance "$id" --image ... --disk 100 --ssh --direct --label toy-pickplace-flywheel --cancel-unavail 2>&1)
+OFFER_IDS=(OFFER_1 OFFER_2 OFFER_3) # Include every user-confirmed offer (3-5).
+for id in "${OFFER_IDS[@]}"; do
+  output=$(vastai create instance "$id" \
+    --image pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
+    --disk 100 --ssh --direct --label toy-pickplace-flywheel \
+    --cancel-unavail 2>&1)
   if echo "$output" | grep -q "new_contract"; then
     INSTANCE_ID=$(echo "$output" | grep -oP "new_contract': \K\d+")
-    CREATED=true
-    break
+    if [ -n "$INSTANCE_ID" ]; then
+      CREATED=true
+      break
+    fi
   fi
   sleep 1
 done
 if [ "$CREATED" = false ]; then
   echo "ERROR: Could not create any instance from the priority list"
+  exit 1
 fi
 ```
+
+If no instance is created or no instance ID can be parsed, stop the workflow.
+Do not poll, clean up, or run setup commands with an empty instance ID.
 
 ### 4. Post-create duplicate cleanup
 
@@ -84,9 +102,74 @@ attempt that wasn't cleaned up), ask the user which to keep and destroy the
 rest, OR keep the one with the best specs and destroy the others
 automatically after listing them.
 
-### 5. Poll for running
+### 5. Poll for running and SSH readiness
 
-Poll every 10 seconds until `actual_status` is `"running"`, then get the SSH URL.
+Poll every 10 seconds for at most 30 attempts until `actual_status` is
+`"running"`, then get the SSH URL. If the instance reports a terminal failure
+or is not running after 30 attempts, print its latest status and stop. Do not
+continue to SSH setup.
+
+```bash
+for i in $(seq 1 30); do
+  status=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | \
+    python3 -c "import sys,json; print(json.load(sys.stdin).get('actual_status',''))" 2>/dev/null)
+  echo "Poll $i: status=$status"
+  [ "$status" = "running" ] && break
+  sleep 10
+done
+[ "$status" = "running" ] || {
+  echo "ERROR: Instance did not reach running state; latest status=$status" >&2
+  exit 1
+}
+SSH_URL=$(vastai ssh-url "$INSTANCE_ID")
+HOST=$(echo "$SSH_URL" | sed 's/.*@//;s/:.*//')
+PORT=$(echo "$SSH_URL" | sed 's/.*://')
+```
+
+`actual_status=running` does not guarantee that the mapped SSH port is ready.
+After resolving the SSH URL, probe SSH every 10 seconds for at most 12 attempts.
+Use batch mode so a failed key negotiation cannot block for interactive input.
+
+```bash
+SSH_READY=false
+for i in $(seq 1 12); do
+  echo "SSH probe $i"
+  if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+      -o ConnectTimeout=10 -p "$PORT" "root@$HOST" true 2>/dev/null; then
+    SSH_READY=true
+    break
+  fi
+  sleep 10
+done
+
+[ "$SSH_READY" = true ] || {
+  echo "ERROR: Instance is running but SSH did not become ready" >&2
+  exit 1
+}
+```
+
+Do not run clone, configuration, tmux, or backup commands unless the SSH probe
+succeeds.
+
+#### SSH failure recovery
+
+If SSH does not become ready within 12 attempts:
+
+1. Print the instance ID, latest `actual_status`, SSH URL, and the failed probe
+   count. Do not print API keys or other instance secrets.
+2. Ask the user whether to destroy the unusable instance and retry provisioning.
+3. Do not destroy the instance without confirmation.
+4. If confirmed, destroy that instance and verify it no longer appears in
+   `vastai show instances`.
+5. Return to **Step 1: Search offers** and obtain a fresh offer snapshot. RTX
+   4090 offers from the previous priority list may already be stale, so ask the
+   user to confirm the new priority list before creating another instance.
+6. If the user declines destruction or retry, stop the workflow. Do not attempt
+   setup commands against the failed instance.
+
+Do not change the image, add SSH installation commands, reboot repeatedly, or
+otherwise modify the provisioning command as an SSH workaround. A replacement
+host using the original create command is the recovery path.
 
 ### 6. Tune config
 
@@ -114,38 +197,43 @@ overrides with `grep -E 'workers:|batch_size:|dataloader_workers:'`.
 
 ### 7. Setup on the instance
 
-SSH in and run all commands from the doc's "Setup on the instance" section in order.
 Use the SSH URL from `vastai ssh-url INSTANCE_ID` (host and port may differ from
 the create output). Break the setup into batches to avoid overly long SSH
-commands:
+commands. Substitute the user-approved numeric values for all `CONFIRMED_*`
+placeholders before execution.
 
 ```bash
 # Batch 1: clone, uv, CUDA verify
-ssh -o StrictHostKeyChecking=no -p PORT root@HOST \
-  "git clone ... && curl ... && uv sync ... && python -c 'import torch; ...'"
+ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
+  "git clone --branch dev --single-branch \
+     https://github.com/skpro19/toy-pickplace.git /workspace/toy-pickplace && \
+   curl -LsSf https://astral.sh/uv/install.sh | sh && \
+   /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
+   cd /workspace/toy-pickplace && \
+   /root/.local/bin/uv run python -c \
+     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'"
 
-# Batch 2: tmux config, expert data, config overrides
-ssh -o StrictHostKeyChecking=no -p PORT root@HOST \
-  "touch ~/.no_auto_tmux && ..."
+# Batch 2: tmux config and confirmed config overrides
+ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
+  "set -e; \
+   touch ~/.no_auto_tmux; \
+   printf '%s\n' 'set -g mouse on' > ~/.tmux.conf; \
+   cd /workspace/toy-pickplace; \
+   sed -i -E \
+     -e 's/^workers:.*/workers: CONFIRMED_WORKERS/' \
+     -e 's/^batch_size:.*/batch_size: CONFIRMED_BATCH_SIZE/' \
+     -e 's/^dataloader_workers:.*/dataloader_workers: CONFIRMED_DATALOADER_WORKERS/' \
+     configs/flywheel/default.yaml; \
+   grep -E '^(workers|batch_size|dataloader_workers):' \
+     configs/flywheel/default.yaml"
 
-# Batch 3: launch flywheel, tensorboard, ckpt-bkp in tmux
-ssh -o StrictHostKeyChecking=no -p PORT root@HOST \
-  "tmux new-session -d -s flywheel '...' && tmux new-session -d -s tensorboard '...' && tmux new-session -d -s ckpt-bkp '...'"
+# Batch 3: launch flywheel and TensorBoard
+ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
+  "tmux new-session -d -s flywheel \
+     'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python scripts/flywheel.py --config configs/flywheel/default.yaml' && \
+   tmux new-session -d -s tensorboard \
+     'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
 ```
-
-Verify all three tmux sessions exist: `ssh ... "tmux ls"`
-
-Commands to run on the instance:
-- Clone the repo (`dev` branch)
-- Install uv
-- `uv sync --locked`
-- Verify CUDA (`torch.cuda.is_available()`)
-- Disable auto-tmux (`touch ~/.no_auto_tmux`)
-- Enable tmux mouse
-- Generate 100 expert episodes
-- Launch flywheel in tmux:`flywheel`  
-- Launch TensorBoard in tmux:`tensorboard`  
-- Launch HF backup in tmux:`ckpt-bkp`  
 
 **ckpt-bkp critical details** (based on `scripts/hf_backup.py`):
 - `--repo` flag must come **before** the `upload` subcommand, not after  
@@ -153,23 +241,37 @@ Commands to run on the instance:
   - Wrong: `uv run python scripts/hf_backup.py upload --repo ORG/REPO --prefix PREFIX`
 - Use the full path `/root/.local/bin/uv` inside tmux sessions started via SSH
   (the tmux session doesn't inherit the SSH login PATH)
-- Export `HF_TOKEN` inside the tmux command string so the backup script can
-  authenticate. Source it from the dev machine's `.env` and pass it through SSH.
+- Transfer `HF_TOKEN` over SSH standard input. Never interpolate its value into
+  the SSH command string, command arguments, or output. Set it in the remote
+  tmux server environment so the backup session inherits it.
 
 Example:
 ```bash
+set -a
+. ./.env
+set +a
 BACKUP_PREFIX=$(date +%Y%m%d-%H%M%S)
-source .env && ssh ... \
-  "tmux new-session -d -s ckpt-bkp \"cd /workspace/toy-pickplace && \
-    export HF_TOKEN=$HF_TOKEN && \
-    while true; do \
+printf '%s\n' "$HF_TOKEN" | \
+  ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" "
+  IFS= read -r HF_TOKEN
+  [ -n \"\$HF_TOKEN\" ] || { echo 'ERROR: HF_TOKEN transfer failed' >&2; exit 1; }
+  tmux set-environment -g HF_TOKEN \"\$HF_TOKEN\"
+  tmux new-session -d -s ckpt-bkp \
+    'cd /workspace/toy-pickplace && while true; do \
       /root/.local/bin/uv run python scripts/hf_backup.py \
-        --repo skpro19/toy-pickplace-flywheel upload --prefix \$BACKUP_PREFIX; \
+        --repo skpro19/toy-pickplace-flywheel upload --prefix $BACKUP_PREFIX; \
       sleep 120; \
-    done\""
+    done'
+"
 ```
 
-Verify the backup is working: `ssh ... "tmux capture-pane -t ckpt-bkp -p -S -10"`
+Do not enable shell tracing while handling secrets. Verify that neither the
+token nor the contents of `.env` appear in command output.
+
+Verify the backup is working:
+`ssh -p "$PORT" "root@$HOST" "tmux capture-pane -t ckpt-bkp -p -S -10"`.
+Verify all three instance-side sessions exist:
+`ssh -p "$PORT" "root@$HOST" "tmux ls"`.
 
 ### 8. Local tmux wrappers
 
@@ -177,13 +279,27 @@ On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create
 - tmux:`vast-ssh` (SSH shell into the instance, use `ServerAliveInterval=30` to prevent idle disconnects)
 - tmux:`tb-setup` (TensorBoard port tunnel)
 
-### 9. Local download and replay
+```bash
+SSH_URL=$(vastai ssh-url "$INSTANCE_ID")
+HOST=$(echo "$SSH_URL" | sed 's/.*@//;s/:.*//')
+PORT=$(echo "$SSH_URL" | sed 's/.*://')
 
-After flywheel has produced at least one checkpoint (or after the run completes):
+tmux new-session -d -s vast-ssh \
+  "ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p $PORT root@$HOST"
+tmux new-session -d -s tb-setup \
+  "ssh -N -L 6006:127.0.0.1:6006 -p $PORT root@$HOST"
+```
+
+### 9. Local download and replay (follow-up)
+
+Do not wait for training or a checkpoint before completing this provisioning
+command. Print these as follow-up commands to run after flywheel has produced at
+least one checkpoint (or after the run completes):
 
 ```bash
 # List available sessions in the HF repo
-HF_TOKEN=<token> uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel list
+set -a; . ./.env; set +a
+uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel list
 
 # Download a specific run from the latest session
 uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel download 20260717-153000/run-003
@@ -197,12 +313,16 @@ uv run python scripts/final_score.py --run-name run-003
 
 ## Final output
 
-When complete, print a summary with:
+Provisioning is complete after the instance-side sessions and the two local
+tmux wrappers have been verified. Then print a summary with:
 - Instance ID
 - SSH URL retrieval command (`vastai ssh-url INSTANCE_ID`)
-- Attach commands for all 5 tmux sessions (`vast-ssh`, `tb-setup`, `flywheel`, `tensorboard`, `ckpt-bkp`)
+- Local attach commands for `vast-ssh` and `tb-setup`
+- SSH commands that attach directly to the remote `flywheel`, `tensorboard`,
+  and `ckpt-bkp` sessions (for example,
+  `ssh -t -p "$PORT" "root@$HOST" 'tmux attach -t flywheel'`)
 - TensorBoard URL
-- Download command (`uv run python scripts/hf_backup.py download ...`)
+- Download command (`uv run python scripts/hf_backup.py --repo REPO download ...`)
 - Destroy command for cleanup
 
 ## Notes
@@ -210,4 +330,3 @@ When complete, print a summary with:
 - Do not store API keys, instance API keys, Jupyter tokens, SSH keys, or transient host/port in any file.
 - **RTX 4090 offers are extremely volatile** — they appear and disappear within seconds. Do not check availability before creating; just try `--cancel-unavail` and move to the next offer on failure.
 - The rapid-fire loop must **stop after the first successful create** to avoid creating multiple instances. Use a flag variable and `break` carefully.
-- Do NOT edit `docs/vast-ai/vast-ai-2.md` — that file is a manual run log.

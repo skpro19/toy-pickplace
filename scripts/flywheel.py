@@ -24,6 +24,7 @@ from eval import (
 )
 from train import train
 from rollout import rollout
+from data import collect_expert_episodes
 
 
 SECTION_WIDTH = 72
@@ -217,13 +218,18 @@ def append_round_metrics(
     return round_metrics
 
 
+def expert_npz_dir_for_run(*, run_name: str) -> Path:
+    return Path("data/flywheel") / run_name / "expert"
+
+
 def run_flywheel(
     *,
     run_name: str,
     num_dagger_rounds: int,
     intervention_threshold: float,
     intervention_steps: int,
-    expert_npz_dir: Path,
+    num_expert_episodes: int,
+    max_steps: int,
     num_epochs: int,
     batch_size: int,
     dagger_episodes: int,
@@ -247,6 +253,25 @@ def run_flywheel(
     results_root = Path('results/flywheel') / run_name
     results_root.mkdir(parents=True, exist_ok=True)
     metrics_path = results_root / "metrics.json"
+    expert_npz_dir = expert_npz_dir_for_run(run_name=run_name)
+
+    print_section(title=f"Flywheel {run_name}: expert collection")
+    print(
+        f"Episodes: {num_expert_episodes} | Max steps: {max_steps} | "
+        f"Seed: {train_seed}"
+    )
+    print(f"Output: {expert_npz_dir}")
+    collection_started_at = time.perf_counter()
+    collect_expert_episodes(
+        episodes=num_expert_episodes,
+        out_dir=expert_npz_dir,
+        seed=train_seed,
+        max_steps=max_steps,
+    )
+    print(
+        f"Expert collection complete | elapsed: "
+        f"{format_duration(seconds=time.perf_counter() - collection_started_at)}"
+    )
 
     dagger_round_seeds = make_dagger_round_seeds(
         seed=dagger_seed,
@@ -256,6 +281,8 @@ def run_flywheel(
     dagger_summaries: list[dict[str, object]] = []
     round_metrics: list[dict[str, object]] = []
     config = {
+        "num_expert_episodes": num_expert_episodes,
+        "max_steps": max_steps,
         "expert_dir": str(expert_npz_dir),
         "epochs": num_epochs,
         "batch_size": batch_size,
@@ -280,7 +307,10 @@ def run_flywheel(
     }
 
     print_section(title=f"Flywheel {run_name}")
-    print(f"Expert data: {expert_npz_dir}")
+    print(
+        f"Expert data: {expert_npz_dir} "
+        f"({num_expert_episodes} episodes, max_steps={max_steps})"
+    )
     print(
         f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs} | "
         f"Batch size: {batch_size} | "
@@ -528,10 +558,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run the expert and DAgger data flywheel")
     parser.add_argument("--config", type=Path, default=config_args.config)
     parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--num-expert-episodes", type=int, default=100)
     parser.add_argument(
-        "--expert-dir",
-        type=Path,
-        default=Path("data/expert/rand-100"),
+        "--max-steps",
+        type=int,
+        default=8000,
+        help="Maximum steps per scripted expert demonstration episode",
     )
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=200)
@@ -584,10 +616,10 @@ def parse_args():
     parser.set_defaults(**config)
     args = parser.parse_args()
 
-    args.expert_dir = Path(args.expert_dir)
-
-    if not args.expert_dir.is_dir():
-        parser.error(f"--expert-dir does not exist or is not a directory: {args.expert_dir}")
+    if args.num_expert_episodes < 1:
+        parser.error("--num-expert-episodes must be at least 1")
+    if args.max_steps < 1:
+        parser.error("--max-steps must be at least 1")
     if args.epochs < 1:
         parser.error("--epochs must be at least 1")
     if args.batch_size < 1:
@@ -641,7 +673,8 @@ def main():
         num_dagger_rounds=args.dagger_rounds,
         intervention_threshold=args.intervention_threshold,
         intervention_steps=args.intervention_steps,
-        expert_npz_dir=args.expert_dir,
+        num_expert_episodes=args.num_expert_episodes,
+        max_steps=args.max_steps,
         num_epochs=args.epochs,
         batch_size=args.batch_size,
         dagger_episodes=args.dagger_episodes,

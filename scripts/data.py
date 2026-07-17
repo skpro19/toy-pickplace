@@ -134,6 +134,30 @@ class DataCollector:
             )
 
 
+def collect_expert_episodes(
+    *,
+    episodes: int,
+    out_dir: Path,
+    seed: int,
+    max_steps: int,
+    randomize_scene: bool = True,
+) -> Path:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    existing_episodes = len(list(out_dir.glob("*.npz")))
+    if existing_episodes >= episodes:
+        return out_dir
+
+    sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
+    collector = DataCollector(sim=sim)
+    collector.collect_episodes(
+        episodes=episodes,
+        out_dir=out_dir,
+        max_steps=max_steps,
+    )
+    return out_dir
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect scripted pick-place demonstrations for BC."
@@ -155,13 +179,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    sim = SimEnv(randomize_scene=args.randomize_scene, seed=args.seed)
-    
-    collector = DataCollector(sim=sim)
-    collector.collect_episodes(
+    collect_expert_episodes(
         episodes=args.episodes,
-        out_dir=args.out_dir,
+        out_dir=Path(args.out_dir),
+        seed=args.seed,
         max_steps=args.max_steps,
+        randomize_scene=args.randomize_scene,
     )
 
     # print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
