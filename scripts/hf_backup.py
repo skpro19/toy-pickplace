@@ -1,34 +1,116 @@
-"""Backup and restore flywheel runs via HuggingFace Hub.
+"""Backup and restore flywheel training runs via HuggingFace Hub.
 
-Environment:
-  HF_TOKEN       HuggingFace API token (required for upload, optional for public downloads)
-  HF_REPO_ID     Target repo (overrides the --repo default)
+Uploads checkpoints, TensorBoard logs, DAgger datasets, and evaluation
+results from a local flywheel training run to a HuggingFace model repo.
+The same tool can list, download, and remove those backups.
 
-Components (selectable via --components):
-  checkpoints    Model weights (.pt files) from checkpoints/flywheel/
-  runs           TensorBoard event logs from runs/flywheel/
-  dagger         DAgger datasets from data/flywheel/
-  results        Evaluation scores from results/flywheel/
+A "session" groups all runs under a timestamp-based prefix (e.g.
+``20260717-110354``). Each session contains one or more runs (e.g.
+``run-001``), and each run contains per-round data.
 
-Usage:
-  # Upload all components for all local runs
-  uv run python scripts/hf_backup.py upload --prefix 20260717-153000
+Local disk layout
+-----------------
+All paths are relative to the project root::
 
-  # Upload only checkpoints and dagger for a specific run
-  uv run python scripts/hf_backup.py upload --prefix 20260717-153000 --components checkpoints,dagger run-003
+    checkpoints/flywheel/
+        {prefix}/
+            {run_name}/
+                round-{NNN}/
+                    best.pt
+                    last.pt
+    runs/flywheel/
+        {prefix}/
+            {run_name}/
+                round-{NNN}/
+                    events.out.tfevents.*
+    data/flywheel/
+        {prefix}/
+            {run_name}/
+                round-{NNN}/
+                    dagger/
+                        *.npz
+    results/flywheel/
+        {prefix}/
+            {run_name}/
+                final_scores.json
+                metrics.json
 
-  # List available sessions and runs in the repo
-  uv run python scripts/hf_backup.py list
+HF Hub repo layout
+------------------
+The same structure is mirrored inside the repo under the session prefix::
 
-  # Download everything from a session
-  uv run python scripts/hf_backup.py download 20260717-153000
+    {prefix}/
+        checkpoints/{run_name}/round-{NNN}/best.pt
+        runs/{run_name}/round-{NNN}/events.out.tfevents.*
+        data/flywheel/{run_name}/round-{NNN}/dagger/*.npz
+        results/{run_name}/final_scores.json
 
-  # Download a specific run from a session
-  uv run python scripts/hf_backup.py download 20260717-153000/run-003
+Components
+----------
+Each component can be selected individually via ``--components``:
 
-  # Remove a session or specific run from the repo
-  uv run python scripts/hf_backup.py rm 20260717-153000
-  uv run python scripts/hf_backup.py rm 20260717-153000/run-003
+==============  =========================  ===============================
+Component       Local source               Remote path under ``{prefix}/``
+==============  =========================  ===============================
+checkpoints     ``checkpoints/flywheel/``   ``checkpoints/``
+runs            ``runs/flywheel/``          ``runs/``
+dagger          ``data/flywheel/``          ``data/flywheel/``
+results         ``results/flywheel/``       ``results/``
+==============  =========================  ===============================
+
+Usage examples
+--------------
+
+Upload all components for all local runs under a new session::
+
+    uv run python scripts/hf_backup.py upload --prefix 20260717-153000
+
+Upload only checkpoints and dagger for a specific run::
+
+    uv run python scripts/hf_backup.py upload --prefix 20260717-153000 \\
+        --components checkpoints,dagger run-003
+
+List available sessions and runs::
+
+    uv run python scripts/hf_backup.py list
+
+Download everything from a session::
+
+    uv run python scripts/hf_backup.py download 20260717-153000
+
+Download only the DAgger datasets from a specific run::
+
+    uv run python scripts/hf_backup.py download 20260717-153000/run-003 \\
+        --components dagger
+
+Remove an entire session::
+
+    uv run python scripts/hf_backup.py rm 20260717-153000
+
+Remove a single run from a session::
+
+    uv run python scripts/hf_backup.py rm 20260717-153000/run-003
+
+Notes
+-----
+* ``--repo`` must come **before** the subcommand, not after.
+  Correct::
+
+      uv run python scripts/hf_backup.py --repo ORG/REPO upload ...
+
+  Wrong::
+
+      uv run python scripts/hf_backup.py upload --repo ORG/REPO ...
+
+* The token can be set via ``--token`` or the ``HF_TOKEN`` environment
+  variable. For public downloads the token is optional.
+* The repo ID can be set via ``--repo`` or the ``HF_REPO_ID`` environment
+  variable (default: ``skpro19/toy-pickplace-flywheel``).
+
+Environment
+-----------
+``HF_TOKEN``    HuggingFace API token (required for upload).
+``HF_REPO_ID``  Target repo (overrides the default).
 """
 
 import argparse
