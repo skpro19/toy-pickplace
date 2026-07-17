@@ -11,6 +11,7 @@ from rollout import (  # noqa: E402
     LOWERING_STABLE_STEPS,
     PLACEMENT_STABLE_STEPS,
     RELEASE_STABLE_STEPS,
+    RETREAT_STABLE_STEPS,
     TaskMetricsTracker,
 )
 
@@ -23,7 +24,10 @@ class FakeBody:
 class FakeData:
     def __init__(self) -> None:
         self.cube_pos = np.zeros(3, dtype=np.float64)
-        self.site_xpos = np.array([[0.2, 0.1, 0.05]], dtype=np.float64)
+        self.site_xpos = np.array(
+            [[0.2, 0.1, 0.05], [0.2, 0.1, 0.05]],
+            dtype=np.float64,
+        )
         angle = np.pi / 2.0
         tray_rot = np.array(
             [
@@ -33,7 +37,7 @@ class FakeData:
             ],
             dtype=np.float64,
         )
-        self.site_xmat = tray_rot.reshape(1, 9)
+        self.site_xmat = np.repeat(tray_rot.reshape(1, 9), 2, axis=0)
 
     def body(self, name: str) -> FakeBody:
         if name != "cube":
@@ -45,6 +49,7 @@ class FakeController:
     def __init__(self) -> None:
         self.data = FakeData()
         self.tray_center_id = 0
+        self.grasp_id = 1
         self.dt = 1.0
         self.two_finger_contact = False
         self.any_finger_contact = False
@@ -64,6 +69,16 @@ def set_cube_tray_offset(
     tray_pos = controller.data.site_xpos[controller.tray_center_id]
     tray_rot = controller.data.site_xmat[controller.tray_center_id].reshape(3, 3)
     controller.data.cube_pos = tray_pos + tray_rot @ local_offset
+
+
+def set_grasp_tray_offset(
+    *,
+    controller: FakeController,
+    local_offset: np.ndarray,
+) -> None:
+    tray_pos = controller.data.site_xpos[controller.tray_center_id]
+    tray_rot = controller.data.site_xmat[controller.tray_center_id].reshape(3, 3)
+    controller.data.site_xpos[controller.grasp_id] = tray_pos + tray_rot @ local_offset
 
 
 def main() -> None:
@@ -97,14 +112,14 @@ def main() -> None:
 
     set_cube_tray_offset(
         controller=controller,
-        local_offset=np.array([0.051, 0.0, 0.03], dtype=np.float64),
+        local_offset=np.array([0.039, 0.0, 0.03], dtype=np.float64),
     )
     tracker.update()
     assert tracker.result()["tray_reached"]
     assert not tracker.result()["lowered_to_tray"]
 
     inside_offset = np.array([0.04, 0.0, 0.03], dtype=np.float64)
-    for _ in range(LOWERING_STABLE_STEPS - 1):
+    for _ in range(LOWERING_STABLE_STEPS - 2):
         set_cube_tray_offset(controller=controller, local_offset=inside_offset)
         tracker.update()
     assert not tracker.result()["lowered_to_tray"]
@@ -144,6 +159,29 @@ def main() -> None:
 
     for _ in range(PLACEMENT_STABLE_STEPS - 1):
         tracker.update()
+    assert not tracker.result()["placement_success"]
+
+    set_grasp_tray_offset(
+        controller=controller,
+        local_offset=np.array([0.0, 0.0, 0.10], dtype=np.float64),
+    )
+    for _ in range(RETREAT_STABLE_STEPS - 1):
+        tracker.update()
+    assert not tracker.result()["placement_success"]
+
+    set_grasp_tray_offset(
+        controller=controller,
+        local_offset=np.array([0.0, 0.0, 0.08], dtype=np.float64),
+    )
+    tracker.update()
+    assert not tracker.result()["placement_success"]
+
+    set_grasp_tray_offset(
+        controller=controller,
+        local_offset=np.array([0.0, 0.0, 0.10], dtype=np.float64),
+    )
+    for _ in range(RETREAT_STABLE_STEPS):
+        tracker.update()
     assert tracker.result()["placement_success"]
 
     controller.data.cube_pos = np.zeros(3, dtype=np.float64)
@@ -151,6 +189,24 @@ def main() -> None:
     assert tracker.result()["lowered_to_tray"]
     assert tracker.result()["released_over_tray"]
     assert tracker.result()["placement_success"]
+
+    contact_controller = FakeController()
+    contact_tracker = TaskMetricsTracker(
+        controller=contact_controller,
+        initial_cube_z=0.0,
+    )
+    contact_tracker.released_over_tray = True
+    set_cube_tray_offset(controller=contact_controller, local_offset=inside_offset)
+    contact_controller.any_finger_contact = True
+    contact_tracker.update()
+    contact_controller.any_finger_contact = False
+    set_grasp_tray_offset(
+        controller=contact_controller,
+        local_offset=np.array([0.0, 0.0, 0.10], dtype=np.float64),
+    )
+    for _ in range(PLACEMENT_STABLE_STEPS + RETREAT_STABLE_STEPS):
+        contact_tracker.update()
+    assert not contact_tracker.result()["placement_success"]
 
     print("Task metrics smoke test passed.")
 

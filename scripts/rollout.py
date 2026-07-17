@@ -44,6 +44,8 @@ from constant import (
     PLACEMENT_STABLE_STEPS,
     PLACEMENT_Z_TOL,
     RELEASE_STABLE_STEPS,
+    RETREAT_MIN_HEIGHT,
+    RETREAT_STABLE_STEPS,
     TRAY_INNER_XY_TOL,
     TRAY_PLACE_TOL,
 )
@@ -100,6 +102,8 @@ class TaskMetricsTracker:
         self.lowering_steps = 0
         self.release_steps = 0
         self.placement_steps = 0
+        self.retreat_steps = 0
+        self.post_release_recontact = False
         self.grasped = False
         self.lifted = False
         self.tray_reached = False
@@ -114,6 +118,8 @@ class TaskMetricsTracker:
             self.controller.tray_center_id
         ].reshape(3, 3)
         cube_tray_offset = tray_rot.T @ (cube_pos - tray_pos)
+        grasp_pos = self.controller.data.site_xpos[self.controller.grasp_id]
+        grasp_tray_offset = tray_rot.T @ (grasp_pos - tray_pos)
         two_finger_contact = self.controller.cube_has_two_finger_contact()
         any_finger_contact = self.controller.cube_has_any_finger_contact()
 
@@ -155,6 +161,13 @@ class TaskMetricsTracker:
         if self.release_steps >= RELEASE_STABLE_STEPS:
             self.released_over_tray = True
 
+        if (
+            self.released_over_tray
+            and not self.placement_success
+            and any_finger_contact
+        ):
+            self.post_release_recontact = True
+
         cube_speed = float(
             np.linalg.norm(cube_pos - self.previous_cube_pos) / self.controller.dt
         )
@@ -167,7 +180,13 @@ class TaskMetricsTracker:
             and cube_speed <= PLACEMENT_MAX_SPEED
         )
         self.placement_steps = self.placement_steps + 1 if placement_is_stable else 0
-        if self.placement_steps >= PLACEMENT_STABLE_STEPS:
+        retreat_is_stable = (
+            self.placement_steps >= PLACEMENT_STABLE_STEPS
+            and not self.post_release_recontact
+            and float(grasp_tray_offset[2]) >= RETREAT_MIN_HEIGHT
+        )
+        self.retreat_steps = self.retreat_steps + 1 if retreat_is_stable else 0
+        if self.retreat_steps >= RETREAT_STABLE_STEPS:
             self.placement_success = True
 
     def result(self) -> TaskMetrics:
