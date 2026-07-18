@@ -133,7 +133,7 @@ TENSORBOARD_RUNS=$(ssh_cmd "curl -sf http://127.0.0.1:6006/data/runs 2>/dev/null
 DAGGER_ROUNDS=$(ssh_cmd "grep -E '^dagger_rounds:' /workspace/toy-pickplace/configs/flywheel/default.yaml 2>/dev/null | awk '{print \$2}'" 2>/dev/null || echo "10")
 
 # Get running cell names
-RUNNING_CELLS=$(echo "$CELL_STATUS_RAW" | grep ":running$" | cut -d: -f1)
+RUNNING_CELLS=$(echo "$CELL_STATUS_RAW" | grep ":running$" | cut -d: -f1 || true)
 
 declare -A ROUND_PROGRESS
 while IFS= read -r cell; do
