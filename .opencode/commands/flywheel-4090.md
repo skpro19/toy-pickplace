@@ -391,6 +391,9 @@ return to Step 9 to create `vast-ssh` and `tb-ablation`:
 - `--repo` flag must come **before** the `upload` subcommand, not after  
   - Correct: `uv run python scripts/hf_backup.py --repo ORG/REPO upload --prefix PREFIX`
   - Wrong: `uv run python scripts/hf_backup.py upload --repo ORG/REPO --prefix PREFIX`
+- Always pass `--components checkpoints,runs,results`. Do **not** upload the
+  `dagger` component: its per-episode `.npz` files (tens of thousands on grid
+  runs) exceed the HuggingFace Hub 20,000-file limit and the push is rejected.
 - Use the full path `/root/.local/bin/uv` inside tmux sessions started via SSH
   (the tmux session doesn't inherit the SSH login PATH)
 - Transfer `HF_TOKEN` over SSH standard input. Never interpolate its value into
@@ -417,7 +420,8 @@ printf '%s\n' "$HF_TOKEN" | \
   tmux new-session -d -s ckpt-bkp \
     'cd /workspace/toy-pickplace && while true; do \
       /root/.local/bin/uv run python scripts/hf_backup.py \
-        --repo skpro19/toy-pickplace-flywheel upload --prefix $BACKUP_PREFIX; \
+        --repo skpro19/toy-pickplace-flywheel upload --prefix $BACKUP_PREFIX \
+        --components checkpoints,runs,results; \
       sleep 120; \
     done'
 "

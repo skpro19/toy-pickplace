@@ -447,6 +447,9 @@ After `state/batch-1-started` exists, start one `ckpt-bkp` session once.
 Follow the `flywheel-4090.md` critical details exactly:
 
 - pass `--repo` before `upload`;
+- pass `--components checkpoints,runs,results` — never upload the `dagger`
+  component; its per-episode `.npz` count on grid runs exceeds the HuggingFace
+  Hub 20,000-file limit and the push is rejected;
 - use `/root/.local/bin/uv` in tmux;
 - transfer `HF_TOKEN` over SSH standard input only;
 - never interpolate or print the token;
