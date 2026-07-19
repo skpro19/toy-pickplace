@@ -99,8 +99,12 @@ Set:
 
 ```text
 INSTANCE_LABEL=toy-pickplace-ablation-{parameter-slugs}
-BACKUP_PREFIX=ablation-{parameter-slugs}-YYYYMMDD-HHMMSS
+GLOBAL_SEED=<global_seed resolved from the selected flywheel config>
+BACKUP_PREFIX=ablation-{parameter-slugs}-seed{GLOBAL_SEED}-YYYYMMDD-HHMMSS
 ```
+
+Include the resolved `GLOBAL_SEED` in the displayed run plan and use the same
+value in every grid-cell command.
 
 ## Tier routing
 
