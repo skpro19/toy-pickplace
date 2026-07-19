@@ -40,6 +40,7 @@ class DataCollector:
         actions: list[object],
         cube_init_pos: np.ndarray,
         tray_init_pos: np.ndarray,
+        images: list[np.ndarray] | None = None,
     ) -> None:
         """Persist one episode to disk."""
 
@@ -47,19 +48,28 @@ class DataCollector:
         out_dir.mkdir(parents=True, exist_ok=True)
         episode_path = out_dir / f"pick_place_{episode_idx:06d}.npz"
 
-        np.savez_compressed(
-            episode_path,
-            obs=np.asarray(observations, dtype=np.float32),
-            actions=np.asarray(actions, dtype=np.float32),
-            cube_init_pos=np.asarray(cube_init_pos, dtype=np.float32),
-            tray_init_pos=np.asarray(tray_init_pos, dtype=np.float32),
-        )
+        episode_arrays = {
+            "obs": np.asarray(observations, dtype=np.float32),
+            "actions": np.asarray(actions, dtype=np.float32),
+            "cube_init_pos": np.asarray(cube_init_pos, dtype=np.float32),
+            "tray_init_pos": np.asarray(tray_init_pos, dtype=np.float32),
+        }
+        if images is not None:
+            if not (len(images) == len(observations) == len(actions)):
+                raise ValueError(
+                    "images, observations, and actions must have the same length "
+                    f"(got {len(images)}, {len(observations)}, {len(actions)})"
+                )
+            episode_arrays["images"] = np.asarray(images, dtype=np.uint8)
+
+        np.savez_compressed(episode_path, **episode_arrays)
 
     def collect_episode(
         self,
         *,
         max_steps: int,
         episode_idx: int,
+        save_images: bool = False,
     ) -> dict[str, object]:
         """Run one scripted expert episode and return trajectory buffers."""
         initial_cube_z = float(self.data.body("cube").xpos[2])
@@ -67,6 +77,7 @@ class DataCollector:
 
         observations: list[np.ndarray] = []
         actions: list[np.ndarray] = []
+        images: list[np.ndarray] = []
 
         step_count = 0
         progress = tqdm(
@@ -77,6 +88,8 @@ class DataCollector:
         )
         for step_count, _ in enumerate(progress, start=1):
             observations.append(self.sim.build_observation())
+            if save_images:
+                images.append(self.sim.build_image())
 
             controller.control()
             actions.append(self.sim.build_action())
@@ -93,12 +106,15 @@ class DataCollector:
             if controller.phase == Phase.DONE:
                 break
 
-        return {
+        episode_data: dict[str, object] = {
             "observations": observations,
             "actions": actions,
             "final_phase": controller.phase,
             "steps": step_count,
         }
+        if save_images:
+            episode_data["images"] = images
+        return episode_data
 
     def collect_episodes(
         self,
@@ -106,6 +122,7 @@ class DataCollector:
         episodes: int,
         out_dir: Path,
         max_steps: int,
+        save_images: bool = False,
     ) -> None:
         """Collect and optionally save multiple scripted expert episodes."""
 
@@ -118,20 +135,24 @@ class DataCollector:
             data = self.collect_episode(
                 max_steps=max_steps,
                 episode_idx=episode_idx,
+                save_images=save_images,
             )
             episode_progress.set_postfix(
                 phase=data["final_phase"].name,
                 steps=data["steps"],
             )
 
-            DataCollector.save_episode(
-                out_dir=out_dir,
-                episode_idx=episode_idx,
-                observations=data["observations"],
-                actions=data["actions"],
-                cube_init_pos=cube_init_pos,
-                tray_init_pos=tray_init_pos,
-            )
+            save_kwargs = {
+                "out_dir": out_dir,
+                "episode_idx": episode_idx,
+                "observations": data["observations"],
+                "actions": data["actions"],
+                "cube_init_pos": cube_init_pos,
+                "tray_init_pos": tray_init_pos,
+            }
+            if save_images:
+                save_kwargs["images"] = data["images"]
+            DataCollector.save_episode(**save_kwargs)
 
 
 def collect_expert_episodes(
@@ -141,6 +162,7 @@ def collect_expert_episodes(
     seed: int,
     max_steps: int,
     randomize_scene: bool = True,
+    save_images: bool = False,
 ) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -149,12 +171,16 @@ def collect_expert_episodes(
         return out_dir
 
     sim = SimEnv(randomize_scene=randomize_scene, seed=seed)
-    collector = DataCollector(sim=sim)
-    collector.collect_episodes(
-        episodes=episodes,
-        out_dir=out_dir,
-        max_steps=max_steps,
-    )
+    try:
+        collector = DataCollector(sim=sim)
+        collector.collect_episodes(
+            episodes=episodes,
+            out_dir=out_dir,
+            max_steps=max_steps,
+            save_images=save_images,
+        )
+    finally:
+        sim.close()
     return out_dir
 
 
@@ -173,7 +199,12 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    
+    parser.add_argument(
+        "--save-images",
+        action="store_true",
+        help="Render top-camera RGB frames each step and store images in the NPZ.",
+    )
+
     return parser.parse_args()
 
 
@@ -185,6 +216,7 @@ def main() -> None:
         seed=args.seed,
         max_steps=args.max_steps,
         randomize_scene=args.randomize_scene,
+        save_images=args.save_images,
     )
 
     # print(f"Collected {successes}/{args.episodes} successful episodes; saved {saved}.")
