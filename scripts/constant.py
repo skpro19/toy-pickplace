@@ -2,6 +2,12 @@
 # observation / action schema
 OBS_DIMS = 45
 ACTION_DIMS = 8
+PROPRIO_DIMS = 9
+
+# vision rendering
+CAMERA_NAME = "top-camera"
+IMAGE_HEIGHT = 64
+IMAGE_WIDTH = 64
 
 # loss weights
 GRIPPER_LOSS_WEIGHT=0.5

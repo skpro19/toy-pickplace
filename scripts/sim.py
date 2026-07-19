@@ -7,6 +7,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from constant import CAMERA_NAME, IMAGE_HEIGHT, IMAGE_WIDTH
+
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "panda_pick_place.xml"
 
@@ -35,6 +37,8 @@ class SimEnv:
         self.tray_body_id = self.model.body("tray").id
         self.default_tray_pos = self.model.body_pos[self.tray_body_id].copy()
         self.initial_cube_z = 0.0
+        self._renderer: mujoco.Renderer | None = None
+        self._renderer_size: tuple[int, int] | None = None
         self._reset_deterministic()
 
     def sample_scene_layout(
@@ -110,6 +114,34 @@ class SimEnv:
             ]
         ).astype(np.float32)
         return action
+
+    def _get_renderer(self, *, height: int, width: int) -> mujoco.Renderer:
+        size = (height, width)
+        if self._renderer is None or self._renderer_size != size:
+            if self._renderer is not None:
+                self._renderer.close()
+            self._renderer = mujoco.Renderer(self.model, height, width)
+            self._renderer_size = size
+        return self._renderer
+
+    def build_image(
+        self,
+        *,
+        camera_name: str = CAMERA_NAME,
+        height: int = IMAGE_HEIGHT,
+        width: int = IMAGE_WIDTH,
+    ) -> np.ndarray:
+        """Return an RGB uint8 array of shape (height, width, 3) for the current state."""
+        renderer = self._get_renderer(height=height, width=width)
+        mujoco.mj_forward(self.model, self.data)
+        renderer.update_scene(self.data, camera=camera_name)
+        return renderer.render().copy()
+
+    def close(self) -> None:
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+            self._renderer_size = None
 
     @staticmethod
     def find_reset_key(model: mujoco.MjModel) -> int:
