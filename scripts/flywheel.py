@@ -112,6 +112,20 @@ def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:
     ]
 
 
+def make_flywheel_seeds(*, global_seed: int) -> dict[str, int]:
+    names = (
+        "expert_seed",
+        "train_seed",
+        "dagger_seed",
+        "eval_seed",
+    )
+    seed_sequence = np.random.SeedSequence(global_seed)
+    return {
+        name: int(child.generate_state(1, dtype=np.uint32)[0])
+        for name, child in zip(names, seed_sequence.spawn(len(names)), strict=True)
+    }
+
+
 def round_selection_key(
     *,
     item: dict[str, object],
@@ -201,6 +215,7 @@ def append_round_metrics(
     )
     metrics = {
         "run_name": run_name,
+        "global_seed": config.get("global_seed"),
         "eval_seed": eval_seed,
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
@@ -243,6 +258,7 @@ def run_flywheel(
     early_stop_patience: int,
     expert_ratio: float,
     dagger_intervention_ratio: float,
+    global_seed: int,
     expert_seed: int,
     train_seed: int,
     dagger_seed: int,
@@ -303,6 +319,7 @@ def run_flywheel(
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "dagger_intervention_ratio": dagger_intervention_ratio,
+        "global_seed": global_seed,
         "expert_seed": expert_seed,
         "train_seed": train_seed,
         "dagger_seed": dagger_seed,
@@ -585,7 +602,6 @@ def parse_args():
     parser.add_argument("--dagger-episodes", type=int, default=50)
     parser.add_argument("--rollout-max-steps", type=int, default=1400)
     parser.add_argument("--eval-interval", type=int, default=20)
-    parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--eval-episodes", type=int, default=25)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
     parser.add_argument(
@@ -605,13 +621,11 @@ def parse_args():
         help="Sampling share for execute_expert frames within DAgger data",
     )
     parser.add_argument(
-        "--expert-seed",
+        "--global-seed",
         type=int,
-        default=None,
-        help="Expert demo scene randomization seed (default: train_seed)",
+        default=0,
+        help="Root seed used to derive expert, training, DAgger, and evaluation seeds",
     )
-    parser.add_argument("--train-seed", type=int, default=0)
-    parser.add_argument("--dagger-seed", type=int, default=0)
 
     valid_config_keys = {
         action.dest for action in parser._actions if action.dest not in {"help", "config"}
@@ -623,9 +637,6 @@ def parse_args():
         )
     parser.set_defaults(**config)
     args = parser.parse_args()
-
-    if args.expert_seed is None:
-        args.expert_seed = args.train_seed
 
     if args.num_expert_episodes < 1:
         parser.error("--num-expert-episodes must be at least 1")
@@ -661,8 +672,8 @@ def parse_args():
         parser.error("--expert-ratio must be between 0 and 1")
     if not 0.0 <= args.dagger_intervention_ratio <= 1.0:
         parser.error("--dagger-intervention-ratio must be between 0 and 1")
-    if args.dagger_seed < 0:
-        parser.error("--dagger-seed must be non-negative")
+    if args.global_seed < 0:
+        parser.error("--global-seed must be non-negative")
     if args.mode not in EVAL_SELECTION_MODES:
         parser.error(f"--mode must be one of {EVAL_SELECTION_MODES}")
 
@@ -671,6 +682,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    seeds = make_flywheel_seeds(global_seed=args.global_seed)
     run_name = args.run_name or next_flywheel_run_name(
         root=Path("data/flywheel"),
         occupied_roots=[
@@ -691,7 +703,7 @@ def main():
         dagger_episodes=args.dagger_episodes,
         rollout_max_steps=args.rollout_max_steps,
         eval_interval=args.eval_interval,
-        eval_seed=args.eval_seed,
+        eval_seed=seeds["eval_seed"],
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
         workers=args.workers,
@@ -699,9 +711,10 @@ def main():
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         dagger_intervention_ratio=args.dagger_intervention_ratio,
-        expert_seed=args.expert_seed,
-        train_seed=args.train_seed,
-        dagger_seed=args.dagger_seed,
+        global_seed=args.global_seed,
+        expert_seed=seeds["expert_seed"],
+        train_seed=seeds["train_seed"],
+        dagger_seed=seeds["dagger_seed"],
         eval_selection_mode=args.mode,
     )
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from flywheel import (  # noqa: E402
     append_round_metrics,
     expert_npz_dir_for_run,
     make_dagger_round_seeds,
+    make_flywheel_seeds,
     next_flywheel_run_name,
     parse_args,
     select_best_round,
@@ -32,6 +33,12 @@ def main() -> None:
     assert seeds == make_dagger_round_seeds(seed=42, rounds=10)
     assert len(set(seeds)) == len(seeds)
     assert seeds != make_dagger_round_seeds(seed=43, rounds=10)
+
+    flywheel_seeds = make_flywheel_seeds(global_seed=0)
+    assert flywheel_seeds == make_flywheel_seeds(global_seed=0)
+    assert len(flywheel_seeds) == 4
+    assert len(set(flywheel_seeds.values())) == 4
+    assert flywheel_seeds != make_flywheel_seeds(global_seed=1)
 
     assert eval_selection_key(
         selection_mode="mode-a",
@@ -139,12 +146,9 @@ def main() -> None:
         assert args.max_steps == 5000
         assert args.epochs == 9
         assert args.dagger_intervention_ratio == 0.7
-        assert args.expert_seed == 0
+        assert args.global_seed == 0
 
-        config_path.write_text(
-            "train_seed: 11\n"
-            "expert_seed: 22\n"
-        )
+        config_path.write_text("global_seed: 11\n")
         try:
             sys.argv = [
                 "flywheel.py",
@@ -154,21 +158,7 @@ def main() -> None:
             args = parse_args()
         finally:
             sys.argv = original_argv
-        assert args.train_seed == 11
-        assert args.expert_seed == 22
-
-        config_path.write_text("train_seed: 11\n")
-        try:
-            sys.argv = [
-                "flywheel.py",
-                "--config",
-                str(config_path),
-            ]
-            args = parse_args()
-        finally:
-            sys.argv = original_argv
-        assert args.train_seed == 11
-        assert args.expert_seed == 11
+        assert args.global_seed == 11
 
         expert_dir = expert_npz_dir_for_run(run_name="run-test")
         assert expert_dir == Path("data/flywheel/run-test/expert")

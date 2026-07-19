@@ -1,7 +1,7 @@
-# run 
+# run
 run_name: null
 
-# flywheel loop 
+# flywheel loop
 dagger_rounds: 10
 
 # expert data collection
@@ -10,7 +10,7 @@ max_steps: 8000
 
 # training
 epochs: 1000
-batch_size: 200
+batch_size: 768
 early_stop_patience: 50
 dataloader_workers: 2
 
@@ -18,19 +18,19 @@ dataloader_workers: 2
 expert_ratio: 0.5  # [expert vs dagger] data ratio
 dagger_intervention_ratio: 0.8  # [expert-executed vs policy-executed] ratio in DAgger sampling
 
-# dagger rollout 
+# dagger rollout
 intervention_threshold: 0.1  # L2 arm threshold; gripper disagreement also triggers
 intervention_steps: 50         # min expert-control burst after trigger
 dagger_episodes: 50
 rollout_max_steps: 1400
 
-#  evaluation / checkpoint selection 
+# evaluation / checkpoint selection
 eval_interval: 20
-eval_episodes: 25
+eval_episodes: 50
 eval_max_steps: 1400
 mode: mode-b  # mode-a = score first; mode-b = placement rate first
 
-# parallelism 
+# parallelism
 workers: 6 # eval + rollout workers
 
 # seeds
