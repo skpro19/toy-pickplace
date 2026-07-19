@@ -31,6 +31,11 @@
   <worldbody>
     <light name="sun" pos="0 0 2.2" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <!-- Matches viewer default: lookat (0.45, 0, 0.78), distance 1.35, azimuth 145, elevation -25 -->
+    <camera name="top-camera"
+      pos="1.452245 -0.701780 1.350535"
+      xyaxes="0.573576 0.819152 0.000000 -0.346189 0.242404 0.906308"
+      fovy="45"/>
 
     <body name="table" pos="0.52 0 0.73">
       <geom name="table_top" type="box" size="1.16 0.68 0.04" material="table_mat"/>
