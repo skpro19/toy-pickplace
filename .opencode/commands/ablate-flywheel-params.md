@@ -40,6 +40,12 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
 7. Show the complete `RUN_PLAN`, selected tier, search floor, physical-core
    acceptance gate, tuning values, planned concurrency range, and estimated
    batch count. Ask the user to confirm the entire plan before Step 0.
+8. Ask for a non-negative integer `LOCAL_WORKFLOW_INDEX` before Step 0. Set
+   `LOCAL_TB_PORT=6006 + LOCAL_WORKFLOW_INDEX`,
+   `LOCAL_SSH_SESSION=vast-ssh-LOCAL_WORKFLOW_INDEX`, and
+   `LOCAL_TB_SESSION=tb-ablation-LOCAL_WORKFLOW_INDEX`. Display these local
+   wrapper values in the plan. The index must be unique among active local
+   workflows.
 
 ### Supported parameter catalog
 
@@ -351,18 +357,24 @@ ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
 ```
 
 Immediately create and verify the local wrappers. This is deliberately before
-the first grid batch so TensorBoard is available while training is running:
+the first grid batch so TensorBoard is available while training is running.
+Use the confirmed `LOCAL_WORKFLOW_INDEX` to prevent parallel local workflows
+from sharing tmux sessions or a forwarded port. Before creating either wrapper,
+abort if either session already exists or `LOCAL_TB_PORT` is already listening:
 
 ```bash
-tmux new-session -d -s vast-ssh \
+tmux has-session -t "$LOCAL_SSH_SESSION" 2>/dev/null && exit 1
+tmux has-session -t "$LOCAL_TB_SESSION" 2>/dev/null && exit 1
+ss -ltn "sport = :$LOCAL_TB_PORT" | grep -q LISTEN && exit 1
+tmux new-session -d -s "$LOCAL_SSH_SESSION" \
   "ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p $PORT root@$HOST"
-tmux new-session -d -s tb-ablation \
-  "ssh -N -L 6006:127.0.0.1:6006 -p $PORT root@$HOST"
-tmux has-session -t vast-ssh && tmux has-session -t tb-ablation
+tmux new-session -d -s "$LOCAL_TB_SESSION" \
+  "ssh -N -L $LOCAL_TB_PORT:127.0.0.1:6006 -p $PORT root@$HOST"
+tmux has-session -t "$LOCAL_SSH_SESSION" && tmux has-session -t "$LOCAL_TB_SESSION"
 ```
 
-Print `http://localhost:6006` now. If either wrapper cannot be created, stop
-before the grid launch and report the relevant local tmux output.
+Print `http://localhost:$LOCAL_TB_PORT` now. If either wrapper cannot be
+created, stop before the grid launch and report the relevant local tmux output.
 
 #### Batch 4 — materialize a durable remote controller
 
@@ -525,8 +537,8 @@ Print:
 - applied `workers`, `dataloader_workers`, and batch-size policy;
 - `CONTROL_DIR`, controller state, current/completed batch status, and all
   run-specific tmux attach commands;
-- local `vast-ssh` and `tb-ablation` attach commands;
-- TensorBoard URL;
+- local `LOCAL_SSH_SESSION` and `LOCAL_TB_SESSION` attach commands;
+- the indexed local TensorBoard URL;
 - HF backup prefix, download commands, and `final_score.py` commands;
 - cleanup destroy command.
 
