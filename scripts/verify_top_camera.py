@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -10,13 +11,31 @@ import mujoco
 import numpy as np
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "panda_pick_place.xml"
-DEFAULT_OUT_DIR = Path(__file__).resolve().parents[1] / "plots" / "top-camera-calibration"
+PLOTS_DIR = Path(__file__).resolve().parents[1] / "plots"
+DEFAULT_OUT_DIR = PLOTS_DIR / "top-camera-calibration"
+DEFAULT_CAPTURE_DIR = PLOTS_DIR / "captured_camera_pose"
 
 FREE_CAMERA_LOOKAT = (0.45, 0.0, 0.78)
 FREE_CAMERA_DISTANCE = 1.35
 FREE_CAMERA_AZIMUTH = 145.0
 FREE_CAMERA_ELEVATION = -25.0
 FIXED_CAMERA_NAME = "top-camera"
+DEFAULT_CAMERA_FOVY = 45.0
+DEFAULT_CAPTURE_RENDER_SIZE = 256
+
+
+def make_capture_dir(*, capture_root: Path = DEFAULT_CAPTURE_DIR) -> Path:
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return capture_root / stamp
+
+
+def make_capture_paths(*, capture_dir: Path) -> tuple[Path, Path, Path, Path]:
+    return (
+        capture_dir / "camera_pose.txt",
+        capture_dir / "free_camera.png",
+        capture_dir / "top_camera.png",
+        capture_dir / "side_by_side.png",
+    )
 
 
 def find_reset_key(*, model: mujoco.MjModel) -> int:
@@ -48,19 +67,134 @@ def make_free_camera() -> mujoco.MjvCamera:
     return cam
 
 
+def camera_pose_from_mjv_camera(
+    *,
+    data: mujoco.MjData,
+    cam: mujoco.MjvCamera,
+) -> dict[str, np.ndarray | float]:
+    """Convert a free-camera pose to fixed-camera XML fields."""
+    mujoco.mj_forward(data.model, data)
+    headpos = np.zeros(3)
+    forward = np.zeros(3)
+    up = np.zeros(3)
+    right = np.zeros(3)
+    mujoco.mjv_cameraFrame(headpos, forward, up, right, data, cam)
+    return {
+        "lookat": cam.lookat.copy(),
+        "distance": float(cam.distance),
+        "azimuth": float(cam.azimuth),
+        "elevation": float(cam.elevation),
+        "pos": headpos,
+        "xyaxes": np.concatenate([right, up]),
+    }
+
+
+def format_camera_pose_text(
+    *,
+    pose: dict[str, np.ndarray | float],
+    camera_name: str = FIXED_CAMERA_NAME,
+    fovy: float = DEFAULT_CAMERA_FOVY,
+) -> str:
+    lookat = pose["lookat"]
+    pos = pose["pos"]
+    xyaxes = pose["xyaxes"]
+    return "\n".join(
+        [
+            "# free-camera params (for verify_top_camera.py constants)",
+            f"FREE_CAMERA_LOOKAT = ({lookat[0]:.6f}, {lookat[1]:.6f}, {lookat[2]:.6f})",
+            f"FREE_CAMERA_DISTANCE = {pose['distance']:.6f}",
+            f"FREE_CAMERA_AZIMUTH = {pose['azimuth']:.6f}",
+            f"FREE_CAMERA_ELEVATION = {pose['elevation']:.6f}",
+            "",
+            f"# paste into scenes/panda_pick_place.xml as <camera name=\"{camera_name}\">",
+            f'<camera name="{camera_name}"',
+            f'  pos="{pos[0]:.6f} {pos[1]:.6f} {pos[2]:.6f}"',
+            f'  xyaxes="{xyaxes[0]:.6f} {xyaxes[1]:.6f} {xyaxes[2]:.6f} '
+            f'{xyaxes[3]:.6f} {xyaxes[4]:.6f} {xyaxes[5]:.6f}"',
+            f'  fovy="{fovy:.6g}"/>',
+        ]
+    )
+
+
+def save_captured_camera_pose(
+    *,
+    pose: dict[str, np.ndarray | float],
+    out_path: Path,
+    camera_name: str = FIXED_CAMERA_NAME,
+    fovy: float = DEFAULT_CAMERA_FOVY,
+) -> Path:
+    text = format_camera_pose_text(pose=pose, camera_name=camera_name, fovy=fovy)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text + "\n", encoding="utf-8")
+    return out_path
+
+
+def capture_camera_pose(
+    *,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    cam: mujoco.MjvCamera,
+    capture_dir: Path | None = None,
+    camera_name: str = FIXED_CAMERA_NAME,
+    fovy: float = DEFAULT_CAMERA_FOVY,
+    render_size: int = DEFAULT_CAPTURE_RENDER_SIZE,
+) -> Path:
+    if capture_dir is None:
+        capture_dir = make_capture_dir()
+    pose_path, free_image_path, top_image_path, side_by_side_path = make_capture_paths(
+        capture_dir=capture_dir,
+    )
+
+    pose = camera_pose_from_mjv_camera(data=data, cam=cam)
+    saved_pose_path = save_captured_camera_pose(
+        pose=pose,
+        out_path=pose_path,
+        camera_name=camera_name,
+        fovy=fovy,
+    )
+
+    with mujoco.Renderer(model, render_size, render_size) as renderer:
+        img_free, img_top = render_pair(
+            model=model,
+            data=data,
+            renderer=renderer,
+            free_cam=cam,
+            fixed_camera_name=camera_name,
+        )
+    save_single(image=img_free, out_path=free_image_path)
+    save_single(image=img_top, out_path=top_image_path)
+    save_side_by_side(
+        img_free=img_free,
+        img_fixed=img_top,
+        out_path=side_by_side_path,
+        title=capture_dir.name,
+    )
+
+    print(format_camera_pose_text(pose=pose, camera_name=camera_name, fovy=fovy))
+    print(f"\nSaved capture artifacts under: {capture_dir.resolve()}")
+    print(f"  {saved_pose_path.name}")
+    print(f"  {free_image_path.name}")
+    print(f"  {top_image_path.name}")
+    print(f"  {side_by_side_path.name}")
+    return capture_dir
+
+
 def render_pair(
     *,
     model: mujoco.MjModel,
     data: mujoco.MjData,
     renderer: mujoco.Renderer,
+    free_cam: mujoco.MjvCamera | None = None,
+    fixed_camera_name: str = FIXED_CAMERA_NAME,
 ) -> tuple[np.ndarray, np.ndarray]:
     mujoco.mj_forward(model, data)
-    free_cam = make_free_camera()
+    if free_cam is None:
+        free_cam = make_free_camera()
 
     renderer.update_scene(data, camera=free_cam)
     img_free = renderer.render().copy()
 
-    renderer.update_scene(data, camera=FIXED_CAMERA_NAME)
+    renderer.update_scene(data, camera=fixed_camera_name)
     img_fixed = renderer.render().copy()
     return img_free, img_fixed
 

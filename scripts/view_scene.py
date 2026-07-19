@@ -4,6 +4,14 @@ import time
 import mujoco
 import mujoco.viewer
 
+from verify_top_camera import (
+    DEFAULT_CAMERA_FOVY,
+    DEFAULT_CAPTURE_DIR,
+    FIXED_CAMERA_NAME,
+    capture_camera_pose,
+    make_free_camera,
+)
+
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "panda_pick_place.xml"
 
@@ -26,16 +34,48 @@ def reset_home(model: mujoco.MjModel, data: mujoco.MjData) -> None:
         mujoco.mj_resetData(model, data)
 
 
+def fixed_camera_fovy(*, model: mujoco.MjModel) -> float:
+    cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, FIXED_CAMERA_NAME)
+    if cam_id < 0:
+        return DEFAULT_CAMERA_FOVY
+    return float(model.cam_fovy[cam_id])
+
+
+def apply_free_camera(*, viewer_cam: mujoco.MjvCamera) -> None:
+    free_cam = make_free_camera()
+    viewer_cam.type = free_cam.type
+    viewer_cam.lookat[:] = free_cam.lookat
+    viewer_cam.distance = free_cam.distance
+    viewer_cam.azimuth = free_cam.azimuth
+    viewer_cam.elevation = free_cam.elevation
+
+
 def main() -> None:
     model = mujoco.MjModel.from_xml_path(str(SCENE_PATH))
     data = mujoco.MjData(model)
     reset_home(model, data)
     home_id = find_reset_key(model)
     viewer_handle: mujoco.viewer.Handle | None = None
+    camera_fovy = fixed_camera_fovy(model=model)
 
     def key_callback(keycode: int) -> None:
-        if chr(keycode).lower() == "q" and viewer_handle is not None:
+        key = chr(keycode).lower()
+        if key == "q" and viewer_handle is not None:
             viewer_handle.close()
+        if key == "p" and viewer_handle is not None:
+            capture_camera_pose(
+                model=model,
+                data=data,
+                cam=viewer_handle.cam,
+                camera_name=FIXED_CAMERA_NAME,
+                fovy=camera_fovy,
+            )
+
+    print("Controls: orbit/zoom/pan with mouse, press 'p' to capture camera pose, 'q' to quit.")
+    print(
+        "Captured artifacts are saved under "
+        f"{DEFAULT_CAPTURE_DIR.resolve()}/<YYYY-MM-DD_HH-MM-SS>/"
+    )
 
     with mujoco.viewer.launch_passive(
         model,
@@ -46,11 +86,7 @@ def main() -> None:
     ) as viewer:
         viewer_handle = viewer
         viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-        viewer.cam.lookat[:] = (0.45, 0.0, 0.78)
-        viewer.cam.distance = 1.35
-        viewer.cam.azimuth = 145
-        viewer.cam.elevation = -25
+        apply_free_camera(viewer_cam=viewer.cam)
 
         while viewer.is_running():
             if model.nu and home_id >= 0:
