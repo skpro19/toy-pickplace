@@ -14,5 +14,17 @@
 - keep a function's return annotation on the `def` line when it fits (e.g. `def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:`); do not place it on a separate line
 
 ## Git Commits
-- use conventional commits format: `<type>: <short description>`
-- common types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`
+- follow `.opencode/rules/git.md` for the full git policy; the rules below are the ones most often missed
+- use conventional commits: `<type>: <short summary>` — one subject line only
+- common types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `ci`, `build`, `perf`, `revert`
+- do **not** add a commit body unless the user explicitly asks for one
+- summary after `type:` must start with a lowercase letter, have no trailing period, and stay concise (about 6–12 words)
+- use plain types only — no scopes (`feat(scope): ...` is wrong)
+- prefer intent/outcome over implementation detail; avoid vague subjects like `update`, `changes`, `misc`
+- before committing, check recent style with `git log --oneline -10` and match it
+- if the message is wrong, fix it **before** pushing; never push then amend/force-push unless the user explicitly asks to rewrite published history
+
+Examples:
+- `feat: add viewer camera capture and recalibrate top-camera`
+- `fix: prevent calibration overwrite unless toggle was pressed`
+- `docs: clarify host-client branch sync workflow`
