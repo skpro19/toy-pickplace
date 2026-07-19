@@ -5,7 +5,7 @@ run_name: null
 dagger_rounds: 10
 
 # expert data collection
-num_expert_episodes: 100
+num_expert_episodes: 250
 max_steps: 8000
 
 # training
