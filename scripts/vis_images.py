@@ -56,33 +56,35 @@ def sample_frame_indices(*, num_frames: int, frames_per_episode: int) -> np.ndar
 def validate_episode_arrays(
     *,
     npz_path: Path,
-    images: np.ndarray,
+    img_obs: np.ndarray,
     obs: np.ndarray,
     actions: np.ndarray,
 ) -> None:
     expected_image_shape = (IMAGE_HEIGHT, IMAGE_WIDTH, 3)
-    if images.ndim != 4:
-        raise ValueError(f"{npz_path}: images must have shape (T, H, W, 3), got {images.shape}")
-    if images.shape[1:] != expected_image_shape:
+    if img_obs.ndim != 4:
         raise ValueError(
-            f"{npz_path}: expected image shape {expected_image_shape}, got {images.shape[1:]}"
+            f"{npz_path}: img_obs must have shape (T, H, W, 3), got {img_obs.shape}"
         )
-    if images.dtype != np.uint8:
-        raise ValueError(f"{npz_path}: expected images dtype uint8, got {images.dtype}")
-    if obs.shape[0] != images.shape[0]:
+    if img_obs.shape[1:] != expected_image_shape:
         raise ValueError(
-            f"{npz_path}: obs length {obs.shape[0]} != images length {images.shape[0]}"
+            f"{npz_path}: expected image shape {expected_image_shape}, got {img_obs.shape[1:]}"
         )
-    if actions.shape[0] != images.shape[0]:
+    if img_obs.dtype != np.uint8:
+        raise ValueError(f"{npz_path}: expected img_obs dtype uint8, got {img_obs.dtype}")
+    if obs.shape[0] != img_obs.shape[0]:
         raise ValueError(
-            f"{npz_path}: actions length {actions.shape[0]} != images length {images.shape[0]}"
+            f"{npz_path}: obs length {obs.shape[0]} != img_obs length {img_obs.shape[0]}"
+        )
+    if actions.shape[0] != img_obs.shape[0]:
+        raise ValueError(
+            f"{npz_path}: actions length {actions.shape[0]} != img_obs length {img_obs.shape[0]}"
         )
 
 
 def save_episode_grid(
     *,
     npz_path: Path,
-    images: np.ndarray,
+    img_obs: np.ndarray,
     frame_indices: np.ndarray,
     out_path: Path,
 ) -> None:
@@ -92,7 +94,7 @@ def save_episode_grid(
         axes = [axes]
 
     for axis, frame_idx in zip(axes, frame_indices, strict=True):
-        frame = images[frame_idx]
+        frame = img_obs[frame_idx]
         axis.imshow(frame)
         axis.set_title(
             f"t={frame_idx}  red={count_red_pixels(image=frame)}  "
@@ -107,11 +109,11 @@ def save_episode_grid(
     plt.close(fig)
 
 
-def summarize_episode(*, npz_path: Path, images: np.ndarray, frame_indices: np.ndarray) -> None:
-    red_counts = [count_red_pixels(image=images[idx]) for idx in frame_indices]
-    blue_counts = [count_blue_pixels(image=images[idx]) for idx in frame_indices]
+def summarize_episode(*, npz_path: Path, img_obs: np.ndarray, frame_indices: np.ndarray) -> None:
+    red_counts = [count_red_pixels(image=img_obs[idx]) for idx in frame_indices]
+    blue_counts = [count_blue_pixels(image=img_obs[idx]) for idx in frame_indices]
     print(
-        f"{npz_path.name}: T={images.shape[0]}, "
+        f"{npz_path.name}: T={img_obs.shape[0]}, "
         f"sampled_frames={frame_indices.tolist()}, "
         f"red_pixels={red_counts}, blue_pixels={blue_counts}"
     )
@@ -131,26 +133,26 @@ def visualize_image_episodes(
     print(f"visualizing {len(selected)} / {len(npz_paths)} episodes from {npz_dir.resolve()}")
     for npz_path in selected:
         with np.load(npz_path) as data:
-            if "images" not in data:
-                raise KeyError(f"{npz_path} does not contain an 'images' array")
-            images = data["images"]
+            if "img_obs" not in data:
+                raise KeyError(f"{npz_path} does not contain an 'img_obs' array")
+            img_obs = data["img_obs"]
             obs = data["obs"]
             actions = data["actions"]
 
         validate_episode_arrays(
             npz_path=npz_path,
-            images=images,
+            img_obs=img_obs,
             obs=obs,
             actions=actions,
         )
         frame_indices = sample_frame_indices(
-            num_frames=images.shape[0],
+            num_frames=img_obs.shape[0],
             frames_per_episode=frames_per_episode,
         )
-        summarize_episode(npz_path=npz_path, images=images, frame_indices=frame_indices)
+        summarize_episode(npz_path=npz_path, img_obs=img_obs, frame_indices=frame_indices)
         save_episode_grid(
             npz_path=npz_path,
-            images=images,
+            img_obs=img_obs,
             frame_indices=frame_indices,
             out_path=out_dir / f"{npz_path.stem}_grid.png",
         )
@@ -180,7 +182,7 @@ def parse_args() -> argparse.Namespace:
         dest="npz_dir",
         type=Path,
         default=Path("data/expert/rand-100-img"),
-        help="Folder containing episode .npz files with images arrays.",
+        help="Folder containing episode .npz files with img_obs arrays.",
     )
     parser.add_argument(
         "--episodes",

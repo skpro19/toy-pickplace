@@ -1,7 +1,12 @@
 """Collect scripted pick-place demonstrations for behaviour cloning.
 
-This is intentionally a high-level scaffold. Fill in the TODOs as an exercise:
-define the observation vector, record actions, decide success, and save episodes.
+Examples:
+    # Collect proprioceptive trajectories at the default 60 Hz capture rate.
+    uv run scripts/data.py --episodes 100 --out-dir data/expert/rand-100
+
+    # Collect aligned proprioception, actions, and 64x64 RGB image observations.
+    uv run scripts/data.py --episodes 100 --out-dir data/expert/rand-100-img \
+        --capture-hz 60 --save-images
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ class DataCollector:
         actions: list[object],
         cube_init_pos: np.ndarray,
         tray_init_pos: np.ndarray,
-        images: list[np.ndarray] | None = None,
+        img_obs: list[np.ndarray] | None = None,
     ) -> None:
         """Persist one episode to disk."""
 
@@ -54,13 +59,13 @@ class DataCollector:
             "cube_init_pos": np.asarray(cube_init_pos, dtype=np.float32),
             "tray_init_pos": np.asarray(tray_init_pos, dtype=np.float32),
         }
-        if images is not None:
-            if not (len(images) == len(observations) == len(actions)):
+        if img_obs is not None:
+            if not (len(img_obs) == len(observations) == len(actions)):
                 raise ValueError(
-                    "images, observations, and actions must have the same length "
-                    f"(got {len(images)}, {len(observations)}, {len(actions)})"
+                    "img_obs, observations, and actions must have the same length "
+                    f"(got {len(img_obs)}, {len(observations)}, {len(actions)})"
                 )
-            episode_arrays["images"] = np.asarray(images, dtype=np.uint8)
+            episode_arrays["img_obs"] = np.asarray(img_obs, dtype=np.uint8)
 
         np.savez_compressed(episode_path, **episode_arrays)
 
@@ -69,15 +74,26 @@ class DataCollector:
         *,
         max_steps: int,
         episode_idx: int,
+        capture_hz: float = 60.0,
         save_images: bool = False,
     ) -> dict[str, object]:
         """Run one scripted expert episode and return trajectory buffers."""
+        if capture_hz <= 0.0:
+            raise ValueError(f"capture_hz must be positive, got {capture_hz}")
+        sim_hz = 1.0 / self.model.opt.timestep
+        if capture_hz > sim_hz:
+            raise ValueError(
+                f"capture_hz ({capture_hz}) cannot exceed simulation rate ({sim_hz})"
+            )
+
         initial_cube_z = float(self.data.body("cube").xpos[2])
         controller = PickPlaceController(self.model, self.data)
 
         observations: list[np.ndarray] = []
         actions: list[np.ndarray] = []
-        images: list[np.ndarray] = []
+        img_obs: list[np.ndarray] = []
+        capture_period = 1.0 / capture_hz
+        next_capture_time = float(self.data.time)
 
         step_count = 0
         progress = tqdm(
@@ -87,12 +103,16 @@ class DataCollector:
             unit="step",
         )
         for step_count, _ in enumerate(progress, start=1):
-            observations.append(self.sim.build_observation())
-            if save_images:
-                images.append(self.sim.build_image())
+            capture_due = self.data.time + 1e-9 >= next_capture_time
+            if capture_due:
+                observations.append(self.sim.build_observation())
+                if save_images:
+                    img_obs.append(self.sim.build_image())
 
             controller.control()
-            actions.append(self.sim.build_action())
+            if capture_due:
+                actions.append(self.sim.build_action())
+                next_capture_time += capture_period
 
             mujoco.mj_step(self.model, self.data)
 
@@ -113,7 +133,7 @@ class DataCollector:
             "steps": step_count,
         }
         if save_images:
-            episode_data["images"] = images
+            episode_data["img_obs"] = img_obs
         return episode_data
 
     def collect_episodes(
@@ -122,6 +142,7 @@ class DataCollector:
         episodes: int,
         out_dir: Path,
         max_steps: int,
+        capture_hz: float = 60.0,
         save_images: bool = False,
     ) -> None:
         """Collect and optionally save multiple scripted expert episodes."""
@@ -135,6 +156,7 @@ class DataCollector:
             data = self.collect_episode(
                 max_steps=max_steps,
                 episode_idx=episode_idx,
+                capture_hz=capture_hz,
                 save_images=save_images,
             )
             episode_progress.set_postfix(
@@ -151,7 +173,7 @@ class DataCollector:
                 "tray_init_pos": tray_init_pos,
             }
             if save_images:
-                save_kwargs["images"] = data["images"]
+                save_kwargs["img_obs"] = data["img_obs"]
             DataCollector.save_episode(**save_kwargs)
 
 
@@ -161,6 +183,7 @@ def collect_expert_episodes(
     out_dir: Path,
     seed: int,
     max_steps: int,
+    capture_hz: float = 60.0,
     randomize_scene: bool = True,
     save_images: bool = False,
 ) -> Path:
@@ -177,6 +200,7 @@ def collect_expert_episodes(
             episodes=episodes,
             out_dir=out_dir,
             max_steps=max_steps,
+            capture_hz=capture_hz,
             save_images=save_images,
         )
     finally:
@@ -195,6 +219,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=8000)
     parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=60.0,
+        help="Rate for aligned obs, action, and image-observation samples.",
+    )
+    parser.add_argument(
         "--randomize-scene",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -202,7 +232,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-images",
         action="store_true",
-        help="Render top-camera RGB frames each step and store images in the NPZ.",
+        help="Render top-camera RGB frames each step and store img_obs in the NPZ.",
     )
 
     return parser.parse_args()
@@ -215,6 +245,7 @@ def main() -> None:
         out_dir=Path(args.out_dir),
         seed=args.seed,
         max_steps=args.max_steps,
+        capture_hz=args.capture_hz,
         randomize_scene=args.randomize_scene,
         save_images=args.save_images,
     )
