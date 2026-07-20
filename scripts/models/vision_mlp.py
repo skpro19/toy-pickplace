@@ -26,7 +26,9 @@ class VisionEncoder(nn.Module):
                                     out_channels=64, 
                                     kernel_size=3, stride=2, padding=1)
         # (16,16) => (8,8)
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2, padding=1)
+        self.conv3      = nn.Conv2d(in_channels=64, 
+                                    out_channels=128, 
+                                    kernel_size=3, stride=2, padding=1)
 
         self.relu       = nn.ReLU()
         self.flatten    = nn.Flatten()
@@ -34,6 +36,15 @@ class VisionEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor):
         
+        if x.ndim != 4: 
+            raise ValueError(f"x.ndim != 4: {x.ndim}")
+        if x.shape[1] != 3:
+            raise ValueError(f"x.shape[1] != 3: {x.shape[1]}")
+        if x.shape[2] != 64:
+            raise ValueError(f"x.shape[2] != 64: {x.shape[2]}")
+        if x.shape[3] != 64:
+            raise ValueError(f"x.shape[3] != 64: {x.shape[3]}")
+
         x = self.conv1(x)
         x = self.relu(x)
 
@@ -43,19 +54,22 @@ class VisionEncoder(nn.Module):
         x = self.conv3(x)
         x = self.relu(x)
 
-        # print(f"x.ndim => {x.ndim}")
-        # print(f"x.shape => {x.shape}")
-
         x = self.flatten(x)
-
-        # print(f"x.ndim => {x.ndim}")
-        # print(f"x.shape => {x.shape}")
 
         x = self.embed(x)
 
-        # print(f"x.ndim => {x.ndim}")
-        # print(f"x.shape => {x.shape}")
+        if x.ndim != 2:
+            raise ValueError(f"x.ndim != 2: {x.ndim}")
+        if x.shape[1] != 128:
+            raise ValueError(f"x.shape[1] != 128: {x.shape[1]}")
 
+class ProprioEncoder(nn.Module):
+
+    def __init__(self):
+        pass
+
+    def forward(self): 
+        pass    
 
 
 # class ProprioEncoder(nn.Module):
