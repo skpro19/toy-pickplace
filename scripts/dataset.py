@@ -416,10 +416,7 @@ class PickPlaceVisionDataset(PickPlaceDataset):
         )
 
     def _prepare_img_obs(self, *, idx: int) -> torch.Tensor:
-        img_obs = np.asarray(
-            self._select_obs(obs=self.img_obs[idx]),
-            dtype=np.float32,
-        ).copy()
-        img_obs = img_obs[]
+        img_obs = np.asarray(self.img_obs[idx], dtype=np.float32).copy()
         img_obs /= 255.0
-        return torch.from_numpy(img_obs)
+        img_obs = torch.from_numpy(img_obs).permute(2, 0, 1)
+        return img_obs
