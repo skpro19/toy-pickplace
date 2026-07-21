@@ -50,7 +50,7 @@ class VisionEncoder(nn.Module):
 
         x = self.conv2(x)
         x = self.relu(x)
-        
+
         x = self.conv3(x)
         x = self.relu(x)
 
@@ -63,28 +63,16 @@ class VisionEncoder(nn.Module):
         if x.shape[1] != 128:
             raise ValueError(f"x.shape[1] != 128: {x.shape[1]}")
 
-class ProprioEncoder(nn.Module):
-
-    def __init__(self):
-        pass
-
-    def forward(self): 
-        pass    
+        return x
 
 
-# class ProprioEncoder(nn.Module):
-#     """
-#     :: input - [B, 9]
-#     :: MLP [B,9] - [B,128]
-#     :: output - [B,128]
-#     """
-    
+# class VisionMLP(nn.Module):
 #     def __init__(self):
-    
+#         pass
+
+#     def forward(self, x: torch.Tensor):
 
 
-# class VisionMLP(nn.Module): 
-#     def __init__(): 
 #         pass
 
     
