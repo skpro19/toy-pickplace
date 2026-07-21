@@ -559,7 +559,7 @@ def run_flywheel(
 
 def parse_args():
     config_parser = argparse.ArgumentParser(add_help=False)
-    config_parser.add_argument("--config", type=Path, default=None)
+    config_parser.add_argument("--config", type=Path, required=True)
     config_args, _ = config_parser.parse_known_args()
 
     config: dict[str, object] = {}
@@ -575,7 +575,7 @@ def parse_args():
             config_parser.error("--config keys must be strings")
 
     parser = argparse.ArgumentParser(description="Run the expert and DAgger data flywheel")
-    parser.add_argument("--config", type=Path, default=config_args.config)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--num-expert-episodes", type=int, default=100)
     parser.add_argument(
