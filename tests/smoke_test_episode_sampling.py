@@ -49,6 +49,8 @@ def main() -> None:
             data_dirs=[expert_dir, dagger_dir],
             sample_ratios=[0.6, 0.4],
             dagger_intervention_ratio=0.8,
+            action_space="absolute",
+            normalize=False,
         )
         assert np.isclose(dataset.sample_weights[:2].sum(), 0.3)
         assert np.isclose(dataset.sample_weights[2:10].sum(), 0.3)
@@ -59,6 +61,9 @@ def main() -> None:
         assert dataset.samples_per_epoch == 10
         assert dataset.source_frame_counts.tolist() == [10, 4]
         assert np.allclose(dataset.source_ratios, [0.6, 0.4])
+        assert np.allclose(dataset.obs_targets, dataset.obs)
+        assert np.allclose(dataset.action_targets[:, :7], dataset.actions[:, :7])
+        assert np.allclose(dataset.action_targets[:, 7], dataset.actions[:, 7] / 255.0)
 
         _, norm_stats = prepare_dataset(
             npz_folders=[expert_dir, dagger_dir],

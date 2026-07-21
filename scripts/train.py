@@ -4,13 +4,12 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 from typing import TypedDict
-import numpy as np
 from tqdm import tqdm
 import argparse
 import re
 
 from mlp import MLP
-from dataset import PickPlaceDataset
+from dataset import NormStats, PickPlaceDataset
 from eval import (
     DEFAULT_EVAL_SELECTION_MODE,
     EVAL_SELECTION_MODES,
@@ -21,19 +20,11 @@ from eval import (
 )
 
 from constant import (
-    OBS_DIMS, 
-    ACTION_DIMS, 
-    EPSILON,
+    OBS_DIMS,
+    ACTION_DIMS,
     JOINTS_LOSS_WEIGHT,
     GRIPPER_LOSS_WEIGHT
     )
-
-
-class NormStats(TypedDict):
-    arm_actions_mean: np.ndarray
-    arm_actions_std: np.ndarray
-    arm_obs_mean: np.ndarray
-    arm_obs_std: np.ndarray
 
 
 class EpochMetrics(TypedDict):
@@ -175,66 +166,10 @@ def prepare_dataset(
         data_dirs=npz_folders,
         sample_ratios=sample_ratios,
         dagger_intervention_ratio=dagger_intervention_ratio,
+        action_space=action_space,
+        normalize=normalize,
     )
-
-    if action_space == "joint_delta":
-        arm_actions = dataset.actions[:, 0:ACTION_DIMS-1]
-        arm_qpos = dataset.obs[:, 0:ACTION_DIMS-1]
-        dataset.action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
-        dataset.action_targets[:, ACTION_DIMS-1] = (
-            dataset.actions[:, ACTION_DIMS-1] / 255.0
-        )
-    elif action_space == "absolute":
-        dataset.action_targets[:, 0:ACTION_DIMS-1] = dataset.actions[
-            :, 0:ACTION_DIMS-1
-        ]
-        dataset.action_targets[:, ACTION_DIMS-1] = (
-            dataset.actions[:, ACTION_DIMS-1] / 255.0
-        )
-    else:
-        raise ValueError(f"Unknown action_space: {action_space}")
-
-    dataset.obs_targets = dataset.obs.copy()
-
-    arm_action_targets = dataset.action_targets[:, 0:ACTION_DIMS-1]
-    arm_actions_mean = np.average(
-        arm_action_targets,
-        axis=0,
-        weights=dataset.sample_weights,
-    )[None, :].astype(np.float32)
-    arm_obs_mean = np.average(
-        dataset.obs_targets,
-        axis=0,
-        weights=dataset.sample_weights,
-    )[None, :].astype(np.float32)
-    norm_stats: NormStats = {
-        "arm_actions_mean": arm_actions_mean,
-        "arm_actions_std": np.sqrt(
-            np.average(
-                np.square(arm_action_targets - arm_actions_mean),
-                axis=0,
-                weights=dataset.sample_weights,
-            )
-        )[None, :].astype(np.float32),
-        "arm_obs_mean": arm_obs_mean,
-        "arm_obs_std": np.sqrt(
-            np.average(
-                np.square(dataset.obs_targets - arm_obs_mean),
-                axis=0,
-                weights=dataset.sample_weights,
-            )
-        )[None, :].astype(np.float32),
-    }
-
-    if normalize:
-        dataset.action_targets[:, 0:ACTION_DIMS-1] -= norm_stats["arm_actions_mean"]
-        dataset.action_targets[:, 0:ACTION_DIMS-1] /= (
-            norm_stats["arm_actions_std"] + EPSILON
-        )
-        dataset.obs_targets -= norm_stats["arm_obs_mean"]
-        dataset.obs_targets /= norm_stats["arm_obs_std"] + EPSILON
-
-    return dataset, norm_stats
+    return dataset, dataset.norm_stats
 
 
 def train_epoch(

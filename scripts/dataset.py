@@ -1,7 +1,17 @@
 from torch.utils.data import Dataset
 from pathlib import Path
+from typing import Literal, TypedDict
 import numpy as np
 import torch
+
+from constant import ACTION_DIMS, EPSILON, OBS_DIMS
+
+
+class NormStats(TypedDict):
+    arm_actions_mean: np.ndarray
+    arm_actions_std: np.ndarray
+    arm_obs_mean: np.ndarray
+    arm_obs_std: np.ndarray
 
 
 class PickPlaceDataset(Dataset):
@@ -11,6 +21,8 @@ class PickPlaceDataset(Dataset):
         data_dirs: str | Path | list[str | Path] = "data/demos/2026-07-02_14-04-52",
         sample_ratios: list[float] | None = None,
         dagger_intervention_ratio: float | None = None,
+        action_space: Literal["joint_delta", "absolute"],
+        normalize: bool,
     ):
         if isinstance(data_dirs, (str, Path)):
             data_dirs = [data_dirs]
@@ -145,9 +157,70 @@ class PickPlaceDataset(Dataset):
             total_samples = int(np.floor(np.min(frame_counts / ratios)))
             self.samples_per_epoch = total_samples
 
-        # values that would be used by the model
-        self.action_targets = np.empty_like(self.actions)
-        self.obs_targets = np.empty_like(self.obs)
+        self.obs_targets, self.action_targets, self.norm_stats = self._build_targets(
+            action_space=action_space, normalize=normalize
+        )
+
+    def _build_targets(
+        self, *, action_space: Literal["joint_delta", "absolute"], normalize: bool
+    ) -> tuple[np.ndarray, np.ndarray, NormStats]:
+        action_targets = np.empty_like(self.actions)
+        if action_space == "joint_delta":
+            arm_actions = self.actions[:, 0:ACTION_DIMS-1]
+            arm_qpos = self.obs[:, 0:ACTION_DIMS-1]
+            action_targets[:, 0:ACTION_DIMS-1] = arm_actions - arm_qpos
+            action_targets[:, ACTION_DIMS-1] = (
+                self.actions[:, ACTION_DIMS-1] / 255.0
+            )
+        elif action_space == "absolute":
+            action_targets[:, 0:ACTION_DIMS-1] = self.actions[:, 0:ACTION_DIMS-1]
+            action_targets[:, ACTION_DIMS-1] = (
+                self.actions[:, ACTION_DIMS-1] / 255.0
+            )
+        else:
+            raise ValueError(f"Unknown action_space: {action_space}")
+
+        obs_targets = self.obs.copy()
+
+        arm_action_targets = action_targets[:, 0:ACTION_DIMS-1]
+        arm_actions_mean = np.average(
+            arm_action_targets,
+            axis=0,
+            weights=self.sample_weights,
+        )[None, :].astype(np.float32)
+        arm_obs_mean = np.average(
+            obs_targets,
+            axis=0,
+            weights=self.sample_weights,
+        )[None, :].astype(np.float32)
+        norm_stats: NormStats = {
+            "arm_actions_mean": arm_actions_mean,
+            "arm_actions_std": np.sqrt(
+                np.average(
+                    np.square(arm_action_targets - arm_actions_mean),
+                    axis=0,
+                    weights=self.sample_weights,
+                )
+            )[None, :].astype(np.float32),
+            "arm_obs_mean": arm_obs_mean,
+            "arm_obs_std": np.sqrt(
+                np.average(
+                    np.square(obs_targets - arm_obs_mean),
+                    axis=0,
+                    weights=self.sample_weights,
+                )
+            )[None, :].astype(np.float32),
+        }
+
+        if normalize:
+            action_targets[:, 0:ACTION_DIMS-1] -= norm_stats["arm_actions_mean"]
+            action_targets[:, 0:ACTION_DIMS-1] /= (
+                norm_stats["arm_actions_std"] + EPSILON
+            )
+            obs_targets -= norm_stats["arm_obs_mean"]
+            obs_targets /= norm_stats["arm_obs_std"] + EPSILON
+
+        return obs_targets, action_targets, norm_stats
 
     def __len__(self):
         return self.obs.shape[0]
@@ -177,10 +250,12 @@ class PickPlaceDataset(Dataset):
             raise ValueError(
                 f"{file} actions must have shape (T,action_dim), got {actions.shape}"
             )
-        if obs.shape[1] != 45:
-            raise ValueError(f"{file} expected obs_dim=45 got {obs.shape[1]}")
-        if actions.shape[1] != 8:
-            raise ValueError(f"{file} expected action_dim=8 got {actions.shape[1]}")
+        if obs.shape[1] != OBS_DIMS:
+            raise ValueError(f"{file} expected obs_dim={OBS_DIMS} got {obs.shape[1]}")
+        if actions.shape[1] != ACTION_DIMS:
+            raise ValueError(
+                f"{file} expected action_dim={ACTION_DIMS} got {actions.shape[1]}"
+            )
         if obs.shape[0] == 0:
             raise ValueError(f"{file} contains no timesteps")
         if execute_expert is not None and (
