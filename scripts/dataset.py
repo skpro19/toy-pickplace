@@ -6,7 +6,7 @@ from numpy.lib.npyio import NpzFile
 import torch
 from torch.utils.data import Dataset
 
-from constant import (
+from .constant import (
     ACTION_DIMS,
     EPSILON,
     IMAGE_HEIGHT,
