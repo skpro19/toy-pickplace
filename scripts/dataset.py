@@ -5,39 +5,6 @@ import torch
 
 
 class PickPlaceDataset(Dataset):
-    @staticmethod
-    def _validate_episode(
-        *,
-        file: Path,
-        obs: np.ndarray,
-        actions: np.ndarray,
-        execute_expert: np.ndarray | None,
-    ) -> None:
-        if obs.shape[0] != actions.shape[0]:
-            raise ValueError(
-                f"{file} obs/actions length mismatch: "
-                f"{obs.shape[0]} vs {actions.shape[0]}"
-            )
-        if obs.ndim != 2:
-            raise ValueError(f"{file} obs must have shape (T,obs_dim), got {obs.shape}")
-        if actions.ndim != 2:
-            raise ValueError(
-                f"{file} actions must have shape (T,action_dim), got {actions.shape}"
-            )
-        if obs.shape[1] != 45:
-            raise ValueError(f"{file} expected obs_dim=45 got {obs.shape[1]}")
-        if actions.shape[1] != 8:
-            raise ValueError(f"{file} expected action_dim=8 got {actions.shape[1]}")
-        if obs.shape[0] == 0:
-            raise ValueError(f"{file} contains no timesteps")
-        if execute_expert is not None and (
-            execute_expert.ndim != 1 or execute_expert.shape[0] != obs.shape[0]
-        ):
-            raise ValueError(
-                f"{file} execute_expert must have shape ({obs.shape[0]},), "
-                f"got {execute_expert.shape}"
-            )
-
     def __init__(
         self,
         *,
@@ -190,3 +157,36 @@ class PickPlaceDataset(Dataset):
             torch.from_numpy(self.obs_targets[idx]),
             torch.from_numpy(self.action_targets[idx]),
         )
+
+    @staticmethod
+    def _validate_episode(
+        *,
+        file: Path,
+        obs: np.ndarray,
+        actions: np.ndarray,
+        execute_expert: np.ndarray | None,
+    ) -> None:
+        if obs.shape[0] != actions.shape[0]:
+            raise ValueError(
+                f"{file} obs/actions length mismatch: "
+                f"{obs.shape[0]} vs {actions.shape[0]}"
+            )
+        if obs.ndim != 2:
+            raise ValueError(f"{file} obs must have shape (T,obs_dim), got {obs.shape}")
+        if actions.ndim != 2:
+            raise ValueError(
+                f"{file} actions must have shape (T,action_dim), got {actions.shape}"
+            )
+        if obs.shape[1] != 45:
+            raise ValueError(f"{file} expected obs_dim=45 got {obs.shape[1]}")
+        if actions.shape[1] != 8:
+            raise ValueError(f"{file} expected action_dim=8 got {actions.shape[1]}")
+        if obs.shape[0] == 0:
+            raise ValueError(f"{file} contains no timesteps")
+        if execute_expert is not None and (
+            execute_expert.ndim != 1 or execute_expert.shape[0] != obs.shape[0]
+        ):
+            raise ValueError(
+                f"{file} execute_expert must have shape ({obs.shape[0]},), "
+                f"got {execute_expert.shape}"
+            )
