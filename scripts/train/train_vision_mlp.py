@@ -1,4 +1,4 @@
-import torch 
+import torch
 from torch import nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -9,11 +9,13 @@ import argparse
 import re
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.mlp import MLP
-from scripts.dataset import NormStats, PickPlaceDataset
+from scripts.models.vision_mlp import VisionMLP
+from scripts.dataset import NormStats, PickPlaceVisionDataset
 from scripts.eval import (
     DEFAULT_EVAL_SELECTION_MODE,
     EVAL_SELECTION_MODES,
@@ -95,8 +97,7 @@ def save_checkpoint(
     eval_score: float | None = None,
     eval_metrics: dict[str, float] | None = None,
     eval_metric_version: int | None = None,
-    eval_selection_mode: EvalSelectionMode | None = None,
-) -> Path:
+    eval_selection_mode: EvalSelectionMode | None = None,) -> Path:
     checkpoint = {
         "model_dict": model.state_dict(),
         "normalize": normalize,
@@ -124,8 +125,7 @@ def evaluate_checkpoint(
     seed: int,
     episodes: int,
     max_steps: int,
-    workers: int,
-) -> ScoreResult:
+    workers: int,) -> ScoreResult:
     score_dict = score_ckpt(
         ckpt_path=str(model_path),
         seed=seed,
@@ -165,8 +165,8 @@ def prepare_dataset(
     sample_ratios: list[float] | None,
     dagger_intervention_ratio: float | None,
     action_space: str,
-    normalize: bool,) -> tuple[PickPlaceDataset, NormStats]:
-    dataset = PickPlaceDataset(
+    normalize: bool,) -> tuple[PickPlaceVisionDataset, NormStats]:
+    dataset = PickPlaceVisionDataset(
         data_dirs=npz_folders,
         sample_ratios=sample_ratios,
         dagger_intervention_ratio=dagger_intervention_ratio,
@@ -178,7 +178,7 @@ def prepare_dataset(
 
 def train_epoch(
     *,
-    model: MLP,
+    model: VisionMLP,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
@@ -189,14 +189,16 @@ def train_epoch(
     epoch_gripper_loss = 0.0
     num_batches = 0
 
-    for obs_target, action_target in dataloader:
-        obs_target = obs_target.to(device)
+    for obs_proprio, action_target, obs_img in dataloader:
+        obs_proprio = obs_proprio.to(device)
         action_target = action_target.to(device)
+        obs_img = obs_img.to(device)
+
 
         joints_target = action_target[:, :ACTION_DIMS-1]
         gripper_target = action_target[:, ACTION_DIMS-1].unsqueeze(1)
 
-        joints_pred, gripper_pred = model(obs_target)
+        joints_pred, gripper_pred = model(obs_proprio, obs_img)
 
         joints_loss = joint_loss_fn(joints_pred, joints_target)
         gripper_loss = gripper_loss_fn(gripper_pred, gripper_target)
@@ -280,12 +282,12 @@ def train(
     print(f"TensorBoard log dir: {log_dir}")
     print(f"Checkpoint dir: {checkpoint_dir}")
 
-   
+
 
     joint_loss_fn = nn.MSELoss()
     gripper_loss_fn = nn.BCEWithLogitsLoss()
 
-    model = MLP(obs_dim=OBS_DIMS, action_dim=ACTION_DIMS).to(device)
+    model = VisionMLP().to(device)
 
     print(f"model created!")
 
@@ -406,15 +408,15 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Training params for simple MLP policy"
     )
-    
-    
+
+
     parser.add_argument("--base", type=str, default="action-delta")
     parser.add_argument("--checkpoint_root", type=Path, default=Path("checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--log_root", type=Path, default=Path("runs"))
     parser.add_argument("--npz", type=Path, nargs="+", required=True, help="npz folder path(s)")
-    parser.add_argument("--action_space", type=str, default="joint_delta", 
+    parser.add_argument("--action_space", type=str, default="joint_delta",
                         choices=["joint_delta", "absolute"])
     parser.add_argument(
         "--sample-ratios",
@@ -510,7 +512,7 @@ def main():
     )
 
     train(
-        num_epochs=args.epochs, 
+        num_epochs=args.epochs,
         batch_size=args.batch_size,
         npz_folders=args.npz,
         checkpoint_dir=checkpoint_dir,
