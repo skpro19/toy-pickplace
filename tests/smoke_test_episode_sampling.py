@@ -7,10 +7,12 @@ import torch
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from dataset import PickPlaceDataset  # noqa: E402
-from train import prepare_dataset  # noqa: E402
+from scripts.dataset import PickPlaceDataset  # noqa: E402
+from train_core.recipes.mlp import prepare_dataset  # noqa: E402
 
 
 EPSILON = 1e-6

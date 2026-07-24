@@ -262,6 +262,7 @@ def run_flywheel(
     expert_seed: int,
     train_seed: int,
     dagger_seed: int,
+    arch: str = "mlp",
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
 ) -> None:
 
@@ -323,6 +324,7 @@ def run_flywheel(
         "expert_seed": expert_seed,
         "train_seed": train_seed,
         "dagger_seed": dagger_seed,
+        "arch": arch,
     }
 
     print_section(title=f"Flywheel {run_name}")
@@ -369,7 +371,9 @@ def run_flywheel(
             runs_dir.mkdir(parents=True, exist_ok=True)
 
             torch.manual_seed(train_seed)
-            train(num_epochs=num_epochs,
+            train(
+                arch=arch,
+                num_epochs=num_epochs,
                 batch_size=batch_size,
                 npz_folders=[expert_npz_dir],
                 checkpoint_dir=ckpt_dir,
@@ -383,7 +387,7 @@ def run_flywheel(
                 dataloader_workers=dataloader_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
-                )
+            )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
                 run_name=run_name,
@@ -504,7 +508,9 @@ def run_flywheel(
             print(f"TensorBoard: {runs_dir}")
 
             torch.manual_seed(train_seed)
-            train(num_epochs=num_epochs,
+            train(
+                arch=arch,
+                num_epochs=num_epochs,
                 batch_size=batch_size,
                 npz_folders=[expert_npz_dir, *dagger_dirs],
                 checkpoint_dir=ckpt_dir,
@@ -520,7 +526,7 @@ def run_flywheel(
                 dataloader_workers=dataloader_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
-                )
+            )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
                 run_name=run_name,
@@ -626,6 +632,13 @@ def parse_args():
         default=0,
         help="Root seed used to derive expert, training, DAgger, and evaluation seeds",
     )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="mlp",
+        choices=["mlp", "vision_mlp"],
+        help="Policy architecture used for flywheel training rounds",
+    )
 
     valid_config_keys = {
         action.dest for action in parser._actions if action.dest not in {"help", "config"}
@@ -715,6 +728,7 @@ def main():
         expert_seed=seeds["expert_seed"],
         train_seed=seeds["train_seed"],
         dagger_seed=seeds["dagger_seed"],
+        arch=args.arch,
         eval_selection_mode=args.mode,
     )
 if __name__ == "__main__":
