@@ -11,7 +11,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from constant import ACTION_DIMS, OBS_DIMS  # noqa: E402
 from eval import EVAL_METRIC_VERSION, score_ckpt, score_task_metrics  # noqa: E402
-from mlp import MLP  # noqa: E402
+from models.mlp import MLP  # noqa: E402
 from rollout import make_episode_seeds, rollout  # noqa: E402
 
 
@@ -20,6 +20,7 @@ def save_test_checkpoint(*, path: Path) -> None:
     model = MLP(obs_dim=OBS_DIMS, action_dim=ACTION_DIMS)
     torch.save(
         {
+            "arch": "mlp",
             "model_dict": model.state_dict(),
             "normalize": True,
             "action_space": "joint_delta",

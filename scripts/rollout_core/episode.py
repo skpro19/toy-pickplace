@@ -1,27 +1,18 @@
 """Policy inference and single-episode rollout runtime."""
 
 import time
-from pathlib import Path
 from typing import TypedDict
 
 import mujoco
 import numpy as np
-import torch
 
-from constant import ACTION_DIMS, EPSILON, MAX_ARM_DELTA
+from constant import ACTION_DIMS
 from expert import Phase, PickPlaceController
-from mlp import MLP
+from policy_runtime.types import PolicyRuntime
 from rollout_core.dagger import DEFAULT_INTERVENTION_STEPS, select_dagger_control
 from rollout_core.metrics import TaskMetrics, TaskMetricsTracker
 from rollout_core.persistence import append_step_log
 from sim import SimEnv
-
-
-class NormDict(TypedDict):
-    arm_actions_mean: torch.Tensor
-    arm_actions_std: torch.Tensor
-    arm_obs_mean: torch.Tensor
-    arm_obs_std: torch.Tensor
 
 
 class EpisodeResult(TypedDict):
@@ -43,76 +34,10 @@ class EpisodeResult(TypedDict):
     task_metrics: TaskMetrics
 
 
-def load_policy(
-    *,
-    model_path: Path,
-    device: torch.device,
-) -> tuple[MLP, bool, str, NormDict]:
-    model = MLP().to(device)
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint["model_dict"])
-    model.eval()
-
-    norm_dict: NormDict = {
-        key: torch.from_numpy(checkpoint[key]).to(device).squeeze(0)
-        for key in (
-            "arm_actions_mean",
-            "arm_actions_std",
-            "arm_obs_mean",
-            "arm_obs_std",
-        )
-    }
-    return model, checkpoint["normalize"], checkpoint["action_space"], norm_dict
-
-
-def predict_policy_action(
-    *,
-    model: MLP,
-    obs: np.ndarray,
-    device: torch.device,
-    normalize: bool,
-    action_space: str,
-    norm_dict: NormDict,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Predict and post-process a simulator-ready policy action."""
-    obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
-    obs_target = obs_tensor
-    if normalize:
-        obs_target = (obs_tensor - norm_dict["arm_obs_mean"]) / (
-            norm_dict["arm_obs_std"] + EPSILON
-        )
-
-    joints_pred, gripper_pred = model(obs_target)
-    joints_pred_unnorm = joints_pred
-    if normalize:
-        joints_pred_unnorm = (
-            joints_pred * (norm_dict["arm_actions_std"] + EPSILON)
-            + norm_dict["arm_actions_mean"]
-        )
-
-    joints_actions = joints_pred_unnorm
-    if action_space == "joint_delta":
-        joints_actions = torch.clamp(
-            joints_actions,
-            min=-MAX_ARM_DELTA,
-            max=MAX_ARM_DELTA,
-        )
-        joints_actions = joints_actions + obs_tensor[:, : ACTION_DIMS - 1]
-
-    gripper_prob = torch.sigmoid(gripper_pred)
-    gripper_actions = torch.where(gripper_prob >= 0.5, 255.0, 0.0)
-    policy_actions = torch.concat([joints_actions, gripper_actions], dim=1)
-    return obs_tensor, policy_actions, joints_pred, joints_pred_unnorm
-
-
 def run_policy_episode(
     *,
     sim: SimEnv,
-    model: MLP,
-    device: torch.device,
-    normalize: bool = True,
-    action_space: str = "joint_delta",
-    norm_dict: NormDict,
+    runtime: PolicyRuntime,
     max_steps: int,
     track_phase: bool = False,
     dagger: bool = False,
@@ -176,24 +101,15 @@ def run_policy_episode(
         and (viewer is None or viewer.is_running())
         and (controller is None or controller.phase != Phase.DONE)
     ):
-        obs = sim.build_observation()
+        obs = runtime.observe(sim=sim)
         if dagger:
             observations.append(obs.copy())
             if controller is None:
                 raise RuntimeError("DAgger rollout requires a controller")
             phases.append(controller.phase.value)
 
-        obs_tensor, policy_actions, joints_pred, joints_pred_unnorm = (
-            predict_policy_action(
-                model=model,
-                obs=obs,
-                device=device,
-                normalize=normalize,
-                action_space=action_space,
-                norm_dict=norm_dict,
-            )
-        )
-        policy_action_np = policy_actions.squeeze(0).detach().cpu().numpy()
+        step = runtime.act(sim=sim, observation=obs)
+        policy_action_np = step["action"]
 
         execute_expert_action = False
         expert_action = None
@@ -237,11 +153,11 @@ def run_policy_episode(
         if log_rollout:
             append_step_log(
                 buffers=log_buffers,
-                obs=obs_tensor,
-                actions=policy_actions,
+                obs=step["obs_tensor"],
+                actions=step["policy_actions"],
                 executed_actions=action_to_execute,
-                joints_pred_raw=joints_pred,
-                joints_pred_unnorm=joints_pred_unnorm,
+                joints_pred_raw=step["joints_pred"],
+                joints_pred_unnorm=step["joints_pred_unnorm"],
             )
 
         sim.data.ctrl[: sim.model.nu] = action_to_execute

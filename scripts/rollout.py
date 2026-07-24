@@ -40,19 +40,13 @@ from constant import (
     RETREAT_STABLE_STEPS,
 )
 from expert import Phase
-from mlp import MLP
+from policy_runtime.registry import load_runtime
+from policy_runtime.types import PolicyRuntime
 from rollout_core.dagger import (
     DAGGER_INTERVENTION_MODES,
     DEFAULT_INTERVENTION_STEPS,
-    select_dagger_control,
 )
-from rollout_core.episode import (
-    EpisodeResult,
-    NormDict,
-    load_policy,
-    predict_policy_action,
-    run_policy_episode,
-)
+from rollout_core.episode import EpisodeResult, run_policy_episode
 from rollout_core.metrics import TaskMetrics, TaskMetricsTracker
 from rollout_core.persistence import (
     append_step_log,
@@ -69,14 +63,7 @@ from sim import SimEnv
 DEFAULT_DAGGER_DIR = Path("data/dagger")
 
 
-_dagger_worker_state: tuple[
-    SimEnv,
-    MLP,
-    torch.device,
-    bool,
-    str,
-    NormDict,
-] | None = None
+_dagger_worker_state: tuple[SimEnv, PolicyRuntime] | None = None
 
 
 def make_episode_seeds(*, seed: int, episodes: int) -> list[int]:
@@ -94,19 +81,12 @@ def initialize_dagger_worker(config: tuple[str, bool]) -> None:
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     device = torch.device("cpu")
-    model, normalize, action_space, norm_dict = load_policy(
+    runtime = load_runtime(
         model_path=Path(model_path),
         device=device,
     )
     sim = SimEnv(randomize_scene=randomize_scene)
-    _dagger_worker_state = (
-        sim,
-        model,
-        device,
-        normalize,
-        action_space,
-        norm_dict,
-    )
+    _dagger_worker_state = (sim, runtime)
 
 
 def run_dagger_worker(
@@ -125,18 +105,14 @@ def run_dagger_worker(
         intervention_threshold,
         intervention_steps,
     ) = task
-    sim, model, device, normalize, action_space, norm_dict = _dagger_worker_state
+    sim, runtime = _dagger_worker_state
     sim.rng = np.random.default_rng(seed)
     rng = np.random.default_rng(seed)
 
     with torch.inference_mode():
         result = run_policy_episode(
             sim=sim,
-            model=model,
-            device=device,
-            normalize=normalize,
-            action_space=action_space,
-            norm_dict=norm_dict,
+            runtime=runtime,
             max_steps=max_steps,
             track_phase=True,
             dagger=True,
@@ -243,15 +219,17 @@ def rollout(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model_path = Path(model_path)
-    model, normalize, action_space, norm_dict = load_policy(
+    runtime = load_runtime(
         model_path=model_path,
         device=device,
     )
 
-    if not normalize:
+    if not runtime.normalize:
         raise ValueError("Checkpoint must use normalized observations and actions")
-    if action_space not in ("joint_delta", "absolute"):
-        raise ValueError(f"Checkpoint has unsupported action space: {action_space!r}")
+    if runtime.action_space not in ("joint_delta", "absolute"):
+        raise ValueError(
+            f"Checkpoint has unsupported action space: {runtime.action_space!r}"
+        )
 
     log_dir = None
     if log_rollout:
@@ -355,11 +333,7 @@ def rollout(
                     sim.rng = np.random.default_rng(episode_seed)
                 result = run_policy_episode(
                     sim=sim,
-                    model=model,
-                    device=device,
-                    normalize=normalize,
-                    action_space=action_space,
-                    norm_dict=norm_dict,
+                    runtime=runtime,
                     max_steps=max_steps,
                     track_phase=dagger,
                     dagger=dagger,
@@ -385,7 +359,7 @@ def rollout(
                         log_dir=log_dir,
                         train_npz_dir=train_npz_dir,
                         episode_idx=episode,
-                        action_space=action_space,
+                        action_space=runtime.action_space,
                         buffers=result["log_buffers"],
                     )
 

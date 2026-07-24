@@ -9,12 +9,8 @@ from typing import Literal, TypedDict
 import numpy as np
 import torch
 
-from rollout import (
-    TaskMetrics,
-    load_policy,
-    make_episode_seeds,
-    run_policy_episode,
-)
+from policy_runtime.registry import load_runtime
+from rollout import TaskMetrics, make_episode_seeds, run_policy_episode
 from sim import SimEnv
 
 
@@ -100,19 +96,12 @@ def initialize_eval_worker(ckpt_path: str) -> None:
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     device = torch.device("cpu")
-    model, normalize, action_space, norm_dict = load_policy(
+    runtime = load_runtime(
         model_path=Path(ckpt_path),
         device=device,
     )
     sim = SimEnv(randomize_scene=True)
-    _eval_worker_state = (
-        sim,
-        model,
-        device,
-        normalize,
-        action_space,
-        norm_dict,
-    )
+    _eval_worker_state = (sim, runtime)
 
 
 def score_episode_worker(task: tuple[int, int, bool]) -> TaskMetrics:
@@ -120,18 +109,14 @@ def score_episode_worker(task: tuple[int, int, bool]) -> TaskMetrics:
         raise RuntimeError("Evaluation worker was not initialized")
 
     seed, max_steps, expert_baseline = task
-    sim, model, device, normalize, action_space, norm_dict = _eval_worker_state
+    sim, runtime = _eval_worker_state
     sim.rng = np.random.default_rng(seed)
     rng = np.random.default_rng(seed)
 
     with torch.inference_mode():
         result = run_policy_episode(
             sim=sim,
-            model=model,
-            device=device,
-            normalize=normalize,
-            action_space=action_space,
-            norm_dict=norm_dict,
+            runtime=runtime,
             max_steps=max_steps,
             track_phase=True,
             dagger=expert_baseline,
@@ -173,7 +158,7 @@ def score_ckpt(
         return summarize_task_metrics(episode_metrics=episode_metrics)
 
     device = torch.device("cpu")
-    model, normalize, action_space, norm_dict = load_policy(
+    runtime = load_runtime(
         model_path=Path(ckpt_path),
         device=device,
     )
@@ -184,11 +169,7 @@ def score_ckpt(
             sim.rng = np.random.default_rng(episode_seed)
             result = run_policy_episode(
                 sim=sim,
-                model=model,
-                device=device,
-                normalize=normalize,
-                action_space=action_space,
-                norm_dict=norm_dict,
+                runtime=runtime,
                 max_steps=max_steps,
                 track_phase=True,
                 dagger=expert_baseline,

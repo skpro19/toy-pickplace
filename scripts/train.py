@@ -12,7 +12,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.mlp import MLP
+from scripts.models.mlp import MLP
 from scripts.dataset import NormStats, PickPlaceDataset
 from scripts.eval import (
     DEFAULT_EVAL_SELECTION_MODE,
@@ -86,6 +86,7 @@ def make_run_dirs(
 
 def save_checkpoint(
     *,
+    arch: str,
     model: nn.Module,
     model_path: Path,
     epoch_number: int,
@@ -98,6 +99,7 @@ def save_checkpoint(
     eval_selection_mode: EvalSelectionMode | None = None,
 ) -> Path:
     checkpoint = {
+        "arch": arch,
         "model_dict": model.state_dict(),
         "normalize": normalize,
         "action_space": action_space,
@@ -314,6 +316,7 @@ def train(
 
             epoch_number = epoch + 1
             last_model_path = save_checkpoint(
+                arch="mlp",
                 model=model,
                 model_path=checkpoint_dir / "last.pt",
                 epoch_number=epoch_number,
@@ -348,6 +351,7 @@ def train(
                     best_placement_success_rate = placement_success_rate
                     best_epoch = epoch_number
                     save_checkpoint(
+                        arch="mlp",
                         model=model,
                         model_path=checkpoint_dir / "best.pt",
                         epoch_number=epoch_number,
