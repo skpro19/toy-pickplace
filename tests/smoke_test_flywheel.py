@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 
+import numpy as np
 import torch
 
 
@@ -13,11 +14,13 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from flywheel import (  # noqa: E402
     append_round_metrics,
     expert_npz_dir_for_run,
+    expert_save_images_for_arch,
     make_dagger_round_seeds,
     make_flywheel_seeds,
     next_flywheel_run_name,
     parse_args,
     select_best_round,
+    validate_expert_npz_for_arch,
 )
 from data import collect_expert_episodes  # noqa: E402
 from eval import (  # noqa: E402
@@ -162,6 +165,32 @@ def main() -> None:
 
         expert_dir = expert_npz_dir_for_run(run_name="run-test")
         assert expert_dir == Path("data/flywheel/run-test/expert")
+
+        assert not expert_save_images_for_arch(arch="mlp")
+        assert expert_save_images_for_arch(arch="vision_mlp")
+
+        vision_expert_dir = root / "vision-expert"
+        vision_expert_dir.mkdir()
+        np.savez_compressed(
+            vision_expert_dir / "episode_0.npz",
+            obs=np.zeros((2, 45), dtype=np.float32),
+            actions=np.zeros((2, 8), dtype=np.float32),
+        )
+        try:
+            validate_expert_npz_for_arch(
+                expert_npz_dir=vision_expert_dir,
+                arch="vision_mlp",
+            )
+        except ValueError as error:
+            assert "img_obs" in str(error)
+        else:
+            raise AssertionError("vision expert npz without img_obs was accepted")
+
+        validate_expert_npz_for_arch(
+            expert_npz_dir=vision_expert_dir,
+            arch="mlp",
+        )
+
         collect_expert_episodes(
             episodes=1,
             out_dir=root / "expert",

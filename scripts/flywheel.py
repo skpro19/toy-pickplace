@@ -237,6 +237,37 @@ def expert_npz_dir_for_run(*, run_name: str) -> Path:
     return Path("data/flywheel") / run_name / "expert"
 
 
+def expert_save_images_for_arch(*, arch: str) -> bool:
+    return arch == "vision_mlp"
+
+
+def validate_expert_npz_for_arch(
+    *,
+    expert_npz_dir: Path,
+    arch: str,
+) -> None:
+    if not expert_save_images_for_arch(arch=arch):
+        return
+
+    npz_files = sorted(expert_npz_dir.glob("*.npz"))
+    if not npz_files:
+        return
+
+    missing_img_obs = []
+    for path in npz_files:
+        with np.load(path) as data:
+            if "img_obs" not in data:
+                missing_img_obs.append(path.name)
+    if not missing_img_obs:
+        return
+
+    raise ValueError(
+        f"Expert data in {expert_npz_dir} lacks img_obs required for "
+        f"arch={arch!r} ({len(missing_img_obs)} of {len(npz_files)} files). "
+        "Delete the expert directory or use a new --run-name."
+    )
+
+
 def run_flywheel(
     *,
     run_name: str,
@@ -273,10 +304,16 @@ def run_flywheel(
     metrics_path = results_root / "metrics.json"
     expert_npz_dir = expert_npz_dir_for_run(run_name=run_name)
 
+    save_expert_images = expert_save_images_for_arch(arch=arch)
+
     print_section(title=f"Flywheel {run_name}: expert collection")
     print(
         f"Episodes: {num_expert_episodes} | Max steps: {max_steps} | "
         f"Seed: {expert_seed}"
+    )
+    print(
+        f"Policy arch: {arch} | Expert images: "
+        f"{'yes' if save_expert_images else 'no'}"
     )
     print(f"Output: {expert_npz_dir}")
     collection_started_at = time.perf_counter()
@@ -285,6 +322,11 @@ def run_flywheel(
         out_dir=expert_npz_dir,
         seed=expert_seed,
         max_steps=max_steps,
+        save_images=save_expert_images,
+    )
+    validate_expert_npz_for_arch(
+        expert_npz_dir=expert_npz_dir,
+        arch=arch,
     )
     print(
         f"Expert collection complete | elapsed: "
@@ -328,6 +370,7 @@ def run_flywheel(
     }
 
     print_section(title=f"Flywheel {run_name}")
+    print(f"Policy arch: {arch}")
     print(
         f"Expert data: {expert_npz_dir} "
         f"({num_expert_episodes} episodes, max_steps={max_steps})"
