@@ -18,4 +18,3 @@ canvas/
 ablations/
 scripts/analyze_dagger_stalls.py
 scripts/plot_it_dir_ablation.py
-configs/flywheel/

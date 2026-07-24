@@ -293,7 +293,7 @@ def run_flywheel(
     expert_seed: int,
     train_seed: int,
     dagger_seed: int,
-    arch: str = "mlp",
+    arch: str,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
 ) -> None:
 
@@ -678,7 +678,6 @@ def parse_args():
     parser.add_argument(
         "--arch",
         type=str,
-        default="mlp",
         choices=["mlp", "vision_mlp"],
         help="Policy architecture used for flywheel training rounds",
     )
@@ -693,6 +692,9 @@ def parse_args():
         )
     parser.set_defaults(**config)
     args = parser.parse_args()
+
+    if args.arch is None:
+        parser.error("arch is required (set arch in --config or pass --arch)")
 
     if args.num_expert_episodes < 1:
         parser.error("--num-expert-episodes must be at least 1")

@@ -132,6 +132,7 @@ def main() -> None:
             "max_steps: 5000\n"
             "epochs: 7\n"
             "dagger_intervention_ratio: 0.7\n"
+            "arch: mlp\n"
         )
         original_argv = sys.argv
         try:
@@ -150,8 +151,9 @@ def main() -> None:
         assert args.epochs == 9
         assert args.dagger_intervention_ratio == 0.7
         assert args.global_seed == 0
+        assert args.arch == "mlp"
 
-        config_path.write_text("global_seed: 11\n")
+        config_path.write_text("global_seed: 11\narch: vision_mlp\n")
         try:
             sys.argv = [
                 "flywheel.py",
@@ -162,6 +164,7 @@ def main() -> None:
         finally:
             sys.argv = original_argv
         assert args.global_seed == 11
+        assert args.arch == "vision_mlp"
 
         expert_dir = expert_npz_dir_for_run(run_name="run-test")
         assert expert_dir == Path("data/flywheel/run-test/expert")
