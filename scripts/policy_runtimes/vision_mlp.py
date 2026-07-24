@@ -3,21 +3,21 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from constant import ACTION_DIMS, EPSILON, MAX_ARM_DELTA
-from models.mlp import MLP
+from constant import ACTION_DIMS, EPSILON, MAX_ARM_DELTA, PROPRIO_DIMS
+from models.vision_mlp import VisionMLP
 from policy_runtimes.types import ActionStep, NormDict
 from sim import SimEnv
 
-MLP_ARCHITECTURE = "mlp"
+VISION_MLP_ARCHITECTURE = "vision_mlp"
 
 
-class MlpRuntime:
-    architecture = MLP_ARCHITECTURE
+class VisionMlpRuntime:
+    architecture = VISION_MLP_ARCHITECTURE
 
     def __init__(
         self,
         *,
-        model: MLP,
+        model: VisionMLP,
         device: torch.device,
         normalize: bool,
         action_space: str,
@@ -36,14 +36,14 @@ class MlpRuntime:
         model_path: Path,
         device: torch.device,
         checkpoint: dict | None = None,
-    ) -> "MlpRuntime":
+    ) -> "VisionMlpRuntime":
         if checkpoint is None:
             checkpoint = torch.load(
                 model_path,
                 map_location=device,
                 weights_only=False,
             )
-        model = MLP().to(device)
+        model = VisionMLP().to(device)
         model.load_state_dict(checkpoint["model_dict"])
         model.eval()
 
@@ -67,6 +67,20 @@ class MlpRuntime:
     def observe(self, *, sim: SimEnv) -> np.ndarray:
         return sim.build_observation()
 
+    def _prepare_proprio(self, *, obs: np.ndarray) -> torch.Tensor:
+        proprio = np.asarray(obs[:PROPRIO_DIMS], dtype=np.float32)
+        proprio_tensor = torch.from_numpy(proprio).to(self._device).unsqueeze(0)
+        if self.normalize:
+            proprio_tensor = (proprio_tensor - self._norm_dict["arm_obs_mean"]) / (
+                self._norm_dict["arm_obs_std"] + EPSILON
+            )
+        return proprio_tensor
+
+    def _prepare_image_tensor(self, *, img_obs: np.ndarray) -> torch.Tensor:
+        img = np.asarray(img_obs, dtype=np.float32).copy()
+        img /= 255.0
+        return torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(self._device)
+
     def act(
         self,
         *,
@@ -75,13 +89,11 @@ class MlpRuntime:
     ) -> ActionStep:
         obs = observation if observation is not None else self.observe(sim=sim)
         obs_tensor = torch.from_numpy(obs).to(self._device).unsqueeze(0)
-        obs_target = obs_tensor
-        if self.normalize:
-            obs_target = (obs_tensor - self._norm_dict["arm_obs_mean"]) / (
-                self._norm_dict["arm_obs_std"] + EPSILON
-            )
+        proprio_tensor = self._prepare_proprio(obs=obs)
+        img_obs = np.asarray(sim.build_image(), dtype=np.uint8).copy()
+        img_tensor = self._prepare_image_tensor(img_obs=img_obs)
 
-        joints_pred, gripper_pred = self._model(obs_target)
+        joints_pred, gripper_pred = self._model(proprio_tensor, img_tensor)
         joints_pred_unnorm = joints_pred
         if self.normalize:
             joints_pred_unnorm = (
@@ -109,5 +121,5 @@ class MlpRuntime:
             "joints_pred": joints_pred,
             "joints_pred_unnorm": joints_pred_unnorm,
             "action": action,
-            "img_obs": None,
+            "img_obs": img_obs,
         }

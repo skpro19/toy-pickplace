@@ -4,6 +4,7 @@ import torch
 
 from policy_runtimes.mlp import MLP_ARCHITECTURE, MlpRuntime
 from policy_runtimes.types import PolicyRuntime
+from policy_runtimes.vision_mlp import VISION_MLP_ARCHITECTURE, VisionMlpRuntime
 
 
 def load_runtime(
@@ -19,6 +20,12 @@ def load_runtime(
     architecture = checkpoint["arch"]
     if architecture == MLP_ARCHITECTURE:
         return MlpRuntime.from_checkpoint(
+            model_path=model_path,
+            device=device,
+            checkpoint=checkpoint,
+        )
+    if architecture == VISION_MLP_ARCHITECTURE:
+        return VisionMlpRuntime.from_checkpoint(
             model_path=model_path,
             device=device,
             checkpoint=checkpoint,

@@ -88,6 +88,7 @@ def make_run_dirs(
 
 def save_checkpoint(
     *,
+    arch: str,
     model: nn.Module,
     model_path: Path,
     epoch_number: int,
@@ -97,8 +98,10 @@ def save_checkpoint(
     eval_score: float | None = None,
     eval_metrics: dict[str, float] | None = None,
     eval_metric_version: int | None = None,
-    eval_selection_mode: EvalSelectionMode | None = None,) -> Path:
+    eval_selection_mode: EvalSelectionMode | None = None,
+) -> Path:
     checkpoint = {
+        "arch": arch,
         "model_dict": model.state_dict(),
         "normalize": normalize,
         "action_space": action_space,
@@ -316,6 +319,7 @@ def train(
 
             epoch_number = epoch + 1
             last_model_path = save_checkpoint(
+                arch="vision_mlp",
                 model=model,
                 model_path=checkpoint_dir / "last.pt",
                 epoch_number=epoch_number,
@@ -350,6 +354,7 @@ def train(
                     best_placement_success_rate = placement_success_rate
                     best_epoch = epoch_number
                     save_checkpoint(
+                        arch="vision_mlp",
                         model=model,
                         model_path=checkpoint_dir / "best.pt",
                         epoch_number=epoch_number,

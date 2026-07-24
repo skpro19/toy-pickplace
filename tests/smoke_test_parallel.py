@@ -154,6 +154,8 @@ def main() -> None:
         )
         output_names = sorted(path.name for path in dagger_dir.glob("*.npz"))
         assert output_names == ["pick_place_000000.npz", "pick_place_000001.npz"]
+        with np.load(dagger_dir / "pick_place_000000.npz") as data:
+            assert "img_obs" not in data.files
 
         threshold_dagger_dir = root / "threshold-dagger"
         rollout(

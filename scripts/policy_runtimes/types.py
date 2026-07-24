@@ -20,6 +20,7 @@ class ActionStep(TypedDict):
     joints_pred: torch.Tensor
     joints_pred_unnorm: torch.Tensor
     action: np.ndarray
+    img_obs: np.ndarray | None
 
 
 class PolicyRuntime:

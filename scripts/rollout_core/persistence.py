@@ -185,33 +185,35 @@ def save_dagger_episode(
     result: "EpisodeResult",
 ) -> None:
     dagger_path = dagger_dir / f"pick_place_{episode_idx:06d}.npz"
-    np.savez_compressed(
-        dagger_path,
-        obs=np.asarray(result["observations"], dtype=np.float32),
-        actions=np.asarray(result["expert_actions"], dtype=np.float32),
-        policy_actions=np.asarray(result["policy_actions"], dtype=np.float32),
-        executed_actions=np.asarray(result["executed_actions"], dtype=np.float32),
-        execute_expert=np.asarray(result["expert_action_mask"], dtype=np.bool_),
-        phases=np.asarray(result["phases"], dtype=np.int8),
-        arm_disagreement=np.asarray(result["arm_disagreement"], dtype=np.float32),
-        gripper_disagreement=np.asarray(
+    arrays = {
+        "obs": np.asarray(result["observations"], dtype=np.float32),
+        "actions": np.asarray(result["expert_actions"], dtype=np.float32),
+        "policy_actions": np.asarray(result["policy_actions"], dtype=np.float32),
+        "executed_actions": np.asarray(result["executed_actions"], dtype=np.float32),
+        "execute_expert": np.asarray(result["expert_action_mask"], dtype=np.bool_),
+        "phases": np.asarray(result["phases"], dtype=np.int8),
+        "arm_disagreement": np.asarray(result["arm_disagreement"], dtype=np.float32),
+        "gripper_disagreement": np.asarray(
             result["gripper_disagreement"], dtype=np.bool_
         ),
-        terminal_reason=np.asarray(result["terminal_reason"]),
-        final_phase=np.asarray(result["final_phase"], dtype=np.int8),
-        seed=np.asarray(result["seed"], dtype=np.uint32),
-        steps=np.asarray(result["steps"], dtype=np.int32),
+        "terminal_reason": np.asarray(result["terminal_reason"]),
+        "final_phase": np.asarray(result["final_phase"], dtype=np.int8),
+        "seed": np.asarray(result["seed"], dtype=np.uint32),
+        "steps": np.asarray(result["steps"], dtype=np.int32),
         **{
             name: np.asarray(value, dtype=np.bool_)
             for name, value in result["task_metrics"].items()
         },
-        beta=np.asarray(beta, dtype=np.float32),
-        intervention_mode=np.asarray(intervention_mode),
-        intervention_threshold=np.asarray(
+        "beta": np.asarray(beta, dtype=np.float32),
+        "intervention_mode": np.asarray(intervention_mode),
+        "intervention_threshold": np.asarray(
             np.nan if intervention_threshold is None else intervention_threshold,
             dtype=np.float32,
         ),
-        intervention_steps=np.asarray(intervention_steps, dtype=np.int32),
-        cube_init_pos=np.asarray(result["cube_init_pos"], dtype=np.float32),
-        tray_init_pos=np.asarray(result["tray_init_pos"], dtype=np.float32),
-    )
+        "intervention_steps": np.asarray(intervention_steps, dtype=np.int32),
+        "cube_init_pos": np.asarray(result["cube_init_pos"], dtype=np.float32),
+        "tray_init_pos": np.asarray(result["tray_init_pos"], dtype=np.float32),
+    }
+    if result["img_observations"]:
+        arrays["img_obs"] = np.asarray(result["img_observations"], dtype=np.uint8)
+    np.savez_compressed(dagger_path, **arrays)

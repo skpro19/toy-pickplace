@@ -1,9 +1,8 @@
-
-from huggingface_hub.inference._generated.types import visual_question_answering
-import torch.nn as nn
 import torch
+import torch.nn as nn
 
-from scripts.constant import ACTION_DIMS, PROPRIO_DIMS
+from constant import ACTION_DIMS, PROPRIO_DIMS
+
 
 class VisionEncoder(nn.Module):
     """3-layer CNN encoder: 64×64 RGB → 128-D embedding.
@@ -17,29 +16,37 @@ class VisionEncoder(nn.Module):
         Flatten        [B,  64,  8,  8]     → [B, 8192]
         Linear         [B, 8192]            → [B,  128]
     """
-    
-    def __init__(self, * , in_dims:int=3, out_dims:int=128):
-        super().__init__()
-        # (64,64) => (32,32)
-        self.conv1      = nn.Conv2d(in_channels=in_dims, 
-                                    out_channels=32, 
-                                    kernel_size=3, stride=2, padding=1)
-        # (32,32) => (16,16)
-        self.conv2      = nn.Conv2d(in_channels=32, 
-                                    out_channels=64, 
-                                    kernel_size=3, stride=2, padding=1)
-        # (16,16) => (8,8)
-        self.conv3      = nn.Conv2d(in_channels=64, 
-                                    out_channels=128, 
-                                    kernel_size=3, stride=2, padding=1)
 
-        self.relu       = nn.ReLU()
-        self.flatten    = nn.Flatten()
-        self.embed      = nn.Linear(128 * 8 * 8, out_dims)
+    def __init__(self, *, in_dims: int = 3, out_dims: int = 128):
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_channels=in_dims,
+            out_channels=32,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+        self.conv2 = nn.Conv2d(
+            in_channels=32,
+            out_channels=64,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+        self.conv3 = nn.Conv2d(
+            in_channels=64,
+            out_channels=128,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+
+        self.relu = nn.ReLU()
+        self.flatten = nn.Flatten()
+        self.embed = nn.Linear(128 * 8 * 8, out_dims)
 
     def forward(self, x: torch.Tensor):
-        
-        if x.ndim != 4: 
+        if x.ndim != 4:
             raise ValueError(f"x.ndim != 4: {x.ndim}")
         if x.shape[1] != 3:
             raise ValueError(f"x.shape[1] != 3: {x.shape[1]}")
@@ -58,7 +65,6 @@ class VisionEncoder(nn.Module):
         x = self.relu(x)
 
         x = self.flatten(x)
-
         x = self.embed(x)
 
         if x.ndim != 2:
@@ -70,46 +76,27 @@ class VisionEncoder(nn.Module):
 
 
 class VisionMLP(nn.Module):
-    """
-
-
-    """
-
     def __init__(self):
         super().__init__()
 
         self.vision_encoder = VisionEncoder(in_dims=3, out_dims=128)
-        self.backbone       = nn.Sequential(
-                                nn.Linear(PROPRIO_DIMS + 128, 128),
-                                nn.ReLU(),
-                                nn.Linear(128,128),
-                                nn.ReLU(),
-                                nn.Linear(128,128),
-                                nn.ReLU()
-                            )
-        self.joint_head     = nn.Linear(128, ACTION_DIMS - 1)
-        self.gripper_head   = nn.Linear(128, 1)
-
+        self.backbone = nn.Sequential(
+            nn.Linear(PROPRIO_DIMS + 128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+        )
+        self.joint_head = nn.Linear(128, ACTION_DIMS - 1)
+        self.gripper_head = nn.Linear(128, 1)
 
     def forward(self, proprio_obs: torch.Tensor, img_obs: torch.Tensor):
+        img_embeddings = self.vision_encoder(img_obs)
+        combined = torch.concat([proprio_obs, img_embeddings], axis=1)
+        combined = self.backbone(combined)
 
-        # print(f"proprio_obs.shape => {proprio_obs.shape}")
-        # print(f"img_obs.shape => {img_obs.shape}")
-
-        img_embeddings  = self.vision_encoder(img_obs)
-        # print(f"img_embeddings.shape => {img_embeddings.shape}")
-
-        combined        = torch.concat([proprio_obs, img_embeddings], axis=1)
-        # print(f"combined.shape => {combined.shape}")
-
-        combined        = self.backbone(combined)
-
-        joint_logits    = self.joint_head(combined)
-        gripper_logits  = self.gripper_head(combined)
-
-        # print(f"joint_logits.shape => {joint_logits.shape}")
-        # print(f"gripper_logits.shape => {gripper_logits.shape}")
+        joint_logits = self.joint_head(combined)
+        gripper_logits = self.gripper_head(combined)
 
         return (joint_logits, gripper_logits)
-
-    

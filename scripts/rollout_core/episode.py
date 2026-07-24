@@ -27,6 +27,7 @@ class EpisodeResult(TypedDict):
     tray_init_pos: np.ndarray
     log_buffers: dict[str, list[np.ndarray]]
     observations: list[np.ndarray]
+    img_observations: list[np.ndarray]
     expert_actions: list[np.ndarray]
     policy_actions: list[np.ndarray]
     executed_actions: list[np.ndarray]
@@ -55,6 +56,7 @@ def run_policy_episode(
 ) -> EpisodeResult:
     """Run one policy episode, stopping when the controller reaches DONE."""
     observations: list[np.ndarray] = []
+    img_observations: list[np.ndarray] = []
     expert_actions: list[np.ndarray] = []
     policy_action_history: list[np.ndarray] = []
     executed_actions: list[np.ndarray] = []
@@ -110,6 +112,8 @@ def run_policy_episode(
 
         step = runtime.act(sim=sim, observation=obs)
         policy_action_np = step["action"]
+        if dagger and step["img_obs"] is not None:
+            img_observations.append(step["img_obs"].copy())
 
         execute_expert_action = False
         expert_action = None
@@ -185,6 +189,8 @@ def run_policy_episode(
         == len(gripper_disagreement)
     ):
         raise ValueError("Dagger episode buffers have mismatched lengths")
+    if img_observations and len(img_observations) != len(observations):
+        raise ValueError("Dagger image observations have mismatched lengths")
 
     final_phase = controller.phase.value if controller is not None else -1
     terminal_reason = (
@@ -205,6 +211,7 @@ def run_policy_episode(
         "tray_init_pos": tray_init_pos,
         "log_buffers": log_buffers,
         "observations": observations,
+        "img_observations": img_observations,
         "expert_actions": expert_actions,
         "policy_actions": policy_action_history,
         "executed_actions": executed_actions,
