@@ -9,7 +9,7 @@ from typing import Literal, TypedDict
 import numpy as np
 import torch
 
-from policy_runtime.registry import load_runtime
+from policy_runtimes.registry import load_runtime
 from rollout import TaskMetrics, make_episode_seeds, run_policy_episode
 from sim import SimEnv
 

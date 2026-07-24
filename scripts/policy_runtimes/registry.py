@@ -2,8 +2,8 @@ from pathlib import Path
 
 import torch
 
-from policy_runtime.mlp import MLP_ARCHITECTURE, MlpRuntime
-from policy_runtime.types import PolicyRuntime
+from policy_runtimes.mlp import MLP_ARCHITECTURE, MlpRuntime
+from policy_runtimes.types import PolicyRuntime
 
 
 def load_runtime(

@@ -8,7 +8,7 @@ import numpy as np
 
 from constant import ACTION_DIMS
 from expert import Phase, PickPlaceController
-from policy_runtime.types import PolicyRuntime
+from policy_runtimes.types import PolicyRuntime
 from rollout_core.dagger import DEFAULT_INTERVENTION_STEPS, select_dagger_control
 from rollout_core.metrics import TaskMetrics, TaskMetricsTracker
 from rollout_core.persistence import append_step_log

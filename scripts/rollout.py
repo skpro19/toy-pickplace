@@ -40,8 +40,8 @@ from constant import (
     RETREAT_STABLE_STEPS,
 )
 from expert import Phase
-from policy_runtime.registry import load_runtime
-from policy_runtime.types import PolicyRuntime
+from policy_runtimes.registry import load_runtime
+from policy_runtimes.types import PolicyRuntime
 from rollout_core.dagger import (
     DAGGER_INTERVENTION_MODES,
     DEFAULT_INTERVENTION_STEPS,

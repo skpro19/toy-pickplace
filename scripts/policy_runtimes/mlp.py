@@ -5,7 +5,7 @@ import torch
 
 from constant import ACTION_DIMS, EPSILON, MAX_ARM_DELTA
 from models.mlp import MLP
-from policy_runtime.types import ActionStep, NormDict
+from policy_runtimes.types import ActionStep, NormDict
 from sim import SimEnv
 
 MLP_ARCHITECTURE = "mlp"
