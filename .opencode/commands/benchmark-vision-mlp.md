@@ -11,9 +11,16 @@ policy quality, or change experiment hyperparameters. Use
 experiments.
 
 This command owns baseline confirmation, provisioning, hardware acceptance,
-fixed-data collection, transient benchmark harnesses, sequential execution,
+fixed-data collection, versioned benchmark harnesses, sequential execution,
 telemetry, analysis, local result download, recovery, and cleanup. It is
 self-contained: follow this workflow without consulting another runbook.
+
+Executable benchmark logic lives in
+`.opencode/commands/scripts/benchmark-vision-mlp/`. Treat those files as part of
+this command. The selected commit must contain them. Materialize their exact
+Git-object bytes at that commit into `$CONTROL_DIR/tools`, and record their
+SHA-256 digests in control artifacts. Never copy scripts from the local working
+tree. Do not regenerate, paraphrase, or partially reimplement them during a run.
 
 Never reuse, modify, stop, restart, signal, SSH into, or compete with an
 existing training instance. Provision a separate instance even when another
@@ -49,8 +56,10 @@ The following are fixed controls, not ablation dimensions:
 | Batch size | exact confirmed config value, normally `768` |
 | Root seed | exact confirmed config value, normally `0` |
 | Expert episodes | exact confirmed config value, required to be `100` |
+| Training capture rate | exact confirmed config value, normally `60` Hz |
 | Evaluation episodes | exact confirmed config value, normally `25` |
 | Evaluation maximum steps | exact confirmed config value, normally `1400` |
+| Evaluation capture rate | exact confirmed config value, normally `60` Hz |
 | DAgger episodes | exact confirmed config value, normally `50` |
 | DAgger maximum steps | exact confirmed config value, normally `1400` |
 | Intervention threshold | exact confirmed config value, normally `0.1` |
@@ -72,11 +81,11 @@ configurations:
 |---|---:|---|---|
 | `dw0-p0` | 0 | false | supported |
 | `dw2-p0` | 2 | false | supported |
-| `dw2-p1` | 2 | true | requires implementation |
+| `dw2-p1` | 2 | true | supported |
 | `dw4-p0` | 4 | false | supported |
-| `dw4-p1` | 4 | true | requires implementation |
+| `dw4-p1` | 4 | true | supported |
 | `dw8-p0` | 8 | false | supported |
-| `dw8-p1` | 8 | true | requires implementation |
+| `dw8-p1` | 8 | true | supported |
 
 Run each configuration three times with the same dataset, model seed, sampler
 seed, and batch size:
@@ -89,10 +98,9 @@ Each trial constructs a fresh model and executes one unmeasured warm-up epoch
 followed by five measured epochs. Repetitions are timing repetitions, not
 DAgger rounds and not complete training runs.
 
-`persistent_workers=true` is exploratory. The production DataLoader does not
-currently expose it. Test it only in the transient benchmark harness. Never
-edit the checkout to enable it, never use it in the bootstrap, and label its
-results `requires implementation`.
+Test persistent and non-persistent workers as separate production-supported
+groups. Keep the bootstrap fixed at zero workers and non-persistent because it
+only supplies a representative checkpoint for simulator timing.
 
 ### Simulator-worker matrix
 
@@ -193,9 +201,10 @@ maximum, and relative spread:
 relative_spread = (maximum - minimum) / median
 ```
 
-If a top-three training configuration or either worker candidate has relative
-spread greater than 10%, run two additional repetitions for only that candidate
-and use the median of all five. Do not discard or hide outliers.
+If a top-three configuration in either separately ranked training group, or
+either worker candidate, has relative spread greater than 10%, run two
+additional repetitions for only that candidate and use the median of all five.
+Do not discard or hide outliers.
 
 Rank production-supported training candidates separately from persistent-worker
 candidates. Rank production-supported settings by:
@@ -207,7 +216,7 @@ candidates. Rank production-supported settings by:
 5. fewer DataLoader workers when throughput differs by no more than 2%.
 
 For every persistent candidate, show speedup relative to the matching
-non-persistent candidate. Label the section `requires implementation`.
+non-persistent candidate.
 
 For worker repetition `r`, define paired time as:
 
@@ -226,8 +235,6 @@ Ask the user to select the Git branch to clone, defaulting to `dev`. Set:
 FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml
 BENCHMARK_STAMP=YYYYMMDD-HHMMSS
 INSTANCE_LABEL=toy-pickplace-benchmark-vision-mlp-${BENCHMARK_STAMP}
-RESULT_PREFIX=benchmark-vision-mlp-seed${GLOBAL_SEED}-${BENCHMARK_STAMP}
-LOCAL_RESULT_DIR=runs/benchmarks/${RESULT_PREFIX}
 ```
 
 Validate the branch, fetch it, resolve the exact commit, and load every source
@@ -254,7 +261,23 @@ for path in \
   scripts/train_core/dataloader.py \
   scripts/train_core/engine.py \
   scripts/train_core/recipes/vision_mlp.py \
-  scripts/models/vision_mlp.py; do
+  scripts/models/vision_mlp.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/analyze.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/benchmark_bootstrap.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/benchmark_training.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/benchmark_worker.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/capture_hardware.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/collect_data.sh \
+  .opencode/commands/scripts/benchmark-vision-mlp/common.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/controller.sh \
+  .opencode/commands/scripts/benchmark-vision-mlp/create_contract.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/initialize_metadata.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/run_trial.sh \
+  .opencode/commands/scripts/benchmark-vision-mlp/validate_checkpoint.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/validate_dataset.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/validate_result.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/validate_telemetry.py \
+  .opencode/commands/scripts/benchmark-vision-mlp/verify_scripts.py; do
   git cat-file -e "$GIT_COMMIT:$path" || {
     printf 'ERROR: %s is missing at %s\n' "$path" "$GIT_COMMIT" >&2
     exit 1
@@ -263,12 +286,37 @@ done
 REMOTE_CONFIG=$(git show "$GIT_COMMIT:$FLYWHEEL_CONFIG") || exit 1
 printf 'Branch: %s\nCommit: %s\nConfig: %s\n\n%s\n' \
   "$GIT_BRANCH" "$GIT_COMMIT" "$FLYWHEEL_CONFIG" "$REMOTE_CONFIG"
+CONFIG_SNAPSHOT=$(mktemp)
+git show "$GIT_COMMIT:$FLYWHEEL_CONFIG" >"$CONFIG_SNAPSHOT"
+CONFIG_VALUES=$(uv run python -c '
+import json, sys, yaml
+required = (
+    "arch", "batch_size", "global_seed", "num_expert_episodes", "max_steps",
+    "train_capture_hz", "eval_episodes", "eval_max_steps", "eval_capture_hz",
+    "dagger_episodes", "rollout_max_steps", "intervention_threshold",
+    "intervention_steps", "dataloader_workers", "persistent_workers", "workers",
+)
+config = yaml.safe_load(open(sys.argv[1]))
+missing = [key for key in required if key not in config]
+if missing:
+    raise SystemExit(f"missing config keys: {missing}")
+if config["arch"] != "vision_mlp" or config["num_expert_episodes"] != 100:
+    raise SystemExit("benchmark requires vision_mlp and 100 expert episodes")
+print(json.dumps({key: config[key] for key in required}, indent=2, sort_keys=True))
+' "$CONFIG_SNAPSHOT")
+rm -f "$CONFIG_SNAPSHOT"
+printf '%s\n' "$CONFIG_VALUES"
+GLOBAL_SEED=$(printf '%s\n' "$CONFIG_VALUES" | jq -r .global_seed)
+export GLOBAL_SEED
+RESULT_PREFIX=benchmark-vision-mlp-seed${GLOBAL_SEED}-${BENCHMARK_STAMP}
+LOCAL_RESULT_DIR=runs/benchmarks/${RESULT_PREFIX}
 ```
 
 Parse `REMOTE_CONFIG` with `uv run python`. Require `arch == "vision_mlp"` and
 `num_expert_episodes == 100`. Resolve batch size, root seed, expert episodes,
-maximum expert steps, evaluation episodes and steps, DAgger episodes and steps,
-intervention threshold, and intervention steps from this exact remote config.
+maximum expert steps, training capture rate, evaluation episodes, steps and
+capture rate, DAgger episodes and steps, intervention threshold, and
+intervention steps from this exact remote config.
 Stop on a missing required value. Do not use the local working-tree config.
 
 Before provisioning, display and ask the user to confirm:
@@ -326,10 +374,11 @@ Use `SEARCH_EFFECTIVE_VCPUS=24`. Use this exact query without weakening or
 omitting any condition:
 
 ```bash
-vastai search offers \
+OFFERS_JSON=$(vastai search offers \
   'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 gpu_ram>=24 gpu_max_power>=400 compute_cap>=890 total_flops>=80 cpu_cores_effective>=24 cpu_ram>=64 disk_bw>=1000 pci_gen>=4 pcie_bw>=20 inet_down>=500 inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false' \
   --order dph_total+ \
-  --raw
+  --raw) || exit 1
+printf '%s\n' "$OFFERS_JSON"
 ```
 
 The query requires exactly one full RTX 4090 with approximately 24 GB VRAM, at
@@ -392,6 +441,10 @@ for id in "${OFFER_IDS[@]}"; do
   done
   if test "$count" -eq 1; then
     INSTANCE_ID=$(printf '%s\n' "$matches" | jq -r '.[0].id')
+    INSTANCE_CREATED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    SELECTED_OFFER_JSON=$(printf '%s\n' "$OFFERS_JSON" | jq -c \
+      --arg id "$id" '.[] | select((.id | tostring) == $id)')
+    test -n "$SELECTED_OFFER_JSON"
     CREATED=true
     break
   fi
@@ -522,15 +575,32 @@ PCIe generation may downshift while idle; maximum capability must be Gen4 x16
 and the offer measurement must pass. Recheck under CUDA load if restriction is
 suspected. Idle P2 or low idle utilization alone is not failure.
 
+The diagnostics above are for review. After the pinned tools are materialized
+in Stage 2, make acceptance executable and authoritative. Save the selected raw
+offer object as `$CONTROL_DIR/offer.json`, excluding credentials and endpoint
+fields, then run:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "/root/.local/bin/uv run --directory /workspace/toy-pickplace python \
+     '$CONTROL_DIR/tools/capture_hardware.py' \
+     --offer '$CONTROL_DIR/offer.json' \
+     --output '$CONTROL_DIR/hardware.json' && \
+   test \"\$(jq -r .success '$CONTROL_DIR/hardware.json')\" = true"
+```
+
+Do not launch the controller unless this command succeeds. Copy
+`hardware.json` back for final launch confirmation.
+
 On failure, stop before setup, list every failed rule, and ask whether to destroy
 the provisional instance and restart with a fresh offer list. Do not relax a
 rule without explicit user approval naming that rule.
 
-## Stage 2 - Clone and prepare
+## Stage 2 - Clone, automate acceptance, and prepare
 
-After acceptance, ask for final launch confirmation showing hardware, commit,
-fixed batch size, 21 training trials, 12 worker trials, estimated duration, and
-cost. Then clone and detach at the confirmed commit:
+After the manual diagnostics pass, clone only to materialize the pinned
+acceptance and benchmark tools. This is not benchmark launch approval. Clone and
+detach at the confirmed commit:
 
 ```bash
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
@@ -542,7 +612,7 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
    test -f '$FLYWHEEL_CONFIG' && \
    apt-get update -qq && apt-get install -y -qq \
      libgl1-mesa-glx libglib2.0-0 libegl1-mesa libgles2-mesa libglfw3 \
-     sysstat time tmux util-linux && \
+      sysstat time tmux util-linux jq && \
    command -v tmux >/dev/null && command -v flock >/dev/null && \
    curl -LsSf https://astral.sh/uv/install.sh | sh && \
    /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
@@ -574,35 +644,82 @@ driver, CUDA, cuDNN, Python, PyTorch, MuJoCo, GLFW, uv, `uv.lock` SHA-256,
 resolved packages, CPU governor, and Torch deterministic/TF32 backend flags.
 Never store credentials or SSH endpoints in benchmark artifacts.
 
-Use base64 transfer for generated scripts. Do not use nested heredocs inside a
-double-quoted SSH command. Do not edit, commit, or push the checkout.
+Materialize scripts from the detached remote Git commit, not from local files.
+Do not edit, commit, or push the remote checkout:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "set -e; cd /workspace/toy-pickplace; \
+   test \"\$(git rev-parse HEAD)\" = '$GIT_COMMIT'; \
+   mkdir -p '$CONTROL_DIR/tools'; \
+   git ls-tree -r --name-only '$GIT_COMMIT' \
+     .opencode/commands/scripts/benchmark-vision-mlp | while read -r path; do \
+       name=\$(basename \"\$path\"); \
+       git show '$GIT_COMMIT':\"\$path\" >'$CONTROL_DIR/tools/'\"\$name\"; \
+     done; \
+   chmod +x '$CONTROL_DIR/tools/'*.sh && \
+    /root/.local/bin/uv run --directory /workspace/toy-pickplace \
+      python -m py_compile '$CONTROL_DIR/tools/'*.py"
+```
+
+Generate the expected manifest independently from Git blobs, then verify the
+materialized directory has exactly those files and bytes:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "/root/.local/bin/uv run --directory /workspace/toy-pickplace python \
+     '$CONTROL_DIR/tools/verify_scripts.py' \
+     --tools-dir '$CONTROL_DIR/tools' \
+     --project-root /workspace/toy-pickplace \
+     --commit '$GIT_COMMIT' \
+     --source-prefix .opencode/commands/scripts/benchmark-vision-mlp \
+     --write-manifest '$CONTROL_DIR/script-manifest.json'"
+```
+
+A materialization interrupted before digest verification is incomplete and
+must not launch a controller. Create a sanitized `$CONTROL_DIR/instance.json`
+with `id`, `label`, `created_utc`, `price_per_hour`, and non-secret accepted
+offer fields. Do not include `ssh_host`, `ssh_port`, public IPs, tokens, or
+credentials. Run the authoritative `capture_hardware.py` gate from Stage 1 now.
+Only after it passes, ask for final launch confirmation showing hardware,
+commit, fixed batch size, 21 training trials, 12 worker trials, estimated
+duration, and cost.
+
+Use the selected object from the saved raw search response, not reconstructed
+offer values. Materialize and transfer only the fields used by acceptance:
+
+```bash
+offer_file=$(mktemp)
+instance_file=$(mktemp)
+printf '%s\n' "$SELECTED_OFFER_JSON" | jq '{
+  id, gpu_name, gpu_frac, num_gpus, gpu_ram, gpu_max_power, compute_cap,
+  total_flops, cpu_name, cpu_cores_effective, cpu_ram, disk_bw, pci_gen,
+  pcie_bw, inet_down, inet_up, reliability, rentable, verification,
+  gpu_display_active, dph_total, geolocation
+}' >"$offer_file"
+jq -n \
+  --argjson id "$INSTANCE_ID" \
+  --arg label "$INSTANCE_LABEL" \
+  --arg created_utc "$INSTANCE_CREATED_UTC" \
+  --argjson price_per_hour "$(jq .dph_total "$offer_file")" \
+  '{id:$id,label:$label,created_utc:$created_utc,price_per_hour:$price_per_hour}' \
+  >"$instance_file"
+scp -o StrictHostKeyChecking=yes -o BatchMode=yes -P "$PORT" \
+  "$offer_file" "root@$HOST:$CONTROL_DIR/offer.json"
+scp -o StrictHostKeyChecking=yes -o BatchMode=yes -P "$PORT" \
+  "$instance_file" "root@$HOST:$CONTROL_DIR/instance.json"
+rm -f "$offer_file" "$instance_file"
+```
 
 ## Stage 3 - Collect fixed expert data
 
-Derive seeds from confirmed code after adding `scripts` to `sys.path`:
+`create_contract.py` derives seeds on the remote host from the confirmed code
+and root seed. The controller reads those exact values and collects exactly 100
+image episodes once through `collect_data.sh`. Do not run a separate foreground
+collection command. Tmux owns collection and every later phase.
 
-```bash
-MUJOCO_GL=egl /root/.local/bin/uv run \
-  --directory /workspace/toy-pickplace python -c \
-  'import json, sys; sys.path.insert(0, "scripts"); from flywheel import make_flywheel_seeds; print(json.dumps(make_flywheel_seeds(global_seed=GLOBAL_SEED), sort_keys=True))'
-```
-
-Substitute numeric `GLOBAL_SEED`. Collect exactly 100 image episodes once:
-
-```bash
-cd /workspace/toy-pickplace
-MUJOCO_GL=egl /usr/bin/time -v -o "$CONTROL_DIR/time/expert.txt" \
-  /root/.local/bin/uv run python scripts/data.py \
-    --episodes 100 \
-    --out-dir "$CONTROL_DIR/data/expert" \
-    --seed "$EXPERT_SEED" \
-    --max-steps "$EXPERT_MAX_STEPS" \
-    --capture-hz 60 \
-    --save-images \
-  2>&1 | tee "$CONTROL_DIR/logs/expert.log"
-```
-
-Create `validate_dataset.py`. Fail unless exactly 100 `.npz` files exist, every
+Use `.opencode/commands/scripts/benchmark-vision-mlp/validate_dataset.py`. Fail
+unless exactly 100 `.npz` files exist, every
 file contains `obs`, `actions`, and `img_obs`, first dimensions match, images
 are `uint8` with shape `(T, 64, 64, 3)`, no episode is empty, and total frames
 are positive. Atomically write a manifest with filename, bytes, SHA-256, frame
@@ -615,9 +732,33 @@ digest, and restart all timings. Never combine results from physical hosts.
 
 ## Stage 4 - Materialize benchmark tools
 
+The canonical source directory must contain this complete set:
+
+| Script | Responsibility |
+|---|---|
+| `common.py` | Atomic JSON and text writes |
+| `capture_hardware.py` | Executable cpuset, cgroup, GPU, and offer acceptance |
+| `create_contract.py` | Exact config parsing, seed derivation, and immutable contract |
+| `verify_scripts.py` | Pinned script-manifest verification |
+| `collect_data.sh` | Durable expert collection with truthful status |
+| `validate_dataset.py` | Exact episode/schema validation and manifest |
+| `benchmark_training.py` | Production-path training throughput measurement |
+| `benchmark_bootstrap.py` | Bootstrap training and exact checkpoint discovery |
+| `validate_checkpoint.py` | Runtime loading, epoch, normalization, and digest validation |
+| `benchmark_worker.py` | Structured evaluation and direct-output DAgger trials |
+| `validate_result.py` | Independent per-trial artifact validation |
+| `validate_telemetry.py` | Independent GPU, process-tree, host, and time validation |
+| `run_trial.sh` | Cooling, telemetry, timing, status, and command lifecycle |
+| `controller.sh` | Sequential plan execution and stop-on-first-failure behavior |
+| `initialize_metadata.py` | Merge the run contract with manifest/software facts |
+| `analyze.py` | Cross-artifact validation, stability checks, ranking, and reports |
+
+These scripts are the implementation. The prose below defines their contract
+and invocation, not an invitation to create alternative transient versions.
+
 ### 4.1 Training harness
 
-Create transient `CONTROL_DIR/tools/benchmark_training.py`. It accepts:
+Use the transferred `CONTROL_DIR/tools/benchmark_training.py`. It accepts:
 
 ```text
 --data-dir PATH
@@ -656,7 +797,8 @@ expected sample count, nonzero CUDA memory, and finite losses.
 
 ### 4.2 Trial wrapper
 
-Create `run_trial.sh`. For a unique trial ID, generation, and attempt it must:
+Use the transferred `run_trial.sh` with
+`CONTROL_DIR KIND TRIAL_ID GENERATION ATTEMPT RESULT -- COMMAND...`. It must:
 
 1. atomically write `running GENERATION ATTEMPT`;
 2. wait up to two minutes for GPU utilization below 5% and temperature below
@@ -666,13 +808,29 @@ Create `run_trial.sh`. For a unique trial ID, generation, and attempt it must:
 5. invoke the requested benchmark through `/usr/bin/time -v`;
 6. stream output to an attempt-specific durable log;
 7. verify result, time, and telemetry files;
-8. atomically write `succeeded 0 GENERATION ATTEMPT` or
+8. run an independent artifact validator after the command exits zero;
+9. atomically write `succeeded 0 GENERATION ATTEMPT` only when both the command
+   and artifact validator exit zero, otherwise write
    `failed EXIT_CODE GENERATION ATTEMPT`;
-9. never retry automatically.
+10. never retry automatically.
+
+Never derive success from `/usr/bin/time`, `tee`, elapsed time, or the presence
+of a log. Preserve the producer status with `PIPESTATUS[0]` when a pipeline is
+unavoidable. A result is successful only if all of these agree:
+
+```text
+wrapped command exit code == 0
+independent result validator exit code == 0
+status text == "succeeded 0 GENERATION ATTEMPT"
+```
+
+The validator must reject a missing result, a self-reported `success` other
+than JSON `true`, mismatched trial/generation/attempt, non-finite timings,
+incorrect fixed inputs, an incorrect episode count, or a missing checkpoint.
 
 ### 4.3 Analysis tool
 
-Create `analyze.py`. It validates plans, statuses, result schemas, repetitions,
+Use the transferred `analyze.py`. It validates plans, statuses, result schemas,
 fixed values, commit, dataset digest, and telemetry. It computes ranking and
 stability metrics and writes reports atomically.
 
@@ -717,6 +875,7 @@ After training trials, create a representative checkpoint with:
   --eval-seed "$EVAL_SEED" \
   --eval-episodes 1 \
   --eval-max-steps "$EVAL_MAX_STEPS" \
+  --eval-capture-hz "$EVAL_CAPTURE_HZ" \
   --eval-workers 12 \
   --dataloader-workers 0 \
   --early-stop-patience 0
@@ -725,6 +884,31 @@ After training trials, create a representative checkpoint with:
 Run through the common wrapper. Validate the checkpoint through the production
 policy runtime and record its SHA-256. Its score is irrelevant; it provides a
 representative trained architecture for simulator timing.
+
+`scripts/train.py` creates a numbered run directory below `--checkpoint_root`.
+The checkpoint is therefore not `$CONTROL_DIR/bootstrap/checkpoints/last.pt`.
+After successful training, require exactly one newly-created immediate child
+directory and publish its resolved checkpoint path atomically:
+
+```bash
+mapfile -t bootstrap_run_dirs < <(
+  find "$CONTROL_DIR/bootstrap/checkpoints" \
+    -mindepth 1 -maxdepth 1 -type d -print
+)
+test "${#bootstrap_run_dirs[@]}" -eq 1
+BOOTSTRAP_RUN_DIR=${bootstrap_run_dirs[0]}
+BOOTSTRAP_CHECKPOINT=$(realpath "$BOOTSTRAP_RUN_DIR/last.pt")
+test -s "$BOOTSTRAP_CHECKPOINT"
+test -s "$BOOTSTRAP_RUN_DIR/best.pt"
+```
+
+The versioned `validate_checkpoint.py` loads this exact path through
+`policy_runtimes.registry.load_runtime`, requires architecture `vision_mlp`,
+epoch `120`, finite normalization arrays, and successful CPU runtime setup,
+then atomically writes `bootstrap/checkpoint.json` containing the absolute path
+and SHA-256. Every worker trial must read the path and digest from that JSON.
+Never reconstruct, guess, or independently glob the checkpoint path in a
+worker command.
 
 ### 5.3 Worker plans
 
@@ -738,6 +922,7 @@ MUJOCO_GL=egl /root/.local/bin/uv run python scripts/eval.py \
   --ckpt_path "$BOOTSTRAP_CHECKPOINT" \
   --seed "$EVAL_SEED" \
   --max_steps "$EVAL_MAX_STEPS" \
+  --capture-hz "$EVAL_CAPTURE_HZ" \
   --episodes "$EVAL_EPISODES" \
   --workers "$WORKERS"
 ```
@@ -750,6 +935,7 @@ MUJOCO_GL=egl /root/.local/bin/uv run python scripts/rollout.py \
   --seed "$DAGGER_SEED" \
   --episodes "$DAGGER_EPISODES" \
   --max-steps "$ROLLOUT_MAX_STEPS" \
+  --capture-hz "$TRAIN_CAPTURE_HZ" \
   --train-npz-dir "$CONTROL_DIR/data/expert" \
   --dagger \
   --dagger-mode threshold \
@@ -765,10 +951,55 @@ Read each confirmed parser's `--help` before launch and adjust only spelling
 proven different. Preserve semantics. Validate evaluation metrics and exactly
 the configured DAgger episode count.
 
+The rollout CLI creates a timestamped child under `--dagger-dir`. After the
+command exits, recursively discover directories containing `.npz` files,
+require exactly one such leaf directory, and require exactly
+`$DAGGER_EPISODES` files there. Do not incorrectly check only the immediate
+`$UNIQUE_DAGGER_OUTPUT` directory. The versioned Python worker harness instead
+calls `rollout(..., create_dagger_subdir=False)` and validates the exact output
+directory; this is preferred because it removes output-path discovery.
+
+For evaluation, do not accept human-readable log output as evidence. The
+versioned Python worker harness calls `eval.score_ckpt` and atomically
+writes structured metrics. Require the score list length to equal
+`$EVAL_EPISODES` and all metrics to be finite before success.
+
 ### 5.4 Controller
 
-Create `controller.sh` and run it in tmux session `vision-benchmark-controller`.
-It must:
+First create the immutable contract from the exact detached config and accepted
+artifacts:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "/root/.local/bin/uv run --directory /workspace/toy-pickplace python \
+     '$CONTROL_DIR/tools/create_contract.py' \
+     --project-root /workspace/toy-pickplace \
+     --branch '$GIT_BRANCH' \
+     --commit '$GIT_COMMIT' \
+     --config '/workspace/toy-pickplace/$FLYWHEEL_CONFIG' \
+     --instance '$CONTROL_DIR/instance.json' \
+     --hardware '$CONTROL_DIR/hardware.json' \
+     --script-manifest '$CONTROL_DIR/script-manifest.json' \
+     --output '$CONTROL_DIR/contract.json'"
+```
+
+Read back `contract.json`, require its commit, config digest, fixed controls,
+seeds, hardware, and script manifest to match the confirmed values, then launch
+the transferred `controller.sh` in tmux session `vision-benchmark-controller`:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "set -e; test ! -e '$CONTROL_DIR/state/completed'; \
+   test -z \"\$(tmux list-sessions -F '#{session_name}' 2>/dev/null | \
+     grep -Fx vision-benchmark-controller || true)\"; \
+   tmux new-session -d -s vision-benchmark-controller \
+     \"env PROJECT_ROOT=/workspace/toy-pickplace \
+       CONTROL_DIR='$CONTROL_DIR' CONTRACT_JSON='$CONTROL_DIR/contract.json' \
+       bash '$CONTROL_DIR/tools/controller.sh' \
+       >'$CONTROL_DIR/logs/controller.log' 2>&1\""
+```
+
+Never edit run-specific values into the versioned source. The controller must:
 
 1. acquire an exclusive `flock` and refuse another controller session or lock;
 2. create an atomic unique controller-generation marker;
@@ -787,12 +1018,43 @@ Use one child process at a time. Do not create concurrent benchmark cells.
 After launch, verify tmux and a matching generation in `state/started`. The
 agent may disconnect after reporting recovery commands; tmux owns execution.
 
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "tmux has-session -t vision-benchmark-controller && \
+   test -s '$CONTROL_DIR/state/started' && \
+   cat '$CONTROL_DIR/state/started'"
+```
+
 ## Stage 6 - Results
 
 After `state/completed`, download metadata, manifest, plans, tools, statuses,
 logs, time files, telemetry, raw JSON, and generated reports with strict-host-key
 SCP into `LOCAL_RESULT_DIR`. Re-run analysis locally and require identical
 summary JSON.
+
+```bash
+mkdir -p "$LOCAL_RESULT_DIR"
+scp -r -o StrictHostKeyChecking=yes -o BatchMode=yes -P "$PORT" \
+  "root@$HOST:$CONTROL_DIR/." "$LOCAL_RESULT_DIR/"
+remote_summary_sha256=$(sed -n 's/^summary_sha256=//p' \
+  "$LOCAL_RESULT_DIR/state/completed")
+test "$(sha256sum "$LOCAL_RESULT_DIR/benchmark-summary.json" | cut -d ' ' -f1)" \
+  = "$remote_summary_sha256"
+remote_summary_copy=$(mktemp)
+cp "$LOCAL_RESULT_DIR/benchmark-summary.json" "$remote_summary_copy"
+analysis_parent=$(mktemp -d)
+analysis_worktree="$analysis_parent/checkout"
+git worktree add --detach "$analysis_worktree" "$GIT_COMMIT"
+BENCHMARK_PROJECT_ROOT="$analysis_worktree" uv run python \
+  "$LOCAL_RESULT_DIR/tools/analyze.py" \
+  --control-dir "$LOCAL_RESULT_DIR" \
+  --output-dir "$LOCAL_RESULT_DIR" \
+  --require-complete
+cmp -s "$remote_summary_copy" "$LOCAL_RESULT_DIR/benchmark-summary.json"
+git worktree remove "$analysis_worktree"
+rm -rf "$analysis_parent"
+rm -f "$remote_summary_copy"
+```
 
 Generate exactly:
 
@@ -809,7 +1071,7 @@ The Markdown report must include:
    instance ID, price, and accepted hardware;
 2. all 21 initial training trials and any stability reruns;
 3. production-supported DataLoader ranking and recommendation;
-4. separate persistent-worker results labeled `requires implementation`;
+4. separate persistent-worker results;
 5. all evaluation and DAgger worker trials with paired ranking;
 6. recommended `workers` value;
 7. GPU utilization, power, VRAM, CPU, RAM, and I/O evidence;
@@ -821,23 +1083,59 @@ The Markdown report must include:
 12. the command to run `/ablate-flywheel-params batch_size` if a later quality
     ablation is desired.
 
-Do not automatically edit config files or runbooks. Present recommendations and
-ask whether the user wants a separate implementation. If persistence wins,
-identify the production code path and tests needed without implementing them.
+Do not automatically edit config files or runbooks unless the user explicitly
+authorizes it. Present recommendations and ask whether the user wants the
+recommended production settings applied separately.
 
 ## Failure and recovery
 
-Status files are authoritative; tmux membership alone is never success.
+Status files and validated result artifacts are jointly authoritative; neither
+one alone is success. Tmux membership, logs, and elapsed wall time are never
+success.
 
-On failure, stop the controller, report phase, trial, exit code, log, time,
-telemetry, and result paths, then ask whether to retry, skip, or stop. Before an
-approved retry, move status and failure markers atomically into
-`status/history` with an attempt number. A skip must be explicit and prevents a
-winner from depending on that missing evidence.
+On failure, the controller has already stopped. Report phase, trial, exit code,
+log, time, telemetry, and result paths, then ask whether to retry or stop. Skips
+are not accepted because completion requires the exact plan. Before an approved
+retry, require no benchmark process remains, read the four status fields, and
+preserve the failed canonical result if present:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "CONTROL_DIR='$CONTROL_DIR' TRIAL_ID='$TRIAL_ID' \
+   RESULT_GROUP='$RESULT_GROUP' bash -s" <<'REMOTE_RECOVERY'
+read -r state code generation attempt <"$CONTROL_DIR/status/$TRIAL_ID.status"
+test "$state" = failed
+test "$code" -ne 0
+test -n "$generation" && test -n "$attempt"
+mkdir -p "$CONTROL_DIR/results/history"
+if test "$TRIAL_ID" = expert; then
+  mkdir -p "$CONTROL_DIR/data/history"
+  mv "$CONTROL_DIR/data/expert" \
+    "$CONTROL_DIR/data/history/expert-a$attempt"
+  mkdir -p "$CONTROL_DIR/data/expert"
+else
+  result_path="$CONTROL_DIR/results/$RESULT_GROUP/$TRIAL_ID.json"
+  if test -e "$result_path"; then
+    mv "$result_path" \
+      "$CONTROL_DIR/results/history/$TRIAL_ID-a$attempt.json"
+  fi
+fi
+mv "$CONTROL_DIR/status/$TRIAL_ID.status" \
+  "$CONTROL_DIR/status/history/$TRIAL_ID-a$attempt.status"
+if test -e "$CONTROL_DIR/state/failed"; then
+  mv "$CONTROL_DIR/state/failed" \
+    "$CONTROL_DIR/status/history/controller-$TRIAL_ID-a$attempt.failed"
+fi
+REMOTE_RECOVERY
+```
+
+Then relaunch the exact tmux controller command above. Never delete or overwrite
+attempt-specific logs, telemetry, time files, bootstrap directories, or DAgger
+output directories.
 
 On same-instance resume, resolve the current SSH endpoint again, enforce the
 pinned key, validate commit, config, dataset digest, generation, plans,
-statuses, and results, then require confirmation before retry or skip. A missing
+statuses, and results, then require confirmation before retry or stop. A missing
 or changed host key is a hard stop.
 
 If the instance is lost, provision a new accepted host, recollect and validate
@@ -898,7 +1196,8 @@ At every handoff, print:
 - Never randomize seeds or regenerate data after timing starts.
 - Never run a complete flywheel or make policy-quality claims.
 - Never edit or commit the cloned repository for a transient benchmark.
-- Never treat persistent workers as production-supported without implementation.
+- Never treat persistent workers as supported unless the selected commit exposes
+  and validates the production setting.
 - Never require, read, transfer, or use `HF_TOKEN`.
 - Never store secrets or SSH endpoints in benchmark artifacts. The required
   `known_hosts` pin is the sole endpoint-storage exception.
