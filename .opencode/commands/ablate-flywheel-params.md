@@ -21,25 +21,35 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    Reject infrastructure-only values (`workers`, `dataloader_workers`) and
    reject duplicate normalized names. Show the supported parameter catalog and
    stop for an invalid request.
-3. Ask for an exact comma- or newline-separated value list for every requested
-   parameter. Display its default from `configs/flywheel/default.yaml`, its CLI
+3. Ask the user to select the Git branch to clone, defaulting to `dev`, and set
+   `GIT_BRANCH` to that exact value. Set
+   `FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml`. Before
+   planning or provisioning, verify that this config is committed on the
+   selected remote branch and load its contents from that branch. Stop if it
+   does not exist there; a local-only file is not sufficient.
+4. Ask for an exact comma- or newline-separated value list for every requested
+   parameter. Display its default resolved from `FLYWHEEL_CONFIG`, its CLI
    flag, and the corresponding argument validation constraints before asking.
-4. Let `GRID_CELLS` be the product of all confirmed value-list lengths:
+   Resolve `GLOBAL_SEED` from the same config.
+5. Let `GRID_CELLS` be the product of all confirmed value-list lengths:
    - one requested parameter is a 1D sweep;
    - two or more requested parameters form a full Cartesian grid, with every
      requested CLI override set on every cell.
-5. Require `1 <= GRID_CELLS <= 30`. If the grid has more than 30 cells, show
+6. Require `1 <= GRID_CELLS <= 30`. If the grid has more than 30 cells, show
    its computed size and ask the user to reduce the lists or split the work into
    multiple invocations. Do not provision.
-6. Build `RUN_PLAN` in deterministic parameter-list order and value-list order.
+7. Build `RUN_PLAN` in deterministic parameter-list order and value-list order.
    Each row includes:
    - a unique run name;
    - a unique tmux session;
    - all CLI overrides for that cell;
    - its batch number after Step 6 determines concurrency.
-7. Show the complete `RUN_PLAN`, selected tier, search floor, physical-core
-   acceptance gate, tuning values, planned concurrency range, and estimated
-   batch count. Ask the user to confirm the entire plan before Step 0.
+8. Include `GIT_BRANCH` and `FLYWHEEL_CONFIG` with the complete `RUN_PLAN`,
+   selected tier, search floor, physical-core acceptance gate, tuning values,
+   planned concurrency range, and estimated batch count. Ask the user to
+   confirm the branch, config, and entire plan together before Step 0. This is
+   the only branch and config confirmation; do not ask again after provisioning
+   or immediately before cloning.
 
 ### Supported parameter catalog
 
@@ -273,7 +283,8 @@ batch-size policy before applying tuning.
 
 ### 7. Tune the instance-side config
 
-Do not edit, commit, push, or copy the local config. Apply values only to the
+Do not edit, commit, push, or copy the local config. `FLYWHEEL_CONFIG` must
+exist on the confirmed `GIT_BRANCH`. Apply values only to that config in the
 cloned repository after Step 8 Batch 1.
 
 Use the selected tier's `workers` and `dataloader_workers`. Use `batch_size=768`
@@ -287,13 +298,22 @@ batches.
 
 #### Batch 1 — clone, uv, CUDA verification
 
+Substitute the confirmed `GIT_BRANCH` and `FLYWHEEL_CONFIG` before execution.
+Do not clone until the initial full-plan confirmation has established both
+values. After cloning, verify that the checked-out branch exactly matches
+`GIT_BRANCH` and that `FLYWHEEL_CONFIG` exists on that branch. Stop before uv
+setup or tuning if either verification fails.
+
 ```bash
 ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "git clone --branch dev --single-branch \
+  "git clone --branch GIT_BRANCH --single-branch \
      https://github.com/skpro19/toy-pickplace.git /workspace/toy-pickplace && \
+   cd /workspace/toy-pickplace && \
+   test \"\$(git branch --show-current)\" = \"GIT_BRANCH\" && \
+   test -f \"FLYWHEEL_CONFIG\" && \
+   printf 'Checked out branch: %s\nConfig: %s\n' \"GIT_BRANCH\" \"FLYWHEEL_CONFIG\" && \
    curl -LsSf https://astral.sh/uv/install.sh | sh && \
    /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
-   cd /workspace/toy-pickplace && \
    /root/.local/bin/uv run python -c \
      'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'"
 ```
@@ -312,9 +332,9 @@ ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
    sed -i -E \
      -e 's/^workers:.*/workers: TIER_WORKERS/' \
      -e 's/^dataloader_workers:.*/dataloader_workers: TIER_DATALOADER_WORKERS/' \
-     configs/flywheel/default.yaml; \
+     FLYWHEEL_CONFIG; \
    grep -E '^(workers|batch_size|dataloader_workers):' \
-     configs/flywheel/default.yaml"
+     FLYWHEEL_CONFIG"
 ```
 
 When `batch_size` is not swept, include:
@@ -410,8 +430,8 @@ Materialize the confirmed `RUN_PLAN` there. Use a deterministic `plan` file
 with one `batch|run_name|tmux_session` row per cell. For every row, create one
 shell-safe executable `cells/{tmux_session}.sh` containing its full
 `/root/.local/bin/uv run python scripts/flywheel.py` command, with
-`--config`, `--run-name`, and every swept override. Do not commit or copy
-these transient files back to the local repository.
+`--config FLYWHEEL_CONFIG`, `--run-name`, and every swept override. Do not
+commit or copy these transient files back to the local repository.
 
 Each cell wrapper must:
 
@@ -547,6 +567,8 @@ Print:
 
 - parameter names, exact value lists, `GRID_CELLS`, selected tier, and
   `RUN_PLAN`;
+- confirmed `GIT_BRANCH`, confirmed `FLYWHEEL_CONFIG`, and both verifications
+  performed after cloning;
 - instance ID and `vastai ssh-url` retrieval command;
 - advertised effective vCPUs, verified physical cores, CPU quota, CPU reserve,
   CPU cap, computed concurrency, and batch count;
