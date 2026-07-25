@@ -14,7 +14,8 @@
 #   2. For every run folder under results/flywheel/<prefix>/, run
 #      final_score.py --run-name <prefix>/<run>.
 #
-# Requirements: uv, huggingface_hub, and HF_TOKEN (for private repos).
+# Requirements: uv, huggingface_hub, EGL-capable MuJoCo rendering, and HF_TOKEN
+# (for private repos). Defaults to MUJOCO_GL=egl; set MUJOCO_GL to override it.
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
@@ -24,6 +25,8 @@ fi
 
 PREFIX="$1"
 shift
+
+export MUJOCO_GL="${MUJOCO_GL:-egl}"
 
 WORKERS_ARGS=()
 while [ $# -gt 0 ]; do
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+echo "=== MuJoCo renderer: $MUJOCO_GL ==="
 echo "=== Downloading checkpoints and results ==="
 uv run python scripts/hf_backup.py download --components checkpoints,results "$PREFIX"
 
