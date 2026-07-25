@@ -407,7 +407,7 @@ ready:
 SSH_READY=false
 for i in $(seq 1 12); do
   printf 'SSH probe %s\n' "$i"
-  if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+  if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
       -o ConnectTimeout=10 -p "$PORT" "root@$HOST" true 2>/dev/null; then
     SSH_READY=true
     break
@@ -419,23 +419,19 @@ test "$SSH_READY" = true
 
 Do not clone, tune, launch tmux, or start backup until SSH is ready.
 
-The first successful probe records the endpoint key in `~/.ssh/known_hosts`,
-but trust on first use is not sufficient for credential transfer. Before
-transferring `HF_TOKEN`, print the pinned fingerprint and require the user to
-compare it with an independently trusted fingerprint for this exact Vast
-instance:
+The first successful probe uses trust on first use and records the endpoint key
+in `~/.ssh/known_hosts`. Verify that the key was pinned, then require strict
+host-key checking for every subsequent SSH connection:
 
 ```bash
-ssh-keygen -F "[$HOST]:$PORT" | ssh-keygen -lf -
+ssh-keygen -F "[$HOST]:$PORT"
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
   -p "$PORT" "root@$HOST" true
 ```
 
-Stop if the control plane does not provide an independently trusted
-fingerprint, no pinned key exists, the fingerprints differ, or strict checking
-fails. Merely confirming the fingerprint observed by the first SSH connection
-is not sufficient. Every command that transfers a credential must use strict
-host-key checking.
+Stop if no pinned key exists, the host key changes, or strict checking fails.
+Do not ask the user to compare fingerprints manually. Credential transfer must
+never use `accept-new` or disable strict checking.
 
 If the instance fails to become running or SSH-ready, report its ID, latest
 status, SSH URL when available, and failed attempt count. Ask whether to destroy
@@ -450,7 +446,7 @@ image, install SSH manually, or repeatedly reboot as a workaround.
 Treat every rental as provisional. Before cloning or setup, run:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" '
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" '
   set -e
   printf "%s\n" "=== CPU topology ==="
   lscpu
@@ -581,7 +577,7 @@ branch advanced after confirmation, the commit check fails; stop before uv
 setup and restart baseline confirmation instead of running unconfirmed code.
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "git clone --branch 'GIT_BRANCH' --single-branch \
      https://github.com/skpro19/toy-pickplace.git /workspace/toy-pickplace && \
     cd /workspace/toy-pickplace && \
@@ -604,7 +600,7 @@ swept; otherwise use the confirmed YAML baseline because per-cell CLI flags
 provide the swept values.
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "set -e; \
    touch ~/.no_auto_tmux; \
    printf '%s\n' 'set -g mouse on' > ~/.tmux.conf; \
@@ -636,7 +632,7 @@ in the `sed` expression.
 Start TensorBoard once before grid batch 1:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "tmux new-session -d -s tensorboard \
      'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main \
       --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
@@ -647,7 +643,7 @@ up to 12 attempts at five-second intervals; on failure, print its last 20
 lines and stop:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "for i in \$(seq 1 12); do
      tmux has-session -t tensorboard 2>/dev/null &&
        curl -fsS http://127.0.0.1:6006/ >/dev/null && exit 0
@@ -689,9 +685,10 @@ for index in $(seq 0 999); do
 done
 test -n "$LOCAL_WORKFLOW_INDEX"
 tmux new-session -d -s "$LOCAL_SSH_SESSION" \
-  "ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p $PORT root@$HOST"
+  "ssh -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -p $PORT root@$HOST"
 tmux new-session -d -s "$LOCAL_TB_SESSION" \
-  "ssh -N -L $LOCAL_TB_PORT:127.0.0.1:6006 -p $PORT root@$HOST"
+  "ssh -o StrictHostKeyChecking=yes -N \
+    -L $LOCAL_TB_PORT:127.0.0.1:6006 -p $PORT root@$HOST"
 tmux has-session -t "$LOCAL_SSH_SESSION" && tmux has-session -t "$LOCAL_TB_SESSION"
 flock -u 9
 exec 9>&-
@@ -763,7 +760,7 @@ when the agent later reads `state/failed`.
 Start it with:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "tmux new-session -d -s ablation-controller \
      'cd '$CONTROL_DIR' && exec bash ./controller.sh'"
 ```
@@ -772,7 +769,7 @@ Verify `ablation-controller` exists and wait only until
 `state/batch-1-started` appears:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "for i in \$(seq 1 12); do
      test -f '$CONTROL_DIR/state/batch-1-started' && exit 0
      tmux has-session -t ablation-controller 2>/dev/null || exit 1
@@ -860,7 +857,7 @@ ten minutes and fail immediately if the uploader exits or writes
 `state/backup-failed`:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "for i in \$(seq 1 60); do
      test -f '$CONTROL_DIR/state/backup-failed' && exit 1
      test -f '$CONTROL_DIR/state/backup-last-succeeded' && exit 0
@@ -883,7 +880,7 @@ Use the remote controller state—not live tmux membership—to determine the
 outcome. At any later time, including after an agent interruption, inspect:
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "cd '$CONTROL_DIR' && \
     { cat state/completed 2>/dev/null || true; } && \
     { cat state/failed 2>/dev/null || true; } && \
