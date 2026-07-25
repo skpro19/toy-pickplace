@@ -43,7 +43,13 @@ fi
 
 INSTANCE_LABEL=$(echo "$INSTANCE_JSON" | jq -r '.label // "—"')
 INSTANCE_GPU=$(echo "$INSTANCE_JSON" | jq -r '.gpu_name // "—"')
-INSTANCE_UPTIME_MIN=$(echo "$INSTANCE_JSON" | jq -r '.uptime_mins // 0' | cut -d. -f1)
+INSTANCE_START_EPOCH=$(echo "$INSTANCE_JSON" | jq -r 'if (.start_date | type) == "number" then .start_date | floor else empty end')
+if [[ -n "$INSTANCE_START_EPOCH" && "$INSTANCE_START_EPOCH" -le "$(date +%s)" ]]; then
+  INSTANCE_UPTIME_MIN=$(( ($(date +%s) - INSTANCE_START_EPOCH) / 60 ))
+else
+  INSTANCE_UPTIME_MIN=$(echo "$INSTANCE_JSON" | jq -r '.uptime_mins // 0' | cut -d. -f1)
+  INSTANCE_UPTIME_MIN=$(( INSTANCE_UPTIME_MIN < 0 ? 0 : INSTANCE_UPTIME_MIN ))
+fi
 INSTANCE_AGE_HR=$(echo "$INSTANCE_JSON" | jq -r '.client_age // "—"')
 INSTANCE_DPH=$(echo "$INSTANCE_JSON" | jq -r '.dph_total // "—"')
 INSTANCE_DPH_FMT=$(printf "%.4f" "$INSTANCE_DPH" 2>/dev/null || echo "$INSTANCE_DPH")
