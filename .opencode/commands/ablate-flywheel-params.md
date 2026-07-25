@@ -142,11 +142,17 @@ acceptance gate, parallelism limits, and instance-only tuning.
 | XXL | 17–30 | 64 | 128 | 64 | 16 | 6 / 2 |
 
 The tier's `workers` and `dataloader_workers` values are proposed
-infrastructure overrides, not values resolved from `FLYWHEEL_CONFIG`. For all
-tiers, propose `batch_size=768` only when it is not itself being swept, and
-show both the config baseline and proposed override in the plan. When
-`batch_size` is a swept parameter, do not overwrite it in the instance-side
-YAML; each cell supplies `--batch-size` itself.
+infrastructure overrides, not values resolved from `FLYWHEEL_CONFIG`. Extract
+the config's current `workers`, `dataloader_workers`, and `batch_size` values
+before proposing overrides. Show a comparison table with `Setting`, `Config
+baseline`, `Proposed value`, and `Result` (`unchanged` or `override`) columns,
+and explicitly call out every difference. For all tiers, propose
+`batch_size=768` only when it is not itself being swept. When `batch_size` is a
+swept parameter, show `per-cell CLI override` as its proposed value, do not
+overwrite it in the instance-side YAML, and let each cell supply
+`--batch-size` itself. Include this comparison in the full run-plan
+confirmation; do not infer approval merely because the user confirmed the
+baseline config earlier.
 
 For tiers L, XL, and XXL, reserve CPU headroom for simulator coordination,
 training, TensorBoard, shell overhead, and cgroup scheduling:
@@ -293,8 +299,9 @@ fresh user-confirmed priority list before retrying.
 After acceptance, calculate and display `CPU_RESERVE`, `CPU_CAP`,
 `ABLATION_CONCURRENCY`, and `BATCH_COUNT`. Reassign every `RUN_PLAN` row's final
 batch number using that concurrency while preserving deterministic row order.
-Ask the user to confirm this computed launch plan and the selected `workers`,
-`dataloader_workers`, and batch-size policy before applying tuning.
+Repeat the baseline-versus-proposed comparison for `workers`,
+`dataloader_workers`, and `batch_size`. Ask the user to confirm this computed
+launch plan and every proposed override before applying tuning.
 
 ### 7. Tune the instance-side config
 
@@ -302,9 +309,11 @@ Do not edit, commit, push, or copy the local config. `FLYWHEEL_CONFIG` must
 exist on the confirmed `GIT_BRANCH`. Apply values only to that config in the
 cloned repository after Step 8 Batch 1.
 
-Use the selected tier's `workers` and `dataloader_workers`. Use `batch_size=768`
-unless `batch_size` is swept, in which case preserve the YAML baseline and let
-each run use its CLI override. Verify with `grep`.
+Apply the confirmed tier values for `workers` and `dataloader_workers`. Use
+`batch_size=768` unless `batch_size` is swept, in which case preserve the YAML
+baseline and let each run use its CLI override. Verify that the instance-side
+values exactly match the confirmed values; printing them with `grep` alone is
+not sufficient verification.
 
 ### 8. Setup and run batches on the instance
 
@@ -351,6 +360,12 @@ ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" \
    grep -E '^(workers|batch_size|dataloader_workers):' \
      FLYWHEEL_CONFIG"
 ```
+
+After printing the values, compare the parsed `workers` and
+`dataloader_workers` values to `TIER_WORKERS` and `TIER_DATALOADER_WORKERS` and
+fail Batch 2 on any mismatch. When `batch_size` is not swept, likewise require
+the parsed value to equal `768`; when it is swept, require it to remain equal to
+the confirmed config baseline.
 
 When `batch_size` is not swept, include:
 
