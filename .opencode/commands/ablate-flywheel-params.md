@@ -576,6 +576,10 @@ commit to match exactly and verify that `FLYWHEEL_CONFIG` exists. If the remote
 branch advanced after confirmation, the commit check fails; stop before uv
 setup and restart baseline confirmation instead of running unconfirmed code.
 
+Install system dependencies for headless MuJoCo rendering (EGL/GLFW) before
+uv setup. The base image lacks GL libraries and `$DISPLAY`. Export
+`MUJOCO_GL=egl` before every flywheel invocation.
+
 ```bash
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "git clone --branch 'GIT_BRANCH' --single-branch \
@@ -586,10 +590,13 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
     test -f \"FLYWHEEL_CONFIG\" && \
     printf 'Checked out branch: %s\nCommit: %s\nConfig: %s\n' \
       'GIT_BRANCH' 'GIT_COMMIT' \"FLYWHEEL_CONFIG\" && \
+   apt-get update -qq && apt-get install -y -qq \
+     libgl1-mesa-glx libglib2.0-0 libegl1-mesa libgles2-mesa libglfw3 && \
    curl -LsSf https://astral.sh/uv/install.sh | sh && \
    /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
-   /root/.local/bin/uv run python -c \
-     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'"
+   MUJOCO_GL=egl /root/.local/bin/uv run python -c \
+     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0)); \
+      import mujoco, glfw; print(\"MuJoCo\", mujoco.__version__, \"GLFW\", glfw.__version__)'"
 ```
 
 #### Batch 2 — tmux configuration and tier tuning
@@ -721,11 +728,19 @@ commit or copy these transient files back to the local repository.
 
 Each cell wrapper must:
 
-1. write `running` atomically to `status/{run_name}`;
-2. `cd /workspace/toy-pickplace`, then stream stdout and stderr to both its
+1. export `MUJOCO_GL=egl` for headless MuJoCo rendering;
+2. write `running` atomically to `status/{run_name}`;
+3. `cd /workspace/toy-pickplace`, then stream stdout and stderr to both its
    tmux pane and `logs/{run_name}.log` with `tee -a`;
-3. write `succeeded 0` or `failed EXIT_CODE` atomically to
+4. write `succeeded 0` or `failed EXIT_CODE` atomically to
    `status/{run_name}` before exiting with that same code.
+
+Materialize wrappers and the controller via base64 encoding. A
+double-quoted `ssh "..."` command consumes the inner shell quoting, so
+heredocs inside it silently expand variables on the remote side. Build the
+wrapper text locally, pipe it through `base64 -w0`, and decode on the
+instance. This avoids the quoting trap and keeps `CONTROL_DIR` paths baked
+correctly into the remote script.
 
 Use a temporary file plus `mv` for each status update. A missing tmux session
 is never a success signal; the terminal status file is authoritative. Set
