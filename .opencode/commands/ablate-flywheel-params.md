@@ -24,9 +24,12 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
 3. Ask the user to select the Git branch to clone, defaulting to `dev`, and set
    `GIT_BRANCH` to that exact value. Set
    `FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml`. Before
-   planning or provisioning, verify that this config is committed on the
-   selected remote branch and load its contents from that branch. Stop if it
-   does not exist there; a local-only file is not sufficient.
+   any grid or infrastructure planning, verify that this config is committed on
+   the selected remote branch and load its contents from that branch. Stop if it
+   does not exist there; a local-only file is not sufficient. Display the exact
+   branch, config path, and loaded config contents, then ask the user to confirm
+   this experiment baseline. Do not collect sweep values, select a tier, or
+   derive tuning overrides until the baseline is confirmed.
 4. Ask for an exact comma- or newline-separated value list for every requested
    parameter. Display its default resolved from `FLYWHEEL_CONFIG`, its CLI
    flag, and the corresponding argument validation constraints before asking.
@@ -43,13 +46,17 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    - a unique run name;
    - a unique tmux session;
    - all CLI overrides for that cell;
-   - its batch number after Step 6 determines concurrency.
-8. Include `GIT_BRANCH` and `FLYWHEEL_CONFIG` with the complete `RUN_PLAN`,
-   selected tier, search floor, physical-core acceptance gate, tuning values,
-   planned concurrency range, and estimated batch count. Ask the user to
-   confirm the branch, config, and entire plan together before Step 0. This is
-   the only branch and config confirmation; do not ask again after provisioning
-   or immediately before cloning.
+   - its provisional batch number based on the tier's maximum concurrency.
+   Final batch numbers are assigned only after Workflow Step 6 computes actual
+   concurrency from the accepted host.
+8. Include the already-confirmed `GIT_BRANCH` and `FLYWHEEL_CONFIG` for context
+   with the complete `RUN_PLAN`, selected tier, search floor, physical-core
+   acceptance gate, proposed tuning overrides, planned concurrency range, and
+   estimated batch count. Clearly distinguish config-resolved experiment values
+   from tier-derived infrastructure overrides. Ask the user to confirm the
+   entire run and infrastructure plan before Step 0, but do not ask them to
+   reconfirm the branch or config. Do not ask again after provisioning or
+   immediately before cloning.
 
 ### Supported parameter catalog
 
@@ -64,11 +71,15 @@ ablation parameters are:
 | `dagger_rounds` | `--dagger-rounds` | `10` | integer `>=1`; suggested `5, 10, 20` |
 | `intervention_steps` | `--intervention-steps` | `50` | integer `>=1`; suggested `25, 50, 100` |
 | `dagger_episodes` | `--dagger-episodes` | `50` | integer `>=1`; suggested `25, 50, 100` |
-| `batch_size` | `--batch-size` | `200` | integer `>=1`; suggested `200, 384, 768` |
+| `batch_size` | `--batch-size` | `768` | integer `>=1`; suggested `200, 384, 768` |
 | `early_stop_patience` | `--early-stop-patience` | `50` | integer `>=0`; suggested `25, 50, 100` |
 | `mode` | `--mode` | `mode-b` | `mode-a` or `mode-b` |
 | `eval_interval` | `--eval-interval` | `20` | integer `>=1`; suggested `10, 20, 40` |
 | `eval_episodes` | `--eval-episodes` | `25` | integer `>=1`; suggested `25, 50` |
+
+The defaults in this catalog document the current common baseline only. Values
+loaded from the confirmed remote `FLYWHEEL_CONFIG` are authoritative and must
+be shown instead whenever they differ.
 
 For additional parser-supported experiment parameters, validate against
 `flywheel.py` and apply the same value validation it enforces. Do not permit
@@ -130,9 +141,12 @@ acceptance gate, parallelism limits, and instance-only tuning.
 | XL | 9–16 | 64 | 128 | 64 | 8 | 6 / 2 |
 | XXL | 17–30 | 64 | 128 | 64 | 16 | 6 / 2 |
 
-For all tiers, set `batch_size=768` only when it is not itself being swept.
-When `batch_size` is a swept parameter, do not overwrite it in the
-instance-side YAML; each cell supplies `--batch-size` itself.
+The tier's `workers` and `dataloader_workers` values are proposed
+infrastructure overrides, not values resolved from `FLYWHEEL_CONFIG`. For all
+tiers, propose `batch_size=768` only when it is not itself being swept, and
+show both the config baseline and proposed override in the plan. When
+`batch_size` is a swept parameter, do not overwrite it in the instance-side
+YAML; each cell supplies `--batch-size` itself.
 
 For tiers L, XL, and XXL, reserve CPU headroom for simulator coordination,
 training, TensorBoard, shell overhead, and cgroup scheduling:
@@ -277,9 +291,10 @@ appears in `vastai show instances`, obtain a fresh offer snapshot, and obtain a
 fresh user-confirmed priority list before retrying.
 
 After acceptance, calculate and display `CPU_RESERVE`, `CPU_CAP`,
-`ABLATION_CONCURRENCY`, and `BATCH_COUNT`. Ask the user to confirm this
-computed launch plan and the selected `workers`, `dataloader_workers`, and
-batch-size policy before applying tuning.
+`ABLATION_CONCURRENCY`, and `BATCH_COUNT`. Reassign every `RUN_PLAN` row's final
+batch number using that concurrency while preserving deterministic row order.
+Ask the user to confirm this computed launch plan and the selected `workers`,
+`dataloader_workers`, and batch-size policy before applying tuning.
 
 ### 7. Tune the instance-side config
 
@@ -299,8 +314,8 @@ batches.
 #### Batch 1 — clone, uv, CUDA verification
 
 Substitute the confirmed `GIT_BRANCH` and `FLYWHEEL_CONFIG` before execution.
-Do not clone until the initial full-plan confirmation has established both
-values. After cloning, verify that the checked-out branch exactly matches
+Do not clone until the baseline and full run-plan confirmations are complete.
+After cloning, verify that the checked-out branch exactly matches
 `GIT_BRANCH` and that `FLYWHEEL_CONFIG` exists on that branch. Stop before uv
 setup or tuning if either verification fails.
 
