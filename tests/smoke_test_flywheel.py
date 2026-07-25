@@ -132,6 +132,8 @@ def main() -> None:
             "max_steps: 5000\n"
             "epochs: 7\n"
             "dagger_intervention_ratio: 0.7\n"
+            "dataloader_workers: 4\n"
+            "persistent_workers: true\n"
             "arch: mlp\n"
             "train_capture_hz: 60\n"
             "eval_capture_hz: 60\n"
@@ -152,6 +154,8 @@ def main() -> None:
         assert args.max_steps == 5000
         assert args.epochs == 9
         assert args.dagger_intervention_ratio == 0.7
+        assert args.dataloader_workers == 4
+        assert args.persistent_workers
         assert args.global_seed == 0
         assert args.arch == "mlp"
 
@@ -172,6 +176,29 @@ def main() -> None:
             sys.argv = original_argv
         assert args.global_seed == 11
         assert args.arch == "vision_mlp"
+        assert not args.persistent_workers
+
+        config_path.write_text(
+            "arch: vision_mlp\n"
+            "train_capture_hz: 60\n"
+            "eval_capture_hz: 60\n"
+            "dataloader_workers: 0\n"
+            "persistent_workers: true\n"
+        )
+        try:
+            sys.argv = [
+                "flywheel.py",
+                "--config",
+                str(config_path),
+            ]
+            try:
+                parse_args()
+            except SystemExit as error:
+                assert error.code == 2
+            else:
+                raise AssertionError("persistent workers with zero workers were accepted")
+        finally:
+            sys.argv = original_argv
 
         expert_dir = expert_npz_dir_for_run(run_name="run-test")
         assert expert_dir == Path("data/flywheel/run-test/expert")

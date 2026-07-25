@@ -72,6 +72,7 @@ def run_training(
         batch_size=config["batch_size"],
         sample_seed=config["sample_seed"],
         dataloader_workers=config["dataloader_workers"],
+        persistent_workers=config["persistent_workers"],
         device=device,
     )
 

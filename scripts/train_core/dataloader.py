@@ -10,8 +10,12 @@ def build_weighted_dataloader(
     batch_size: int,
     sample_seed: int,
     dataloader_workers: int,
+    persistent_workers: bool,
     device: torch.device,
 ) -> DataLoader:
+    if persistent_workers and dataloader_workers == 0:
+        raise ValueError("persistent workers require dataloader_workers > 0")
+
     sampler = WeightedRandomSampler(
         weights=dataset.sample_weights,
         num_samples=dataset.samples_per_epoch,
@@ -24,6 +28,7 @@ def build_weighted_dataloader(
         sampler=sampler,
         num_workers=dataloader_workers,
         pin_memory=device.type == "cuda" and dataloader_workers > 0,
+        persistent_workers=persistent_workers,
     )
 
 

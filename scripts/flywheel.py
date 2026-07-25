@@ -288,6 +288,7 @@ def run_flywheel(
     eval_max_steps: int,
     workers: int,
     dataloader_workers: int = 0,
+    persistent_workers: bool = False,
     early_stop_patience: int,
     expert_ratio: float,
     dagger_intervention_ratio: float,
@@ -365,6 +366,7 @@ def run_flywheel(
         "eval_selection_mode": eval_selection_mode,
         "workers": workers,
         "dataloader_workers": dataloader_workers,
+        "persistent_workers": persistent_workers,
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "dagger_intervention_ratio": dagger_intervention_ratio,
@@ -384,7 +386,8 @@ def run_flywheel(
     print(
         f"DAgger rounds: {num_dagger_rounds} | Max epochs: {num_epochs} | "
         f"Batch size: {batch_size} | "
-        f"DataLoader workers: {dataloader_workers}"
+        f"DataLoader workers: {dataloader_workers} | "
+        f"Persistent workers: {'yes' if persistent_workers else 'no'}"
     )
     print(
         f"Expert ratio: {expert_ratio:.2f} | "
@@ -436,6 +439,7 @@ def run_flywheel(
                 eval_workers=workers,
                 eval_capture_hz=eval_capture_hz,
                 dataloader_workers=dataloader_workers,
+                persistent_workers=persistent_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
             )
@@ -577,6 +581,7 @@ def run_flywheel(
                 eval_workers=workers,
                 eval_capture_hz=eval_capture_hz,
                 dataloader_workers=dataloader_workers,
+                persistent_workers=persistent_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
             )
@@ -683,6 +688,12 @@ def parse_args():
     )
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--dataloader-workers", type=int, default=0)
+    parser.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Keep DataLoader worker processes alive between epochs",
+    )
     parser.add_argument("--early-stop-patience", type=int, default=50)
     parser.add_argument("--expert-ratio", type=float, default=0.5)
     parser.add_argument(
@@ -758,6 +769,8 @@ def parse_args():
         parser.error("--workers must be at least 1")
     if args.dataloader_workers < 0:
         parser.error("--dataloader-workers must be non-negative")
+    if args.persistent_workers and args.dataloader_workers == 0:
+        parser.error("--persistent-workers requires --dataloader-workers > 0")
     if args.early_stop_patience < 0:
         parser.error("--early-stop-patience must be non-negative")
     if not 0.0 < args.expert_ratio < 1.0:
@@ -802,6 +815,7 @@ def main():
         eval_max_steps=args.eval_max_steps,
         workers=args.workers,
         dataloader_workers=args.dataloader_workers,
+        persistent_workers=args.persistent_workers,
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         dagger_intervention_ratio=args.dagger_intervention_ratio,

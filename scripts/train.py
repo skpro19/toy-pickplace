@@ -42,6 +42,7 @@ def train(
     eval_max_steps: int = 1400,
     eval_workers: int = 1,
     dataloader_workers: int = 0,
+    persistent_workers: bool = False,
     early_stop_patience: int = 50,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
 ) -> Path:
@@ -63,6 +64,7 @@ def train(
         "eval_workers": eval_workers,
         "eval_capture_hz": eval_capture_hz,
         "dataloader_workers": dataloader_workers,
+        "persistent_workers": persistent_workers,
         "early_stop_patience": early_stop_patience,
         "eval_selection_mode": eval_selection_mode,
     }
@@ -142,6 +144,12 @@ def parse_args():
     )
     parser.add_argument("--dataloader-workers", type=int, default=0)
     parser.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Keep DataLoader worker processes alive between epochs",
+    )
+    parser.add_argument(
         "--early-stop-patience",
         type=int,
         default=50,
@@ -171,6 +179,10 @@ def parse_args():
         parser.error("--eval-capture-hz is required")
     if args.eval_capture_hz <= 0.0:
         parser.error("--eval-capture-hz must be positive")
+    if args.dataloader_workers < 0:
+        parser.error("--dataloader-workers must be non-negative")
+    if args.persistent_workers and args.dataloader_workers == 0:
+        parser.error("--persistent-workers requires --dataloader-workers > 0")
     if args.early_stop_patience < 0:
         parser.error("--early-stop-patience must be non-negative")
     if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
@@ -219,6 +231,7 @@ def main():
         eval_max_steps=args.eval_max_steps,
         eval_workers=args.eval_workers,
         dataloader_workers=args.dataloader_workers,
+        persistent_workers=args.persistent_workers,
         early_stop_patience=args.early_stop_patience,
         eval_selection_mode=args.eval_selection_mode,
     )
