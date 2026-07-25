@@ -17,6 +17,8 @@ self-contained: follow this workflow without consulting another runbook.
 5. Confirm actual concurrency and instance-side config overrides.
 6. Clone, tune, launch the durable controller, and start backup.
 7. Monitor controller state, handle failures, and print recovery commands.
+8. Optionally run large held-out evaluation on the instance and upload only
+   each run's `final_scores.json`.
 
 ## Command arguments and grid planning
 
@@ -29,6 +31,15 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    `dataloader_workers`), reject `global_seed` because every cell must share the
    confirmed root seed, and reject duplicate normalized names. Show the
    supported parameter catalog and stop for an invalid request.
+
+   **Policy: the YAML config on disk is never modified.** All experiment
+   parameter overrides must be supplied as CLI flags (`--intervention-threshold`,
+   `--dagger-rounds`, etc.) to the flywheel invocation. Infrastructure values
+   (`workers`, `dataloader_workers`, `batch_size`) are always left at their
+   committed defaults. The instance-side `Batch 2` tuning step (tier-tuning
+   `sed` overrides) and its Python YAML assertion are skipped entirely. The
+   `workers`/`dataloader_workers` columns in the tier table are informational
+   only — the config's committed values are always authoritative.
 3. Ask the user to select the Git branch to clone, defaulting to `dev`, and set
    `GIT_BRANCH` to that exact value. Set
    `FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml`. Before
@@ -94,12 +105,13 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
 8. Include the already-confirmed `GIT_BRANCH`, `GIT_COMMIT`, and
    `FLYWHEEL_CONFIG` for context with the complete `RUN_PLAN`, selected tier,
    search floor, physical-core acceptance gate, proposed tuning overrides,
-   planned concurrency range, and estimated batch count. Clearly distinguish
-   config-resolved experiment values from tier-derived infrastructure
-   overrides. Ask the user to confirm the entire run and infrastructure plan
-   before Step 0, but do not ask them to reconfirm the baseline. Do not
-   reconfirm it after provisioning or immediately before cloning; the
-   post-provision launch confirmation remains required.
+   planned concurrency range, estimated batch count, and the exact resolved
+   `BACKUP_PREFIX`. Clearly distinguish config-resolved experiment values from
+   tier-derived infrastructure overrides. Ask the user to explicitly confirm
+   the entire run and infrastructure plan, including the HF backup prefix name,
+   before Step 0. Do not ask them to reconfirm the baseline. Do not reconfirm it
+   after provisioning or immediately before cloning; the post-provision launch
+   confirmation remains required.
 
 ### Supported parameter catalog
 
@@ -161,13 +173,15 @@ form only when the two parameters are exactly `intervention_threshold` and
 Set:
 
 ```text
-INSTANCE_LABEL=toy-pickplace-ablation-{parameter-slugs}
+INSTANCE_LABEL=toy-pickplace-ablation-{parameter-slugs}-{UNIX_TIME_NS}
 GLOBAL_SEED=<global_seed resolved from the selected flywheel config>
 BACKUP_PREFIX=ablation-{parameter-slugs}-seed{GLOBAL_SEED}-YYYYMMDD-HHMMSS
 ```
 
-Include the resolved `GLOBAL_SEED` in the displayed run plan and use the same
-value in every grid-cell command.
+Set `UNIX_TIME_NS=$(date +%s%N)` once before constructing `INSTANCE_LABEL`.
+This gives each workflow invocation a collision-resistant instance label. Include
+the resolved `GLOBAL_SEED` in the displayed run plan and use the same value in
+every grid-cell command.
 
 ## Tier routing
 
@@ -175,41 +189,23 @@ Select exactly one tier from the confirmed `GRID_CELLS`. The tier determines
 the search `cpu_cores_effective` minimum, the post-provision physical-core
 acceptance gate, parallelism limits, and instance-only tuning.
 
-| Tier | Grid cells | Search effective vCPU minimum | Prefer effective vCPUs | SSH physical-core minimum | Maximum concurrent cells | `workers` / `dataloader_workers` |
+| Tier | Grid cells | Search effective vCPU minimum | Prefer effective vCPUs | SSH physical-core minimum | Maximum concurrent cells | `workers` / `dataloader_workers` (informational) |
 |---|---:|---:|---:|---:|---:|---:|
-| S | 1 | 24 | — | 24 | 1 | 12 / 0 |
-| M | 2–4 | 32 | — | 24 | 4 | 6 / 2 |
-| L | 5–8 | 48 | 64 | 48 | 8 | 6 / 2 |
-| XL | 9–16 | 64 | 128 | 64 | 8 | 6 / 2 |
-| XXL | 17–30 | 64 | 128 | 64 | 16 | 6 / 2 |
+| S | 1 | 24 | — | 24 | 1 | config-default / config-default |
+| M | 2–4 | 32 | — | 24 | 4 | config-default / config-default |
+| L | 5–8 | 48 | 64 | 48 | 8 | config-default / config-default |
+| XL | 9–16 | 64 | 128 | 64 | 8 | config-default / config-default |
+| XXL | 17–30 | 64 | 128 | 64 | 16 | config-default / config-default |
 
-### Why these tuning values
+The YAML config is never modified; `workers`, `dataloader_workers`, and
+`batch_size` always use the committed defaults from `FLYWHEEL_CONFIG`.
 
-The single-run benchmark favored `workers=12`: compared with six workers,
-evaluation was about 12% faster and DAgger collection about 31% faster.
-`dataloader_workers=0` avoids process overhead for the single in-memory
-training dataset.
+### YAML config is never modified
 
-The four-run concurrency benchmark favored `workers=6` and
-`dataloader_workers=2` per run. It achieved a 3.779x wall-time speedup over
-sequential execution, reduced wall time by 73.54%, and produced identical
-checkpoint selections and evaluation metrics. At `batch_size=768`, two
-DataLoader workers improved the training microbenchmark by 14.5%. Batch size
-768 is retained instead of faster-throughput sizes because it produced the
-strongest placement result in the controlled quality benchmark.
-
-The tier's `workers` and `dataloader_workers` values are proposed
-infrastructure overrides, not values resolved from `FLYWHEEL_CONFIG`. Extract
-the config's current `workers`, `dataloader_workers`, and `batch_size` values
-before proposing overrides. Show a comparison table with `Setting`, `Config
-baseline`, `Proposed value`, and `Result` (`unchanged` or `override`) columns,
-and explicitly call out every difference. For all tiers, propose
-`batch_size=768` only when it is not itself being swept. When `batch_size` is a
-swept parameter, show `per-cell CLI override` as its proposed value, do not
-overwrite it in the instance-side YAML, and let each cell supply
-`--batch-size` itself. Include this comparison in the full run-plan
-confirmation; do not infer approval merely because the user confirmed the
-baseline config earlier.
+All infrastructure values (`workers`, `dataloader_workers`, `batch_size`) use
+the committed defaults from `FLYWHEEL_CONFIG`. Experiment parameter overrides
+are supplied exclusively as CLI flags to the flywheel invocation. The
+instance-side tuning step (Batch 2) is skipped entirely.
 
 For tiers L, XL, and XXL, reserve CPU headroom for simulator coordination,
 training, TensorBoard, shell overhead, and cgroup scheduling:
@@ -546,21 +542,17 @@ benchmarked unless a separate workload run was actually performed.
 After acceptance, calculate and display `CPU_RESERVE`, `CPU_CAP`,
 `ABLATION_CONCURRENCY`, and `BATCH_COUNT`. Reassign every `RUN_PLAN` row's final
 batch number using that concurrency while preserving deterministic row order.
-Repeat the baseline-versus-proposed comparison for `workers`,
-`dataloader_workers`, and `batch_size`. Ask the user to confirm this computed
-launch plan and every proposed override before applying tuning.
+Print the config's committed `workers`, `dataloader_workers`, and `batch_size`
+values and note that no instance-side overrides will be applied. Ask the user to
+confirm this computed launch plan before proceeding.
 
 ### 7. Confirm the instance-side tuning policy
 
-Do not edit, commit, push, or copy the local config. `FLYWHEEL_CONFIG` must
-exist on the confirmed `GIT_BRANCH`. The actual edits happen only in the cloned
-repository during Step 8 Batch 2.
-
-Apply the confirmed tier values for `workers` and `dataloader_workers`. Use
-`batch_size=768` unless `batch_size` is swept, in which case preserve the YAML
-baseline and let each run use its CLI override. Verify that the instance-side
-values exactly match the confirmed values; printing them with `grep` alone is
-not sufficient verification.
+No instance-side config overrides are applied. The YAML config on the committed
+branch is authoritative for `workers`, `dataloader_workers`, and `batch_size`.
+Experiment parameter overrides are supplied only as per-cell CLI flags. Step 8
+Batch 2 (tier-tuning `sed` overrides) and its Python YAML assertion are skipped
+entirely.
 
 ### 8. Setup and run batches on the instance
 
@@ -599,40 +591,17 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
       import mujoco, glfw; print(\"MuJoCo\", mujoco.__version__, \"GLFW\", glfw.__version__)'"
 ```
 
-#### Batch 2 — tmux configuration and tier tuning
+#### Batch 2 — tmux configuration only (no tier tuning)
 
-Substitute confirmed `TIER_WORKERS`, `TIER_DATALOADER_WORKERS`, and
-`EXPECTED_BATCH_SIZE`. Set `EXPECTED_BATCH_SIZE=768` when batch size is not
-swept; otherwise use the confirmed YAML baseline because per-cell CLI flags
-provide the swept values.
+Skip all YAML overrides. The committed config is authoritative for `workers`,
+`dataloader_workers`, and `batch_size`. Only configure tmux:
 
 ```bash
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "set -e; \
    touch ~/.no_auto_tmux; \
-   printf '%s\n' 'set -g mouse on' > ~/.tmux.conf; \
-    cd /workspace/toy-pickplace; \
-    sed -i -E \
-      -e 's/^workers:.*/workers: TIER_WORKERS/' \
-      -e 's/^dataloader_workers:.*/dataloader_workers: TIER_DATALOADER_WORKERS/' \
-      FLYWHEEL_CONFIG; \
-    grep -E '^(workers|batch_size|dataloader_workers):' \
-      FLYWHEEL_CONFIG; \
-    /root/.local/bin/uv run python -c \
-      'import sys, yaml; c = yaml.safe_load(open(sys.argv[1])); expected = dict(workers=int(sys.argv[2]), dataloader_workers=int(sys.argv[3]), batch_size=int(sys.argv[4])); actual = {key: c.get(key) for key in expected}; assert actual == expected, (expected, actual)' \
-      FLYWHEEL_CONFIG TIER_WORKERS TIER_DATALOADER_WORKERS EXPECTED_BATCH_SIZE"
+   printf '%s\n' 'set -g mouse on' > ~/.tmux.conf"
 ```
-
-The Python assertion parses YAML and fails Batch 2 on any mismatch; the `grep`
-output is for the user-readable audit trail.
-
-When `batch_size` is not swept, include:
-
-```bash
--e 's/^batch_size:.*/batch_size: 768/'
-```
-
-in the `sed` expression.
 
 #### Batch 3 — start and verify TensorBoard, then create local wrappers
 
@@ -959,15 +928,197 @@ atomically write `skipped 0` to `status/{run_name}` using a temporary file and
 terminal status from being mistaken for the new attempt and lets the controller
 resume at the failed batch without rerunning successful cells.
 
-### 10. Follow-up download and replay
+### 10. Instance-side held-out evaluation and JSON-only upload
 
-After the grid and final backup freshness check have completed, print:
+After `state/completed` exists and the final backup freshness check passes, ask
+whether to evaluate every round's `best.pt` on a larger held-out set before the
+instance is destroyed. This stage is optional, but when confirmed it is part of
+the durable workflow and must finish or fail explicitly.
+
+Confirm these settings before launch:
+
+| Setting | Default | Constraint |
+|---|---:|---|
+| `FINAL_EVAL_EPISODES` | `100` | integer at least 5 and divisible by 5 |
+| `FINAL_EVAL_SEED` | `20260716` | non-negative integer |
+| `FINAL_EVAL_WORKERS` | committed config `workers` | integer at least 1 |
+
+`scripts/final_score.py` derives five held-out seeds from
+`FINAL_EVAL_SEED`, divides `FINAL_EVAL_EPISODES` evenly between them, and
+evaluates every round's `best.pt`. Process `RUN_PLAN` rows sequentially so one
+GPU is never shared by multiple held-out evaluations.
+
+Run this stage entirely on the accepted instance. Do not download checkpoints,
+metrics, or results to the development machine. Instance paths use the original
+`RUN_PLAN` run names, such as `checkpoints/flywheel/RUN_NAME` and
+`results/flywheel/RUN_NAME`; `BACKUP_PREFIX` is an HF session namespace and is
+not part of those instance-side paths.
+
+#### Stop the periodic backup after final freshness
+
+The periodic `ckpt-bkp` uploader uploads the whole results component and would
+also upload plots generated by `final_score.py`. Only after the final backup
+freshness check has passed, intentionally stop it and verify it is gone:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "test -f '$CONTROL_DIR/state/completed' && \
+   test '$CONTROL_DIR/state/backup-cycle-started' \
+     -nt '$CONTROL_DIR/state/completed' && \
+   test '$CONTROL_DIR/state/backup-last-succeeded' \
+     -nt '$CONTROL_DIR/state/backup-cycle-started' && \
+   tmux kill-session -t ckpt-bkp && \
+   ! tmux has-session -t ckpt-bkp 2>/dev/null"
+```
+
+This is the intentional post-completion stop allowed by Step 9. Do not stop
+`ckpt-bkp` before final freshness passes.
+
+#### Materialize the durable evaluator
+
+Create `CONTROL_DIR/heldout-eval.sh` via the same local-build, base64-transfer
+method used for cell wrappers. Do not interpolate secrets into its text. The
+script must:
+
+1. read `CONTROL_DIR/plan` in deterministic order and process each unique run
+   name once;
+2. verify `results/flywheel/{run_name}/metrics.json` and at least one
+   `checkpoints/flywheel/{run_name}/round-*/best.pt` exist before evaluating;
+3. archive an existing `final_scores.json` under
+   `state/heldout-eval-history/` before a confirmed rerun instead of deleting or
+   overwriting the prior result without a record;
+4. run `scripts/final_score.py --run-name {run_name}` with the confirmed
+   `--eval-episodes`, `--final-eval-seed`, and `--workers`, exporting
+   `MUJOCO_GL=egl`;
+5. stream output to both the tmux pane and
+   `logs/heldout-eval-{run_name}.log`, preserving the evaluation exit code with
+   `pipefail` and `${PIPESTATUS[0]}`;
+6. validate that `results/flywheel/{run_name}/final_scores.json` is non-empty,
+   valid JSON, records the confirmed evaluation settings, and contains a result
+   for every discovered `best.pt` round;
+7. upload exactly that JSON file with `HfApi.upload_file` to
+   `BACKUP_PREFIX/results/{run_name}/final_scores.json`;
+8. verify that exact path appears in `HfApi.list_repo_files`;
+9. atomically write per-run running, succeeded, or failed status and stop on
+   the first failure without evaluating later runs;
+10. atomically write `state/heldout-completed` only after every run's JSON was
+    uploaded and verified.
+
+Use `HfApi.upload_file`, not `scripts/hf_backup.py upload --components
+results`: component upload would include `metrics.json`, plots, and any other
+files in the results directories. `final_score.py` may generate plots on the
+instance, but this stage must not upload them. They can be regenerated later
+from `final_scores.json` with `final_score.py --plot-only`.
+
+The evaluator's exact-file upload and verification should use this pattern,
+with values passed as arguments rather than embedded credentials:
+
+```bash
+/root/.local/bin/uv run python -c '
+import json
+import os
+import sys
+from pathlib import Path
+
+from huggingface_hub import HfApi
+
+result_path = Path(sys.argv[1])
+hf_path = sys.argv[2]
+expected_episodes = int(sys.argv[3])
+expected_seed = int(sys.argv[4])
+expected_rounds = int(sys.argv[5])
+
+data = json.loads(result_path.read_text())
+assert data["eval_episodes"] == expected_episodes, data["eval_episodes"]
+assert data["final_eval_seed"] == expected_seed, data["final_eval_seed"]
+assert len(data["rounds"]) == expected_rounds, len(data["rounds"])
+
+api = HfApi(token=os.environ["HF_TOKEN"])
+api.upload_file(
+    path_or_fileobj=str(result_path),
+    path_in_repo=hf_path,
+    repo_id="skpro19/toy-pickplace-flywheel",
+    repo_type="model",
+    commit_message="add held-out evaluation scores",
+)
+assert hf_path in api.list_repo_files(
+    repo_id="skpro19/toy-pickplace-flywheel",
+    repo_type="model",
+), hf_path
+' \
+  "results/flywheel/$run_name/final_scores.json" \
+  "$BACKUP_PREFIX/results/$run_name/final_scores.json" \
+  "$FINAL_EVAL_EPISODES" "$FINAL_EVAL_SEED" "$expected_rounds"
+```
+
+Start the materialized script once in a remote `heldout-eval` tmux session.
+Transfer `HF_TOKEN` over SSH standard input only, let the new tmux session
+inherit it, then immediately remove it from tmux's global environment and the
+remote setup shell:
+
+```bash
+printf '%s\n' "$HF_TOKEN" | \
+  ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" "
+    set -e
+    IFS= read -r HF_TOKEN
+    test -n \"\$HF_TOKEN\" || exit 1
+    ! tmux has-session -t heldout-eval 2>/dev/null || {
+      printf '%s\\n' 'ERROR: heldout-eval already exists' >&2
+      exit 1
+    }
+    tmux set-environment -g HF_TOKEN \"\$HF_TOKEN\"
+    trap 'tmux set-environment -gu HF_TOKEN' EXIT
+    tmux new-session -d -s heldout-eval \
+      'exec bash $CONTROL_DIR/heldout-eval.sh'
+    tmux set-environment -gu HF_TOKEN
+    trap - EXIT
+    unset HF_TOKEN
+    tmux has-session -t heldout-eval
+  "
+```
+
+The inherited token exists only in the evaluator process environment. Never
+write it to a file, command argument, log, status marker, or pane output.
+
+#### Monitor held-out evaluation
+
+Use state files as authoritative. A missing tmux session is not success:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "cd '$CONTROL_DIR' && \
+   { test ! -f state/heldout-completed || printf '%s\n' 'heldout: completed'; } && \
+   { test ! -f state/heldout-failed || cat state/heldout-failed; } && \
+   find state -maxdepth 1 -type f -name 'heldout-*.status' \
+     -printf '%f: ' -exec cat {} \; && \
+   { tmux has-session -t heldout-eval 2>/dev/null && \
+       printf '%s\n' 'heldout session: active' || \
+       printf '%s\n' 'heldout session: stopped'; }"
+```
+
+Attach with
+`ssh -t -p "$PORT" "root@$HOST" "tmux attach -t heldout-eval"`.
+Use the persisted per-run log after a process exits.
+
+Do not report held-out evaluation as complete or destroy the instance until
+`state/heldout-completed` exists and every expected
+`BACKUP_PREFIX/results/{run_name}/final_scores.json` path has been verified on
+HF. On failure, report the run, exit code, and log path; do not auto-retry or
+upload a stale JSON. Ask the user whether to retry or stop.
+
+### 11. Follow-up download and replay
+
+After the grid and final backup freshness check have completed, print the
+following as optional commands only. Do not download anything automatically.
+If the held-out stage ran, `final_scores.json` is already on HF and its plots
+can be recreated after an explicitly requested download with `--plot-only`:
 
 ```bash
 set -a; . ./.env; set +a
 uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel \
   download BACKUP_PREFIX/RUN_NAME
 uv run python scripts/final_score.py --run-name RUN_NAME
+uv run python scripts/final_score.py --run-name RUN_NAME --plot-only
 ```
 
 Generate one `final_score.py` command per `RUN_PLAN` row. Use one local
@@ -979,7 +1130,9 @@ Provisioning setup is complete after the selected instance passes the tier
 gate, TensorBoard, `ablation-controller`, `ckpt-bkp`, and local wrappers are
 verified. Grid execution completes only when `state/completed` exists and the
 final backup freshness check passes, or a failure has been explicitly handled
-by the user.
+by the user. If the user confirms held-out evaluation, the overall workflow is
+complete only when `state/heldout-completed` exists and every expected
+`final_scores.json` has been verified on HF.
 
 Print:
 
@@ -996,6 +1149,8 @@ Print:
 - local `LOCAL_SSH_SESSION` and `LOCAL_TB_SESSION` attach commands;
 - the indexed local TensorBoard URL;
 - HF backup prefix, download commands, and `final_score.py` commands;
+- held-out episode count, root seed, workers, state, per-run log and tmux attach
+  commands, and exact uploaded HF JSON paths when the held-out stage runs;
 - cleanup destroy command.
 
 ## Safety notes
@@ -1007,3 +1162,5 @@ Print:
   gate.
 - This command rejects grids larger than 30 cells rather than silently changing
   the experiment design or provisioning more instances.
+- Never use a component-wide results upload for held-out evaluation. Upload and
+  verify only `BACKUP_PREFIX/results/{run_name}/final_scores.json`.
