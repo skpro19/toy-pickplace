@@ -6,7 +6,7 @@ from typing import TypedDict
 import mujoco
 import numpy as np
 
-from constant import ACTION_DIMS
+from constant import ACTION_DIMS, DEFAULT_CAPTURE_HZ
 from expert import Phase, PickPlaceController
 from policy_runtimes.types import PolicyRuntime
 from rollout_core.dagger import DEFAULT_INTERVENTION_STEPS, select_dagger_control
@@ -46,6 +46,7 @@ def run_policy_episode(
     intervention_mode: str = "beta",
     intervention_threshold: float | None = None,
     intervention_steps: int = DEFAULT_INTERVENTION_STEPS,
+    capture_hz: float = DEFAULT_CAPTURE_HZ,
     rng: np.random.Generator,
     episode_seed: int | None = None,
     log_rollout: bool = False,
@@ -55,6 +56,14 @@ def run_policy_episode(
     control_callback=None,
 ) -> EpisodeResult:
     """Run one policy episode, stopping when the controller reaches DONE."""
+    if capture_hz <= 0.0:
+        raise ValueError(f"capture_hz must be positive, got {capture_hz}")
+    sim_hz = 1.0 / sim.model.opt.timestep
+    if capture_hz > sim_hz:
+        raise ValueError(
+            f"capture_hz ({capture_hz}) cannot exceed simulation rate ({sim_hz})"
+        )
+
     observations: list[np.ndarray] = []
     img_observations: list[np.ndarray] = []
     expert_actions: list[np.ndarray] = []
@@ -96,6 +105,11 @@ def run_policy_episode(
             log_buffers["dagger_obs"] = observations
             log_buffers["dagger_actions"] = expert_actions
 
+    capture_period = 1.0 / capture_hz
+    next_capture_time = float(sim.data.time)
+    held_policy_action: np.ndarray | None = None
+    action_to_execute: np.ndarray | None = None
+
     steps = 0
     while (
         (should_stop is None or not should_stop())
@@ -103,66 +117,95 @@ def run_policy_episode(
         and (viewer is None or viewer.is_running())
         and (controller is None or controller.phase != Phase.DONE)
     ):
-        obs = runtime.observe(sim=sim)
-        if dagger:
-            observations.append(obs.copy())
-            if controller is None:
-                raise RuntimeError("DAgger rollout requires a controller")
-            phases.append(controller.phase.value)
-
-        step = runtime.act(sim=sim, observation=obs)
-        policy_action_np = step["action"]
-        if dagger and step["img_obs"] is not None:
-            img_observations.append(step["img_obs"].copy())
-
+        capture_due = sim.data.time + 1e-9 >= next_capture_time
+        in_expert_burst = intervention_steps_remaining > 0
+        use_full_rate_expert = (
+            dagger
+            and controller is not None
+            and (in_expert_burst or beta == 1.0)
+        )
         execute_expert_action = False
-        expert_action = None
-        if dagger and controller is not None:
-            expert_action = controller.compute_actions()
-            expert_actions.append(expert_action)
-            current_arm_disagreement = float(
-                np.linalg.norm(
-                    expert_action[: ACTION_DIMS - 1]
-                    - policy_action_np[: ACTION_DIMS - 1]
-                )
-            )
-            arm_disagreement.append(current_arm_disagreement)
-            current_gripper_disagreement = bool(
-                (expert_action[ACTION_DIMS - 1] >= 127.5)
-                != (policy_action_np[ACTION_DIMS - 1] >= 127.5)
-            )
-            gripper_disagreement.append(current_gripper_disagreement)
-            (
-                execute_expert_action,
-                intervention_steps_remaining,
-            ) = select_dagger_control(
-                mode=intervention_mode,
-                beta=beta,
-                arm_disagreement=current_arm_disagreement,
-                gripper_disagreement=current_gripper_disagreement,
-                intervention_threshold=intervention_threshold,
-                intervention_steps=intervention_steps,
-                intervention_steps_remaining=intervention_steps_remaining,
-                rng=rng,
-            )
 
-        action_to_execute = expert_action if execute_expert_action else policy_action_np
+        if use_full_rate_expert:
+            expert_action = controller.compute_actions()
+            action_to_execute = expert_action
+            execute_expert_action = True
+            if in_expert_burst:
+                intervention_steps_remaining -= 1
+        elif capture_due:
+            obs = runtime.observe(sim=sim)
+            if dagger:
+                observations.append(obs.copy())
+                if controller is None:
+                    raise RuntimeError("DAgger rollout requires a controller")
+                phases.append(controller.phase.value)
+
+            step = runtime.act(sim=sim, observation=obs)
+            policy_action_np = step["action"]
+            if dagger and step["img_obs"] is not None:
+                img_observations.append(step["img_obs"].copy())
+
+            expert_action = None
+            if dagger and controller is not None:
+                expert_action = controller.compute_actions()
+                expert_actions.append(expert_action)
+                current_arm_disagreement = float(
+                    np.linalg.norm(
+                        expert_action[: ACTION_DIMS - 1]
+                        - policy_action_np[: ACTION_DIMS - 1]
+                    )
+                )
+                arm_disagreement.append(current_arm_disagreement)
+                current_gripper_disagreement = bool(
+                    (expert_action[ACTION_DIMS - 1] >= 127.5)
+                    != (policy_action_np[ACTION_DIMS - 1] >= 127.5)
+                )
+                gripper_disagreement.append(current_gripper_disagreement)
+                (
+                    execute_expert_action,
+                    intervention_steps_remaining,
+                ) = select_dagger_control(
+                    mode=intervention_mode,
+                    beta=beta,
+                    arm_disagreement=current_arm_disagreement,
+                    gripper_disagreement=current_gripper_disagreement,
+                    intervention_threshold=intervention_threshold,
+                    intervention_steps=intervention_steps,
+                    intervention_steps_remaining=intervention_steps_remaining,
+                    rng=rng,
+                )
+
+            action_to_execute = (
+                expert_action if execute_expert_action else policy_action_np
+            )
+            held_policy_action = policy_action_np.copy()
+
+            if dagger:
+                policy_action_history.append(policy_action_np.copy())
+                executed_actions.append(action_to_execute.copy())
+                expert_action_mask.append(execute_expert_action)
+
+            if log_rollout:
+                append_step_log(
+                    buffers=log_buffers,
+                    obs=step["obs_tensor"],
+                    actions=step["policy_actions"],
+                    executed_actions=action_to_execute,
+                    joints_pred_raw=step["joints_pred"],
+                    joints_pred_unnorm=step["joints_pred_unnorm"],
+                )
+
+            next_capture_time += capture_period
+        else:
+            if held_policy_action is None:
+                raise RuntimeError("Policy action missing before first capture tick")
+            action_to_execute = held_policy_action
+
+        if action_to_execute is None:
+            raise RuntimeError("No action selected for simulation step")
+
         if control_callback is not None:
             control_callback(steps, execute_expert_action)
-        if dagger:
-            policy_action_history.append(policy_action_np.copy())
-            executed_actions.append(action_to_execute.copy())
-            expert_action_mask.append(execute_expert_action)
-
-        if log_rollout:
-            append_step_log(
-                buffers=log_buffers,
-                obs=step["obs_tensor"],
-                actions=step["policy_actions"],
-                executed_actions=action_to_execute,
-                joints_pred_raw=step["joints_pred"],
-                joints_pred_unnorm=step["joints_pred_unnorm"],
-            )
 
         sim.data.ctrl[: sim.model.nu] = action_to_execute
         mujoco.mj_step(sim.model, sim.data)

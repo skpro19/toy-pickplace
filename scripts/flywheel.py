@@ -280,6 +280,8 @@ def run_flywheel(
     batch_size: int,
     dagger_episodes: int,
     rollout_max_steps: int,
+    train_capture_hz: float,
+    eval_capture_hz: float,
     eval_interval: int,
     eval_seed: int,
     eval_episodes: int,
@@ -313,7 +315,8 @@ def run_flywheel(
     )
     print(
         f"Policy arch: {arch} | Expert images: "
-        f"{'yes' if save_expert_images else 'no'}"
+        f"{'yes' if save_expert_images else 'no'} | "
+        f"Train capture: {train_capture_hz:g} Hz"
     )
     print(f"Output: {expert_npz_dir}")
     collection_started_at = time.perf_counter()
@@ -322,6 +325,7 @@ def run_flywheel(
         out_dir=expert_npz_dir,
         seed=expert_seed,
         max_steps=max_steps,
+        capture_hz=train_capture_hz,
         save_images=save_expert_images,
     )
     validate_expert_npz_for_arch(
@@ -352,6 +356,8 @@ def run_flywheel(
         "intervention_steps": intervention_steps,
         "dagger_episodes": dagger_episodes,
         "rollout_max_steps": rollout_max_steps,
+        "train_capture_hz": train_capture_hz,
+        "eval_capture_hz": eval_capture_hz,
         "eval_interval": eval_interval,
         "eval_seed": eval_seed,
         "eval_episodes": eval_episodes,
@@ -388,7 +394,8 @@ def run_flywheel(
     )
     print(
         f"Evaluation: {eval_episodes} episodes x {eval_max_steps} steps "
-        f"every {eval_interval} epochs | selection: {eval_selection_mode}"
+        f"every {eval_interval} epochs | selection: {eval_selection_mode} | "
+        f"eval capture: {eval_capture_hz:g} Hz"
     )
     print(f"Metrics: {metrics_path}")
 
@@ -427,6 +434,7 @@ def run_flywheel(
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
                 eval_workers=workers,
+                eval_capture_hz=eval_capture_hz,
                 dataloader_workers=dataloader_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
@@ -498,6 +506,7 @@ def run_flywheel(
                 train_npz_dir=None,
                 log_rollout=False,
                 workers=workers,
+                capture_hz=train_capture_hz,
             )
             dagger_summary, dagger_episodes_data = summarize_dagger_round(
                 dagger_dir=dagger_dir,
@@ -566,6 +575,7 @@ def run_flywheel(
                 eval_episodes=eval_episodes,
                 eval_max_steps=eval_max_steps,
                 eval_workers=workers,
+                eval_capture_hz=eval_capture_hz,
                 dataloader_workers=dataloader_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
@@ -650,6 +660,18 @@ def parse_args():
     )
     parser.add_argument("--dagger-episodes", type=int, default=50)
     parser.add_argument("--rollout-max-steps", type=int, default=1400)
+    parser.add_argument(
+        "--train-capture-hz",
+        type=float,
+        default=None,
+        help="Obs/action/image sampling rate for expert data and DAgger rollouts",
+    )
+    parser.add_argument(
+        "--eval-capture-hz",
+        type=float,
+        default=None,
+        help="Policy inference rate during in-loop checkpoint evaluation",
+    )
     parser.add_argument("--eval-interval", type=int, default=20)
     parser.add_argument("--eval-episodes", type=int, default=25)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
@@ -695,6 +717,14 @@ def parse_args():
 
     if args.arch is None:
         parser.error("arch is required (set arch in --config or pass --arch)")
+    if args.train_capture_hz is None:
+        parser.error(
+            "train_capture_hz is required (set in --config or pass --train-capture-hz)"
+        )
+    if args.eval_capture_hz is None:
+        parser.error(
+            "eval_capture_hz is required (set in --config or pass --eval-capture-hz)"
+        )
 
     if args.num_expert_episodes < 1:
         parser.error("--num-expert-episodes must be at least 1")
@@ -714,6 +744,10 @@ def parse_args():
         parser.error("--dagger-episodes must be at least 1")
     if args.rollout_max_steps < 1:
         parser.error("--rollout-max-steps must be at least 1")
+    if args.train_capture_hz <= 0.0:
+        parser.error("--train-capture-hz must be positive")
+    if args.eval_capture_hz <= 0.0:
+        parser.error("--eval-capture-hz must be positive")
     if args.eval_interval < 1:
         parser.error("--eval-interval must be at least 1")
     if args.eval_episodes < 1:
@@ -760,6 +794,8 @@ def main():
         batch_size=args.batch_size,
         dagger_episodes=args.dagger_episodes,
         rollout_max_steps=args.rollout_max_steps,
+        train_capture_hz=args.train_capture_hz,
+        eval_capture_hz=args.eval_capture_hz,
         eval_interval=args.eval_interval,
         eval_seed=seeds["eval_seed"],
         eval_episodes=args.eval_episodes,

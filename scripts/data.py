@@ -19,6 +19,8 @@ import mujoco
 from tqdm import tqdm
 from datetime import datetime
 
+from constant import DEFAULT_CAPTURE_HZ
+
 
 from expert import CUBE_LIFT_MIN_DELTA, Phase, PickPlaceController, TRAY_PLACE_TOL
 from sim import SimEnv
@@ -74,7 +76,7 @@ class DataCollector:
         *,
         max_steps: int,
         episode_idx: int,
-        capture_hz: float = 60.0,
+        capture_hz: float = DEFAULT_CAPTURE_HZ,
         save_images: bool = False,
     ) -> dict[str, object]:
         """Run one scripted expert episode and return trajectory buffers."""
@@ -142,7 +144,7 @@ class DataCollector:
         episodes: int,
         out_dir: Path,
         max_steps: int,
-        capture_hz: float = 60.0,
+        capture_hz: float = DEFAULT_CAPTURE_HZ,
         save_images: bool = False,
     ) -> None:
         """Collect and optionally save multiple scripted expert episodes."""
@@ -183,7 +185,7 @@ def collect_expert_episodes(
     out_dir: Path,
     seed: int,
     max_steps: int,
-    capture_hz: float = 60.0,
+    capture_hz: float = DEFAULT_CAPTURE_HZ,
     randomize_scene: bool = True,
     save_images: bool = False,
 ) -> Path:
@@ -221,7 +223,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--capture-hz",
         type=float,
-        default=60.0,
+        default=DEFAULT_CAPTURE_HZ,
         help="Rate for aligned obs, action, and image-observation samples.",
     )
     parser.add_argument(

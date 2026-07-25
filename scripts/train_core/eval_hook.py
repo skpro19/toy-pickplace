@@ -14,6 +14,7 @@ def evaluate_checkpoint(
     episodes: int,
     max_steps: int,
     workers: int,
+    capture_hz: float,
 ) -> ScoreResult:
     score_dict = score_ckpt(
         ckpt_path=str(model_path),
@@ -21,6 +22,7 @@ def evaluate_checkpoint(
         max_steps=max_steps,
         episodes=episodes,
         workers=workers,
+        capture_hz=capture_hz,
     )
     mean_score = float(score_dict["mean_score"])
     max_score = max(score_dict["scores"])

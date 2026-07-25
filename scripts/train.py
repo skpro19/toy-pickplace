@@ -30,6 +30,7 @@ def train(
     npz_folders: list[Path],
     checkpoint_dir: Path,
     log_dir: Path,
+    eval_capture_hz: float,
     normalize: bool = True,
     action_space: str = "joint_delta",
     sample_ratios: list[float] | None = None,
@@ -60,6 +61,7 @@ def train(
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
         "eval_workers": eval_workers,
+        "eval_capture_hz": eval_capture_hz,
         "dataloader_workers": dataloader_workers,
         "early_stop_patience": early_stop_patience,
         "eval_selection_mode": eval_selection_mode,
@@ -132,6 +134,12 @@ def parse_args():
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
     parser.add_argument("--eval-workers", type=int, default=1)
+    parser.add_argument(
+        "--eval-capture-hz",
+        type=float,
+        default=None,
+        help="Policy inference rate used during in-loop checkpoint evaluation",
+    )
     parser.add_argument("--dataloader-workers", type=int, default=0)
     parser.add_argument(
         "--early-stop-patience",
@@ -159,6 +167,10 @@ def parse_args():
         parser.error("--eval-max-steps must be at least 1")
     if args.eval_workers < 1:
         parser.error("--eval-workers must be at least 1")
+    if args.eval_capture_hz is None:
+        parser.error("--eval-capture-hz is required")
+    if args.eval_capture_hz <= 0.0:
+        parser.error("--eval-capture-hz must be positive")
     if args.early_stop_patience < 0:
         parser.error("--early-stop-patience must be non-negative")
     if args.sample_ratios is not None and len(args.sample_ratios) != len(args.npz):
@@ -195,6 +207,7 @@ def main():
         npz_folders=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
+        eval_capture_hz=args.eval_capture_hz,
         action_space=args.action_space,
         normalize=args.normalize,
         sample_ratios=args.sample_ratios,

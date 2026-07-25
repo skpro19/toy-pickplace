@@ -18,6 +18,7 @@ EPSILON = 1e-6
 
 # rollout safety
 MAX_ARM_DELTA = 1.2
+DEFAULT_CAPTURE_HZ = 60.0
 
 # task metrics
 CUBE_LIFT_MIN_DELTA = 0.05

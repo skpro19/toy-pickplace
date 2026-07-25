@@ -9,6 +9,7 @@ from typing import Literal, TypedDict
 import numpy as np
 import torch
 
+from constant import DEFAULT_CAPTURE_HZ
 from policy_runtimes.registry import load_runtime
 from rollout import TaskMetrics, make_episode_seeds, run_policy_episode
 from sim import SimEnv
@@ -104,11 +105,11 @@ def initialize_eval_worker(ckpt_path: str) -> None:
     _eval_worker_state = (sim, runtime)
 
 
-def score_episode_worker(task: tuple[int, int, bool]) -> TaskMetrics:
+def score_episode_worker(task: tuple[int, int, bool, float]) -> TaskMetrics:
     if _eval_worker_state is None:
         raise RuntimeError("Evaluation worker was not initialized")
 
-    seed, max_steps, expert_baseline = task
+    seed, max_steps, expert_baseline, capture_hz = task
     sim, runtime = _eval_worker_state
     sim.rng = np.random.default_rng(seed)
     rng = np.random.default_rng(seed)
@@ -121,6 +122,7 @@ def score_episode_worker(task: tuple[int, int, bool]) -> TaskMetrics:
             track_phase=True,
             dagger=expert_baseline,
             beta=1.0 if expert_baseline else 0.0,
+            capture_hz=capture_hz,
             rng=rng,
         )
     return result["task_metrics"]
@@ -134,15 +136,18 @@ def score_ckpt(
     episodes: int,
     expert_baseline: bool = False,
     workers: int = 1,
+    capture_hz: float = DEFAULT_CAPTURE_HZ,
 ) -> ScoreResult:
     if workers < 1:
         raise ValueError("workers must be at least 1")
     if episodes < 1:
         raise ValueError("episodes must be at least 1")
+    if capture_hz <= 0.0:
+        raise ValueError("capture_hz must be positive")
 
     episode_seeds = make_episode_seeds(seed=seed, episodes=episodes)
     tasks = [
-        (episode_seed, max_steps, expert_baseline)
+        (episode_seed, max_steps, expert_baseline, capture_hz)
         for episode_seed in episode_seeds
     ]
 
@@ -174,6 +179,7 @@ def score_ckpt(
                 track_phase=True,
                 dagger=expert_baseline,
                 beta=1.0 if expert_baseline else 0.0,
+                capture_hz=capture_hz,
                 rng=np.random.default_rng(episode_seed),
             )
             episode_metrics.append(result["task_metrics"])
@@ -189,6 +195,12 @@ def parse_args():
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--expert-baseline", action="store_true")
+    parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=DEFAULT_CAPTURE_HZ,
+        help="Policy inference rate for aligned obs, action, and image samples.",
+    )
     return parser.parse_args()
 
 
@@ -201,6 +213,7 @@ def main():
         episodes=args.episodes,
         expert_baseline=args.expert_baseline,
         workers=args.workers,
+        capture_hz=args.capture_hz,
     )
     print(f"Mean score: {score_dict['mean_score']:.4f}")
     print(f"Grasp rate: {score_dict['grasp_rate']:.4f}")

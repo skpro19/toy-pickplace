@@ -34,6 +34,7 @@ from tqdm import tqdm
 # These constants remain available for callers that historically imported them
 # from rollout.py.
 from constant import (
+    DEFAULT_CAPTURE_HZ,
     LOWERING_STABLE_STEPS,
     PLACEMENT_STABLE_STEPS,
     RELEASE_STABLE_STEPS,
@@ -90,7 +91,7 @@ def initialize_dagger_worker(config: tuple[str, bool]) -> None:
 
 
 def run_dagger_worker(
-    task: tuple[int, int, int, float, str, str, float | None, int],
+    task: tuple[int, int, int, float, str, str, float | None, int, float],
 ) -> tuple[int, int]:
     if _dagger_worker_state is None:
         raise RuntimeError("DAgger worker was not initialized")
@@ -104,6 +105,7 @@ def run_dagger_worker(
         intervention_mode,
         intervention_threshold,
         intervention_steps,
+        capture_hz,
     ) = task
     sim, runtime = _dagger_worker_state
     sim.rng = np.random.default_rng(seed)
@@ -120,6 +122,7 @@ def run_dagger_worker(
             intervention_mode=intervention_mode,
             intervention_threshold=intervention_threshold,
             intervention_steps=intervention_steps,
+            capture_hz=capture_hz,
             rng=rng,
             episode_seed=seed,
         )
@@ -154,6 +157,7 @@ def rollout(
     create_dagger_subdir: bool = True,
     headless: bool,
     workers: int = 1,
+    capture_hz: float = DEFAULT_CAPTURE_HZ,
 ) -> None:
     if workers < 1:
         raise ValueError("workers must be at least 1")
@@ -169,6 +173,8 @@ def rollout(
         raise ValueError("intervention threshold must be non-negative")
     if intervention_steps < 1:
         raise ValueError("intervention steps must be at least 1")
+    if capture_hz <= 0.0:
+        raise ValueError("capture_hz must be positive")
 
     if workers > 1:
         if not headless or not dagger or log_rollout:
@@ -200,6 +206,7 @@ def rollout(
                 intervention_mode,
                 intervention_threshold,
                 intervention_steps,
+                capture_hz,
             )
             for episode_idx, episode_seed in enumerate(episode_seeds)
         ]
@@ -341,6 +348,7 @@ def rollout(
                     intervention_mode=intervention_mode,
                     intervention_threshold=intervention_threshold,
                     intervention_steps=intervention_steps,
+                    capture_hz=capture_hz,
                     rng=(
                         np.random.default_rng(episode_seed)
                         if episode_seed is not None
@@ -443,6 +451,12 @@ def parse_args():
         "--headless", action=argparse.BooleanOptionalAction, default=False
     )
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=DEFAULT_CAPTURE_HZ,
+        help="Policy inference rate for aligned obs, action, and image samples.",
+    )
 
     args = parser.parse_args()
     if not 0.0 <= args.beta <= 1.0:
@@ -462,6 +476,8 @@ def parse_args():
         parser.error("--intervention-steps must be at least 1")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.capture_hz <= 0.0:
+        parser.error("--capture-hz must be positive")
 
     return args
 
@@ -486,6 +502,7 @@ def main() -> None:
         create_dagger_subdir=True,
         headless=args.headless,
         workers=args.workers,
+        capture_hz=args.capture_hz,
     )
 
 

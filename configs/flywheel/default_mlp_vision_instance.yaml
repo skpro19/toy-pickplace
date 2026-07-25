@@ -8,6 +8,7 @@ dagger_rounds: 10
 # expert data collection
 num_expert_episodes: 100
 max_steps: 8000
+train_capture_hz: 60  # obs/action/image rate for expert data and DAgger rollouts
 
 # training
 epochs: 1000
@@ -29,6 +30,7 @@ rollout_max_steps: 1400
 eval_interval: 20
 eval_episodes: 25
 eval_max_steps: 1400
+eval_capture_hz: 60  # policy inference rate during in-loop checkpoint evaluation
 mode: mode-b  # mode-a = score first; mode-b = placement rate first
 
 # parallelism 

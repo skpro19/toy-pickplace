@@ -133,6 +133,8 @@ def main() -> None:
             "epochs: 7\n"
             "dagger_intervention_ratio: 0.7\n"
             "arch: mlp\n"
+            "train_capture_hz: 60\n"
+            "eval_capture_hz: 60\n"
         )
         original_argv = sys.argv
         try:
@@ -153,7 +155,12 @@ def main() -> None:
         assert args.global_seed == 0
         assert args.arch == "mlp"
 
-        config_path.write_text("global_seed: 11\narch: vision_mlp\n")
+        config_path.write_text(
+            "global_seed: 11\n"
+            "arch: vision_mlp\n"
+            "train_capture_hz: 60\n"
+            "eval_capture_hz: 60\n"
+        )
         try:
             sys.argv = [
                 "flywheel.py",

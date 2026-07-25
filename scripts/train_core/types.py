@@ -37,6 +37,7 @@ class TrainConfig(TypedDict):
     eval_episodes: int
     eval_max_steps: int
     eval_workers: int
+    eval_capture_hz: float
     dataloader_workers: int
     early_stop_patience: int
     eval_selection_mode: EvalSelectionMode

@@ -137,6 +137,7 @@ def run_training(
                     episodes=config["eval_episodes"],
                     max_steps=config["eval_max_steps"],
                     workers=config["eval_workers"],
+                    capture_hz=config["eval_capture_hz"],
                 )
                 mean_score = eval_result["mean_score"]
                 placement_success_rate = eval_result["placement_success_rate"]
