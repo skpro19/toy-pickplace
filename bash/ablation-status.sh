@@ -80,7 +80,8 @@ UNIQUE_BATCHES=$(echo "$PLAN" | cut -d'|' -f1 | sed 's/batch=//' | sort -n | tai
 FIRST_BATCH=$(echo "$PLAN" | cut -d'|' -f1 | sed 's/batch=//' | sort -n | head -1)
 
 # Derive param abbreviations from run names (e.g. "abl-it0p1-dir0" → "it, dir")
-FIRST_RUN=$(echo "$PLAN" | head -1 | sed 's/.*run=//' | sed 's/|.*//')
+# Plan rows use: batch|run_name|tmux_session.
+FIRST_RUN=$(echo "$PLAN" | head -1 | cut -d'|' -f2)
 STRIPPED=$(echo "$FIRST_RUN" | sed 's/^abl-//')
 PARAM_KEYS=""
 IFS='-' read -ra SEGMENTS <<< "$STRIPPED"
@@ -106,14 +107,14 @@ for b in $(seq "$FIRST_BATCH" "$UNIQUE_BATCHES"); do
 done
 BATCHES_PENDING=$((UNIQUE_BATCHES - BATCHES_DONE - BATCHES_RUNNING))
 
-COMPLETED=$(ssh_cmd "cat '$CONTROL_DIR/state/completed' 2>/dev/null" 2>/dev/null || true)
+COMPLETED=$(ssh_cmd "test -f '$CONTROL_DIR/state/completed' && printf yes" 2>/dev/null || true)
 FAILED=$(ssh_cmd "cat '$CONTROL_DIR/state/failed' 2>/dev/null" 2>/dev/null || true)
 
 # ── Cell statuses ────────────────────────────────────────────────────
 CELL_STATUS_RAW=$(ssh_cmd "for f in '$CONTROL_DIR/status/'*; do echo \"\$(basename \"\$f\"):\$(cat \"\$f\")\"; done" 2>/dev/null || true)
 
-# Parse run names from plan
-RUN_NAMES=$(echo "$PLAN" | sed 's/.*run=//' | sed 's/|.*//')
+# Parse run names from batch|run_name|tmux_session plan rows.
+RUN_NAMES=$(echo "$PLAN" | cut -d'|' -f2)
 CELLS_SUCCEEDED=0
 CELLS_RUNNING=0
 CELLS_FAILED=0
