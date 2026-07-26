@@ -66,8 +66,7 @@ print(c.access_key); print(c.secret_key); print(c.token or ''); print(s.region_n
     AWS_SESSION_TOKEN="${AWS[2]}"; AWS_REGION="${AWS[3]}"
   }
 
-  P=""; [ -n "$S3_PREFIX" ] && P="${S3_PREFIX}/"
-  prefix="${P}${RUN_NAME}/control"
+  prefix=".flywheel/${RUN_NAME}"
 
   for dir in logs state; do
     local_dir="${CONTROL_DIR}/${dir}"
@@ -161,13 +160,10 @@ while true; do
       if [ "$heldout_completed" = "yes" ]; then
         echo "Held-out evaluation completed successfully"
         . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
-        P=""; [ -n "$S3_PREFIX" ] && P="${S3_PREFIX}/"
-        RUN_PREFIX="${P}${RUN_NAME}/"
         verify_ok=true
-        for obj in "results/${RUN_NAME}/final_scores.json" \
-                   "results/${RUN_NAME}/final_scores_comparison.png" \
-                   "results/${RUN_NAME}/${RUN_NAME}-final-score-curve.png"; do
-          key="${RUN_PREFIX}${obj}"
+        for key in "results/flywheel/${RUN_NAME}/final_scores.json" \
+                   "results/flywheel/${RUN_NAME}/final_scores_comparison.png" \
+                   "results/${RUN_NAME}-final-score-curve.png"; do
           uv run python -c "
 import boto3, os
 c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')

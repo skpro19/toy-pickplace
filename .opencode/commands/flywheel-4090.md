@@ -18,7 +18,7 @@ architecture (`arch`) and user-selected config parameters.
 ## Workflow at a glance
 
 1. Confirm the remote branch, commit, exact config contents, selected
-   run-name-encoded parameters, run name, and effective S3 path.
+   run-name-encoded parameters, and run name (S3 keys mirror local paths).
 2. Load secrets, select an offer, and provision one instance.
 3. Accept or reject the instance using SSH hardware checks.
 4. Clone the exact commit and verify CUDA and headless MuJoCo.
@@ -251,11 +251,13 @@ fi
 
 Tell the user which required variable is missing. Never print secret values or
 enable shell tracing. Before provisioning, use `boto3` to list at most one
-object under the exact effective prefix
-`S3_PREFIX/RUN_NAME/`. If an object exists, stop and require the user to
-choose a new run name. Continue only when recovering the matching instance and
-control state rather than launching a new run. Explain that the backup sync
-deletes remote keys absent locally, so prefix reuse can be destructive.
+object under any of these artifact prefixes:
+`checkpoints/flywheel/RUN_NAME/`, `runs/flywheel/RUN_NAME/`,
+`data/flywheel/RUN_NAME/`, or `results/flywheel/RUN_NAME/`. If any object
+exists, stop and require the user to choose a new run name. Continue only when
+recovering the matching instance and control state rather than launching a new
+run. Explain that the backup sync deletes remote keys absent locally, so
+prefix reuse can be destructive.
 
 ### 1. Search and select offers
 
@@ -607,7 +609,6 @@ seconds:
 
 ```bash
 /root/.local/bin/uv run python scripts/s3_backup.py upload \
-  --prefix "$RUN_NAME" \
   --components checkpoints,runs,results,dagger \
   "$RUN_NAME"
 ```
@@ -647,7 +648,6 @@ AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
 AWS_REGION=${AWS_REGION}
-S3_PREFIX=${S3_PREFIX}
 ENVEOF
 chmod 600 '${CONTROL_DIR}/s3-env.env'"
 ```
@@ -743,9 +743,9 @@ Print these as optional commands only; do not download automatically:
 
 ```bash
 set -a; . ./.env; set +a
-uv run python scripts/s3_backup.py download RUN_NAME/RUN_NAME
-uv run python scripts/final_score.py --run-name RUN_NAME/RUN_NAME
-uv run python scripts/final_score.py --run-name RUN_NAME/RUN_NAME --plot-only
+uv run python scripts/s3_backup.py download RUN_NAME
+uv run python scripts/final_score.py --run-name RUN_NAME
+uv run python scripts/final_score.py --run-name RUN_NAME --plot-only
 ```
 
 ## Final output
@@ -767,7 +767,7 @@ Print:
   `final_eval_*` values;
 - `CONTROL_DIR`, durable run state, log path, and remote attach command;
 - local SSH, TensorBoard, and supervisor attach commands and TensorBoard URL;
-- backup state, S3 prefix, optional download and replay commands;
+- backup state, optional download and replay commands;
 - held-out settings, state, log, and all three exact uploaded result paths;
 - terminal supervisor status path and verified instance-destruction state.
 
@@ -781,6 +781,6 @@ Print:
 - The committed config is immutable for this workflow; there are no parameter
   sweeps, per-run experiment overrides, concurrency calculations, or batches.
 - Held-out evaluation always runs after a fresh final backup and uploads only
-  its JSON and two plots under `S3_PREFIX/RUN_NAME/results/RUN_NAME/`.
+  its JSON and two plots at `results/flywheel/RUN_NAME/` and `results/RUN_NAME-final-score-curve.png`.
 - Every terminal state triggers destruction. Failure diagnostics are
   best-effort so an upload outage cannot keep a billed instance alive.

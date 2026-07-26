@@ -18,7 +18,7 @@ while true; do
   cd /workspace/toy-pickplace
   /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
     python scripts/s3_backup.py upload \
-    --prefix "${_R}" --components checkpoints,runs,results,dagger "${_R}"
+    --components checkpoints,runs,results,dagger "${_R}"
   if [ "$?" -eq 0 ]; then
     touch "${_C}/state/backup-last-succeeded"
   else

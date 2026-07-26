@@ -1,22 +1,24 @@
 """Back up and restore flywheel training runs in an S3 bucket.
 
 The tool mirrors checkpoints, TensorBoard runs, DAgger datasets, and results
-under a session prefix while preserving their local project layout.
+using the exact local project-relative paths as S3 object keys.
 
 Examples:
-    uv run python scripts/s3_backup.py upload --prefix 20260717-153000
+    uv run python scripts/s3_backup.py upload run-name
     uv run python scripts/s3_backup.py list
-    uv run python scripts/s3_backup.py download 20260717-153000/run-003
-    uv run python scripts/s3_backup.py rm 20260717-153000
+    uv run python scripts/s3_backup.py download run-name
+    uv run python scripts/s3_backup.py rm run-name
 
 Configuration:
     S3_BUCKET          Required destination bucket unless --bucket is passed.
-    S3_PREFIX          Optional key prefix within the bucket.
     S3_ENDPOINT_URL    Optional endpoint for an S3-compatible service.
     AWS_REGION         Optional AWS region.
 
 Boto3's standard credential chain supplies credentials. This includes IAM
 roles, AWS profiles, and the AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY variables.
+
+Object keys use the exact local project-relative paths (e.g.,
+``checkpoints/flywheel/<run-name>/round-000/best.pt``).
 """
 
 import argparse
@@ -31,10 +33,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 
 COMPONENT_MAP: dict[str, tuple[Path, str]] = {
-    "checkpoints": (Path("checkpoints/flywheel"), "checkpoints"),
-    "runs": (Path("runs/flywheel"), "runs"),
+    "checkpoints": (Path("checkpoints/flywheel"), "checkpoints/flywheel"),
+    "runs": (Path("runs/flywheel"), "runs/flywheel"),
     "dagger": (Path("data/flywheel"), "data/flywheel"),
-    "results": (Path("results/flywheel"), "results"),
+    "results": (Path("results/flywheel"), "results/flywheel"),
 }
 COMPONENT_DEFAULT = list(COMPONENT_MAP)
 
@@ -141,7 +143,7 @@ def cmd_upload(args: argparse.Namespace) -> None:
             path.is_file() for path in source.rglob("*")
         ):
             continue
-        destination = _key(args.key_prefix, args.prefix, remote_dir, args.run or "")
+        destination = _key(remote_dir, args.run or "")
         component_files, component_uploads = _sync_directory(
             client=client,
             bucket=args.bucket,
@@ -158,18 +160,15 @@ def cmd_upload(args: argparse.Namespace) -> None:
 
 def cmd_download(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
-    backup_path = _validate_remote_path(args.path)
-    parts = backup_path.split("/", 1)
-    session = parts[0]
-    run_name = parts[1] if len(parts) == 2 else None
+    run_name = _validate_remote_path(args.path)
     selected = _selected_components(args.components)
     output_root = Path(args.output)
     downloaded = 0
 
     for name in selected:
         local_root, remote_dir = COMPONENT_MAP[name]
-        remote_base = _key(args.key_prefix, session, remote_dir)
-        search_prefix = _key(remote_base, run_name or "") + "/"
+        remote_base = _key(remote_dir)
+        search_prefix = _key(remote_base, run_name) + "/"
         object_keys = _list_keys(
             client=client,
             bucket=args.bucket,
@@ -181,7 +180,7 @@ def cmd_download(args: argparse.Namespace) -> None:
             if not relative_key or ".." in relative_path.parts:
                 continue
             destination = (
-                output_root / local_root / session / Path(*relative_path.parts)
+                output_root / local_root / Path(*relative_path.parts)
             )
             destination.parent.mkdir(parents=True, exist_ok=True)
             print(f"Downloading s3://{args.bucket}/{object_key} -> {destination}")
@@ -189,17 +188,13 @@ def cmd_download(args: argparse.Namespace) -> None:
             downloaded += 1
 
     if not downloaded:
-        raise RuntimeError(f"No files found for backup path {backup_path}")
-    print(f"Downloaded {downloaded} file(s) from {backup_path}.")
+        raise RuntimeError(f"No files found for run {run_name}")
+    print(f"Downloaded {downloaded} file(s) from {run_name}.")
 
 
 def cmd_has_files(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
-    backup_path = _validate_remote_path(args.path)
-    parts = backup_path.split("/", 1)
-    if len(parts) != 2:
-        raise ValueError("has-files requires a session/run backup path")
-    session, run_name = parts
+    run_name = _validate_remote_path(args.path)
     selected = _selected_components(args.components)
 
     for filename in args.files:
@@ -212,8 +207,6 @@ def cmd_has_files(args: argparse.Namespace) -> None:
         for name in selected:
             _, remote_dir = COMPONENT_MAP[name]
             object_key = _key(
-                args.key_prefix,
-                session,
                 remote_dir,
                 run_name,
                 relative_path.as_posix(),
@@ -227,51 +220,38 @@ def cmd_has_files(args: argparse.Namespace) -> None:
                     raise SystemExit(1) from error
                 raise
 
-    print(f"All requested files exist for {backup_path}.")
+    print(f"All requested files exist for {run_name}.")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
-    root = _key(args.key_prefix)
-    object_prefix = f"{root}/" if root else ""
-    keys = _list_keys(client=client, bucket=args.bucket, prefix=object_prefix)
     component_pattern = "|".join(
         re.escape(remote) for _, remote in COMPONENT_MAP.values()
     )
     run_pattern = re.compile(
-        rf"^(?P<session>[^/]+)/(?:{component_pattern})/(?P<run>run-\d+)/"
+        rf"^(?:{component_pattern})/(?P<run>[^/]+)/"
     )
-    sessions: dict[str, set[str]] = {}
+    runs: set[str] = set()
 
-    for object_key in keys:
-        relative_key = object_key.removeprefix(object_prefix)
-        match = run_pattern.match(relative_key)
+    for object_key in _list_keys(client=client, bucket=args.bucket, prefix=""):
+        match = run_pattern.match(object_key)
         if match:
-            sessions.setdefault(match.group("session"), set()).add(
-                match.group("run")
-            )
+            runs.add(match.group("run"))
 
-    if not sessions:
+    if not runs:
         print("No backups found.")
         return
-    for session in sorted(sessions, reverse=True):
-        print(f"{session}/  [{', '.join(sorted(sessions[session]))}]")
+    for run in sorted(runs, reverse=True):
+        print(run)
 
 
 def cmd_rm(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
-    backup_path = _validate_remote_path(args.path)
-    parts = backup_path.split("/", 1)
-    session = parts[0]
-
-    if len(parts) == 1:
-        prefixes = [_key(args.key_prefix, session) + "/"]
-    else:
-        run_name = parts[1]
-        prefixes = [
-            _key(args.key_prefix, session, remote_dir, run_name) + "/"
-            for _, remote_dir in COMPONENT_MAP.values()
-        ]
+    run_name = _validate_remote_path(args.path)
+    prefixes = [
+        _key(remote_dir, run_name) + "/"
+        for _, remote_dir in COMPONENT_MAP.values()
+    ]
 
     keys = sorted(
         {
@@ -285,9 +265,9 @@ def cmd_rm(args: argparse.Namespace) -> None:
         }
     )
     if not keys:
-        raise RuntimeError(f"No files found for backup path {backup_path}")
+        raise RuntimeError(f"No files found for run {run_name}")
     _delete_keys(client=client, bucket=args.bucket, keys=keys)
-    print(f"Removed {backup_path} ({len(keys)} file(s)).")
+    print(f"Removed {run_name} ({len(keys)} file(s)).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -302,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--key-prefix",
         default=os.environ.get("S3_PREFIX", ""),
-        help="S3 key prefix (default: $S3_PREFIX)",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--region",
@@ -320,7 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
         "upload",
         help="Upload and synchronize backup components",
     )
-    upload.add_argument("--prefix", required=True, help="Backup session prefix")
+    upload.add_argument("--prefix", default="", help="Backup session prefix (deprecated)")
     upload.add_argument(
         "--components",
         default="all",
@@ -329,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument("run", nargs="?", help="Specific run, such as run-003")
 
     download = subparsers.add_parser("download", help="Download backup components")
-    download.add_argument("path", help="Session or session/run path")
+    download.add_argument("path", help="Run name to download")
     download.add_argument(
         "--components",
         default="all",
@@ -341,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         "has-files",
         help="Check whether files exist for a backed-up run",
     )
-    has_files.add_argument("path", help="Session/run backup path")
+    has_files.add_argument("path", help="Run name to check")
     has_files.add_argument("files", nargs="+", help="Files relative to the run directory")
     has_files.add_argument(
         "--components",
@@ -351,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list", help="List backup sessions and runs")
     remove = subparsers.add_parser("rm", help="Remove a session or run")
-    remove.add_argument("path", help="Session or session/run path")
+    remove.add_argument("path", help="Run name to remove")
     return parser
 
 

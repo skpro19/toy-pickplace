@@ -62,20 +62,18 @@ print(f'Verified: s3://{cfg[\"S3_BUCKET\"]}/\$key ({sz} bytes)')
 }
 
 . "${_C}/s3-env.env"
-P=""; [ -n "$S3_PREFIX" ] && P="${S3_PREFIX}/"
-BP="${P}${_R}/"
 
 upload_and_verify \
   "/workspace/toy-pickplace/results/flywheel/${_R}/final_scores.json" \
-  "${BP}results/${_R}/final_scores.json" || exit 1
+  "results/flywheel/${_R}/final_scores.json" || exit 1
 
 upload_and_verify \
   "/workspace/toy-pickplace/results/flywheel/${_R}/final_scores_comparison.png" \
-  "${BP}results/${_R}/final_scores_comparison.png" || exit 1
+  "results/flywheel/${_R}/final_scores_comparison.png" || exit 1
 
 upload_and_verify \
   "/workspace/toy-pickplace/results/${_R}-final-score-curve.png" \
-  "${BP}results/${_R}/${_R}-final-score-curve.png" || exit 1
+  "results/${_R}-final-score-curve.png" || exit 1
 
 echo "succeeded 0" > "${_C}/state/heldout-completed.tmp"
 mv "${_C}/state/heldout-completed.tmp" "${_C}/state/heldout-completed"
