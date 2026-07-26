@@ -78,12 +78,14 @@ printf 'Branch: %s\nCommit: %s\nConfig: %s\n\n%s\n' \
 ```
 
 Confirm from `REMOTE_FLYWHEEL` that `--config` and `--run-name` are supported.
-Parse the complete top-level config with `yaml.safe_load` and resolve
-`global_seed`, `arch`, `final_eval_episodes`, `final_eval_seed`,
-`final_eval_workers`, and `final_eval_capture_hz` from `REMOTE_CONFIG`; do
-not use local working-tree copies for planning. Display the exact branch,
-commit, config path, config contents, and resolved seed, then ask the user to
-confirm this immutable experiment baseline.
+Parse the complete top-level config with `yaml.safe_load` and resolve every
+parameter. Display the exact branch, commit, config path, and the entire config
+as tables grouped by section (Run, Flywheel loop, Expert data collection,
+Training, Dataset mixing, DAgger rollout, In-loop evaluation, Held-out
+evaluation, Parallelism, Seeds). Resolve and list every value; do not use local
+working-tree copies for planning. Then ask the user to confirm this immutable
+experiment baseline. Never dump raw YAML in the response — always use the
+grouped table format.
 
 After the user confirms the baseline, ask which top-level config parameters
 should be encoded in the run name. Present the parsed key-value pairs from
@@ -639,6 +641,8 @@ environment, pane output, or logs. Use the absolute `uv` path.
 
 Example credential transfer (run locally before launching ckpt-bkp):
 
+Do not include `S3_ENDPOINT_URL` — an empty value causes `Invalid endpoint`. Omit it entirely:
+
 ```bash
 set -a; . ./.env; set +a
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
@@ -649,7 +653,6 @@ AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
 AWS_REGION=${AWS_REGION}
 S3_PREFIX=${S3_PREFIX}
-S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
 CREDEOF
 chmod 600 '${CONTROL_DIR}/s3-creds.sh'"
 ```
@@ -683,7 +686,7 @@ while true; do
   touch "${_C}/state/backup-cycle-started"
   cd /workspace/toy-pickplace
   S3_BUCKET="$S3_BUCKET" S3_PREFIX="$S3_PREFIX" \
-    AWS_REGION="$AWS_REGION" S3_ENDPOINT_URL="$S3_ENDPOINT_URL" \
+    AWS_REGION="$AWS_REGION" \
     AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
     AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
     AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
@@ -705,7 +708,7 @@ B64=$(base64 -w0 /tmp/ckpt-bkp-wrapper.sh)
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'
    chmod +x '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'"
-tmux -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "tmux new-session -d -s ckpt-bkp \
      'cd /workspace/toy-pickplace && exec bash ${CONTROL_DIR}/ckpt-bkp-wrapper.sh'"
 ```
@@ -789,7 +792,8 @@ The supervisor must implement this state machine:
 | Training failed | Record the exit code, upload control logs/state best-effort, then clean up |
 | Backup failed or stopped | Record the failure, upload control logs/state best-effort, then clean up |
 | Training completed | Wait up to ten minutes for a backup cycle started after `state/completed` and succeeded after its start |
-| Final backup fresh | Stop and verify removal of `ckpt-bkp`, then launch `heldout-eval` exactly once via secure credential transfer |
+| Final backup fresh | Stop `ckpt-bkp`, then launch `heldout-eval` exactly once via secure credential transfer; set `HELDOUT_LAUNCHED` flag and advance to evaluation-running state. Do not re-enter the completed/fresh-backup branch after this transition |
+| Evaluation running | Poll only for `heldout-completed`, `heldout-failed`, SSH degradation, or instance terminal. Never re-check `state/completed` or `state/backup-failed` while evaluation is running. Log progress every 30 s |
 | Evaluation failed | Upload control logs/state best-effort, then clean up |
 | Evaluation completed | Recheck the three exact S3 objects and sizes from the local supervisor, then clean up successfully |
 | SSH degraded | Refresh `actual_status` and `vastai ssh-url`; repin a changed endpoint and continue polling while Vast reports `running` |
