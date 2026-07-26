@@ -3,17 +3,17 @@ run_name: null
 arch: vision_mlp
 
 # flywheel loop
-dagger_rounds: 1
+dagger_rounds: 2
 
 # expert data collection
-num_expert_episodes: 1
+num_expert_episodes: 50
 max_steps: 80
 train_capture_hz: 60
 
 # training
-epochs: 1
+epochs: 50
 batch_size: 16
-early_stop_patience: 1
+early_stop_patience: 10
 dataloader_workers: 0
 persistent_workers: false
 
@@ -24,7 +24,7 @@ dagger_intervention_ratio: 0.8
 # DAgger rollout
 intervention_threshold: 0.0
 intervention_steps: 5
-dagger_episodes: 1
+dagger_episodes: 30
 rollout_max_steps: 80
 
 # in-loop checkpoint evaluation
