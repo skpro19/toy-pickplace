@@ -771,13 +771,28 @@ the durable record; pane output is a live convenience only.
 Create an executable `controller.sh` in `CONTROL_DIR` and start it once in a
 remote `ablation-controller` tmux session. The controller must:
 
-1. read the materialized plan in deterministic order;
- 2. skip cells whose current status is already `succeeded 0` or `skipped 0`, then
-    launch at most `ABLATION_CONCURRENCY` remaining `ablation-*` sessions for a
-    batch and atomically write `failed 125` if any `tmux new-session` call fails.
-    Before launching, if a tmux session exists for a cell but no corresponding
-    status file exists (orphaned from a prior controller invocation), kill the
-    old session before retrying;
+1. read the materialized plan into arrays first, then iterate those arrays
+   deterministically. **Do not use `while read ... |` pipe patterns**: a
+   pipe creates a subshell and the IFS-delimited `read` inside it may produce
+   incorrect field parsing, especially for the last column. Instead, redirect
+   the plan file directly into the while loop:
+
+   ```bash
+   BATCH_VALUES=(); RUN_NAMES=(); TMUX_SESSIONS=()
+   while IFS="|" read -r batch run_name tmux_session; do
+     BATCH_VALUES+=("$batch"); RUN_NAMES+=("$run_name"); TMUX_SESSIONS+=("$tmux_session")
+   done < "$PLAN_FILE"
+   ```
+
+   Then iterate indices `for ((i = 0; i < ${#BATCH_VALUES[@]}; i++))` and
+   access `${BATCH_VALUES[$i]}`, `${RUN_NAMES[$i]}`, `${TMUX_SESSIONS[$i]}`.
+   This keeps all field values in the current shell.
+2. skip cells whose current status is already `succeeded 0` or `skipped 0`, then
+   launch at most `ABLATION_CONCURRENCY` remaining `ablation-*` sessions for a
+   batch and atomically write `failed 125` if any `tmux new-session` call fails.
+   Before launching, if a tmux session exists for a cell but no corresponding
+   status file exists (orphaned from a prior controller invocation), kill the
+   old session before retrying;
 3. atomically write `state/batch-N-started` after those sessions are launched;
 4. wait for `succeeded 0`, `skipped 0`, or `failed EXIT_CODE` for every cell in
    that batch;
@@ -788,7 +803,7 @@ remote `ablation-controller` tmux session. The controller must:
    status is `succeeded 0` or `skipped 0`;
 7. on the first failure, write `state/failed` with the run name, exit code,
    and log path, then exit non-zero without launching later batches;
- 8. after the final successful batch, write `state/completed`.
+8. after the final successful batch, write `state/completed`.
 
    **`set -e` trap:** Under `set -eo pipefail`, a post-increment expression
    that evaluates to zero (`(( LAUNCHED++ ))` when `LAUNCHED=0`) causes an
@@ -837,9 +852,12 @@ grids.
 
 Transfer AWS credentials and S3 configuration over SSH standard input only. Do
 not place credentials in the SSH command string, arguments, output, or a file.
-Set the values in the remote tmux server environment so `ckpt-bkp` inherits
-them. `AWS_SESSION_TOKEN`, `AWS_REGION`, `S3_PREFIX`, and `S3_ENDPOINT_URL` may
-be empty:
+
+Create a wrapper script on the instance with the loop, then start it via `env
+VAR=value ... bash wrapper.sh` in `tmux new-session`. The `env` prefix sets
+variables for the session's initial process without leaking them into the tmux
+global environment or the SSH command string. `AWS_SESSION_TOKEN`,
+`AWS_REGION`, `S3_PREFIX`, and `S3_ENDPOINT_URL` may be empty:
 
 ```bash
 printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
@@ -848,15 +866,15 @@ printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
   "${AWS_PROFILE:-}" | \
   ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" "
     set -e
-    IFS= read -r S3_BUCKET
-    IFS= read -r AWS_ACCESS_KEY_ID
-    IFS= read -r AWS_SECRET_ACCESS_KEY
-    IFS= read -r AWS_SESSION_TOKEN
-    IFS= read -r AWS_REGION
-    IFS= read -r S3_PREFIX
-    IFS= read -r S3_ENDPOINT_URL
-    IFS= read -r AWS_PROFILE
-    test -n \"\$S3_BUCKET\" || {
+    IFS= read -r BUCKET
+    IFS= read -r ACCESS_KEY
+    IFS= read -r SECRET_KEY
+    IFS= read -r SESSION_TOKEN
+    IFS= read -r REGION
+    IFS= read -r PREFIX
+    IFS= read -r ENDPOINT_URL
+    IFS= read -r PROFILE
+    test -n \"\$BUCKET\" || {
       printf '%s\\n' 'ERROR: S3_BUCKET transfer failed' >&2
       exit 1
     }
@@ -867,45 +885,55 @@ printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
     mkdir -p $CONTROL_DIR/state/backup-history
     for marker in backup-cycle-started backup-last-succeeded backup-failed; do
       if test -f $CONTROL_DIR/state/\$marker; then
-        mv $CONTROL_DIR/state/\$marker \
-          $CONTROL_DIR/state/backup-history/\$marker-\$(date +%s%N)
+        mv \$marker $CONTROL_DIR/state/backup-history/\$marker-\$(date +%s%N)
       fi
     done
-    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do
-      test -z \"\${!name}\" || tmux set-environment -g \"\$name\" \"\${!name}\"
-    done
-    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do tmux set-environment -gu "\$name"; done' EXIT
-    tmux new-session -d -s ckpt-bkp \
-      'cd /workspace/toy-pickplace && while true; do \
-         if ! find checkpoints/flywheel runs/flywheel results/flywheel \
-              -type f -print -quit 2>/dev/null | grep -q .; then \
-           sleep 30; \
-           continue; \
-         fi; \
-         touch $CONTROL_DIR/state/backup-cycle-started; \
-         if /root/.local/bin/uv run python scripts/s3_backup.py upload \
-              --prefix $BACKUP_PREFIX \
-              --components checkpoints,runs,results,dagger; then \
-           touch $CONTROL_DIR/state/backup-last-succeeded; \
-         else \
-           touch $CONTROL_DIR/state/backup-failed; \
-           exit 1; \
-         fi; \
-         sleep 120; \
-       done'
-    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do
-      tmux set-environment -gu \"\$name\"
-    done
-    trap - EXIT
-    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
+    # Stop any old session (cleanup)
+    tmux kill-session -t ckpt-bkp 2>/dev/null || true
+    # Write the wrapper script on the instance — no credentials in its text
+    cat > $CONTROL_DIR/ckpt-bkp-wrapper.sh << 'WRAPPER_EOF'
+#!/usr/bin/env bash
+set -eo pipefail
+cd /workspace/toy-pickplace
+while true; do
+  if ! find checkpoints/flywheel runs/flywheel results/flywheel \
+       -type f -print -quit 2>/dev/null | grep -q .; then
+    sleep 30
+    continue
+  fi
+  touch $CONTROL_DIR/state/backup-cycle-started
+  if /root/.local/bin/uv run python scripts/s3_backup.py upload \
+       --prefix $BACKUP_PREFIX \
+       --components checkpoints,runs,results,dagger; then
+    touch $CONTROL_DIR/state/backup-last-succeeded
+  else
+    touch $CONTROL_DIR/state/backup-failed
+    exit 1
+  fi
+  sleep 120
+done
+WRAPPER_EOF
+    chmod +x $CONTROL_DIR/ckpt-bkp-wrapper.sh
+    # Launch with env prefix — credentials never appear in files or tmux global env
+    tmux new-session -d -s ckpt-bkp \\
+      env S3_BUCKET=\"\$BUCKET\" \\
+          AWS_ACCESS_KEY_ID=\"\$ACCESS_KEY\" \\
+          AWS_SECRET_ACCESS_KEY=\"\$SECRET_KEY\" \\
+          AWS_SESSION_TOKEN=\"\$SESSION_TOKEN\" \\
+          AWS_REGION=\"\$REGION\" \\
+          S3_PREFIX=\"\$PREFIX\" \\
+          S3_ENDPOINT_URL=\"\$ENDPOINT_URL\" \\
+          AWS_PROFILE=\"\$PROFILE\" \\
+      bash $CONTROL_DIR/ckpt-bkp-wrapper.sh
+    tmux has-session -t ckpt-bkp
   "
 ```
 
 Use the absolute uv path because detached tmux sessions do not reliably inherit
-the login `PATH`. The backup session inherits S3 configuration at creation,
-after which the command removes it from tmux's global environment and removes
-credentials from the remote shell. The `EXIT` trap also clears it if session
-creation fails. Do not start another backup session if `ckpt-bkp` already
+the login `PATH`. The credentials are passed via `env` prefix to
+`new-session`, not through `set-environment -g` (which is unreliable for
+command-string inheritance). They are never written to a file, log, or tmux
+global environment. Do not start another backup session if `ckpt-bkp` already
 exists. Before a confirmed restart, old backup markers are moved to
 `state/backup-history/` so they cannot satisfy or fail the new attempt. The
 uploader waits for the first artifact file instead of treating an empty new run
