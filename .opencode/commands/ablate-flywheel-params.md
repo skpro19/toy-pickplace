@@ -87,14 +87,23 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    parameter. Display its default resolved from `FLYWHEEL_CONFIG`, its CLI
    flag, and the corresponding argument validation constraints before asking.
    Resolve `GLOBAL_SEED` from the same config.
-5. Let `GRID_CELLS` be the product of all confirmed value-list lengths:
+5. After all sweep value lists are confirmed, ask the user for a comma- or
+   newline-separated ordered list of one or more top-level `FLYWHEEL_CONFIG`
+   parameter names to include in `BACKUP_PREFIX`. Validate every name against
+   `REMOTE_CONFIG`, reject duplicates, unknown names, null values, and
+   non-scalar values, and display each resolved prefix value before continuing.
+   For a selected swept parameter, its prefix value is its confirmed ordered
+   value list; for every other selected parameter, its prefix value is the
+   scalar resolved from `REMOTE_CONFIG`. This selection is metadata only and
+   never changes experiment overrides or config contents.
+6. Let `GRID_CELLS` be the product of all confirmed value-list lengths:
    - one requested parameter is a 1D sweep;
    - two or more requested parameters form a full Cartesian grid, with every
      requested CLI override set on every cell.
-6. Require `1 <= GRID_CELLS <= 30`. If the grid has more than 30 cells, show
+7. Require `1 <= GRID_CELLS <= 30`. If the grid has more than 30 cells, show
    its computed size and ask the user to reduce the lists or split the work into
    multiple invocations. Do not provision.
-7. Build `RUN_PLAN` in deterministic parameter-list order and value-list order.
+8. Build `RUN_PLAN` in deterministic parameter-list order and value-list order.
    Each row includes:
    - a unique run name;
    - a unique tmux session;
@@ -102,11 +111,12 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    - its provisional batch number based on the tier's maximum concurrency.
    Final batch numbers are assigned only after Workflow Step 6 computes actual
    concurrency from the accepted host.
-8. Include the already-confirmed `GIT_BRANCH`, `GIT_COMMIT`, and
+9. Include the already-confirmed `GIT_BRANCH`, `GIT_COMMIT`, and
    `FLYWHEEL_CONFIG` for context with the complete `RUN_PLAN`, selected tier,
    search floor, physical-core acceptance gate, proposed tuning overrides,
    planned concurrency range, estimated batch count, and the exact resolved
-   `BACKUP_PREFIX`. Clearly distinguish config-resolved experiment values from
+   `BACKUP_PREFIX`, including its ordered selected parameter names and resolved
+   values. Clearly distinguish config-resolved experiment values from
    tier-derived infrastructure overrides. Ask the user to explicitly confirm
    the entire run and infrastructure plan, including the S3 backup prefix name,
    before Step 0. Do not ask them to reconfirm the baseline. Do not reconfirm it
@@ -170,18 +180,36 @@ The command may use the concise `abl-it{T}-dir{R}` / `ablation-it{T}-dir{R}`
 form only when the two parameters are exactly `intervention_threshold` and
 `dagger_intervention_ratio`; it must still be unique.
 
+For `BACKUP_PREFIX`, preserve the user-selected parameter order. Serialize a
+selected swept parameter's confirmed ordered values as a comma-separated list;
+serialize every other selected parameter as its resolved scalar config value.
+Keep each normalized config key unchanged and convert each serialized value to
+a slug by replacing decimal points with `p` and every other non-alphanumeric
+separator with `-`. This makes the prefix safe for shell use, S3 object keys,
+and the remote control directory.
+For example, selecting `mode`, `dagger_rounds`, and swept
+`intervention_threshold` with values `0.05, 0.1` produces:
+
+```text
+flywheel-mode=mode-b_dagger_rounds=10_intervention_threshold=0p05-0p1-YYYYMMDD-HHMMSS
+```
+
 Set:
 
 ```text
 INSTANCE_LABEL=toy-pickplace-ablation-{parameter-slugs}-{UNIX_TIME_NS}
 GLOBAL_SEED=<global_seed resolved from the selected flywheel config>
-BACKUP_PREFIX=ablation-{parameter-slugs}-seed{GLOBAL_SEED}-YYYYMMDD-HHMMSS
+BACKUP_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP_PREFIX=flywheel-{selected_parameter_key}={resolved_value_slug}_{selected_parameter_key}={resolved_value_slug}-...-${BACKUP_TIMESTAMP}
 ```
 
 Set `UNIX_TIME_NS=$(date +%s%N)` once before constructing `INSTANCE_LABEL`.
-This gives each workflow invocation a collision-resistant instance label. Include
-the resolved `GLOBAL_SEED` in the displayed run plan and use the same value in
-every grid-cell command.
+Set `BACKUP_TIMESTAMP` once after the selected prefix parameters and their
+values are confirmed; do not regenerate it later in the workflow. This gives
+each workflow invocation a collision-resistant instance label and backup
+prefix. Include the resolved `GLOBAL_SEED`, selected prefix parameters, and
+their resolved values in the displayed run plan, and use the same seed in every
+grid-cell command.
 
 ## Tier routing
 
@@ -1159,8 +1187,8 @@ complete only when `state/heldout-completed` exists and every expected
 
 Print:
 
-- parameter names, exact value lists, `GRID_CELLS`, selected tier, and
-  `RUN_PLAN`;
+- parameter names, exact value lists, selected backup-prefix parameters and
+  resolved values, `GRID_CELLS`, selected tier, and `RUN_PLAN`;
 - confirmed `GIT_BRANCH`, `GIT_COMMIT`, and `FLYWHEEL_CONFIG`, plus all three
   verifications performed after cloning;
 - instance ID and `vastai ssh-url` retrieval command;
