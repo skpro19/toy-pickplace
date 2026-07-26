@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -137,6 +138,10 @@ def main() -> None:
             "arch: mlp\n"
             "train_capture_hz: 60\n"
             "eval_capture_hz: 60\n"
+            "final_eval_episodes: 200\n"
+            "final_eval_seed: 17\n"
+            "final_eval_workers: 8\n"
+            "final_eval_capture_hz: 30\n"
         )
         original_argv = sys.argv
         try:
@@ -158,6 +163,10 @@ def main() -> None:
         assert args.persistent_workers
         assert args.global_seed == 0
         assert args.arch == "mlp"
+        assert args.final_eval_episodes == 200
+        assert args.final_eval_seed == 17
+        assert args.final_eval_workers == 8
+        assert args.final_eval_capture_hz == 30
 
         config_path.write_text(
             "global_seed: 11\n"
@@ -255,7 +264,12 @@ def main() -> None:
             "data_dirs": [],
             "sample_ratios": [],
             "best_checkpoint": checkpoint_path,
-            "config": {},
+            "config": {
+                "final_eval_episodes": 200,
+                "final_eval_seed": 17,
+                "final_eval_workers": 8,
+                "final_eval_capture_hz": 30,
+            },
             "eval_seed": 42,
             "eval_episodes": 1,
             "eval_max_steps": 1,
@@ -272,6 +286,11 @@ def main() -> None:
             checkpoint_path,
         )
         append_round_metrics(round_index=0, **common_args)
+        saved_metrics = json.loads(metrics_path.read_text())
+        assert saved_metrics["config"]["final_eval_episodes"] == 200
+        assert saved_metrics["config"]["final_eval_seed"] == 17
+        assert saved_metrics["config"]["final_eval_workers"] == 8
+        assert saved_metrics["config"]["final_eval_capture_hz"] == 30
 
         torch.save(
             {

@@ -68,29 +68,100 @@ def aggregate_seed_results(*, seed_results: list[dict[str, object]]) -> dict[str
     }
 
 
+def resolve_final_eval_settings(
+    *,
+    config: dict[str, object],
+    eval_episodes: int | None,
+    final_eval_seed: int | None,
+    workers: int | None,
+    capture_hz: float | None,
+) -> tuple[int, int, int, float]:
+    resolved_episodes = (
+        eval_episodes
+        if eval_episodes is not None
+        else int(config.get("final_eval_episodes", 100))
+    )
+    resolved_seed = (
+        final_eval_seed
+        if final_eval_seed is not None
+        else int(config.get("final_eval_seed", 20260716))
+    )
+    resolved_workers = workers if workers is not None else int(
+        config.get("final_eval_workers", config.get("workers", 6))
+    )
+    resolved_capture_hz = capture_hz if capture_hz is not None else float(
+        config.get("final_eval_capture_hz", config.get("eval_capture_hz", 60.0))
+    )
+
+    if resolved_episodes < FINAL_EVAL_SEED_COUNT:
+        raise ValueError(f"eval episodes must be at least {FINAL_EVAL_SEED_COUNT}")
+    if resolved_episodes % FINAL_EVAL_SEED_COUNT != 0:
+        raise ValueError(f"eval episodes must be divisible by {FINAL_EVAL_SEED_COUNT}")
+    if resolved_seed < 0:
+        raise ValueError("final eval seed must be non-negative")
+    if resolved_workers < 1:
+        raise ValueError("workers must be at least 1")
+    if resolved_capture_hz <= 0.0:
+        raise ValueError("capture_hz must be positive")
+
+    return resolved_episodes, resolved_seed, resolved_workers, resolved_capture_hz
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Re-evaluate best.pt checkpoints from a completed flywheel run"
     )
-    parser.add_argument("--run-name", type=str, default=None,
-                        help="Flywheel run name (e.g. run-019). Auto-detects latest if omitted.")
-    parser.add_argument("--eval-episodes", type=int, default=100,
-                        help="Total eval episodes per checkpoint, split evenly across five held-out seeds (default: 100)")
-    parser.add_argument("--final-eval-seed", type=int, default=20260716,
-                        help="Root seed used to derive the five held-out eval seeds (default: 20260716)")
-    parser.add_argument("--plot-only", action="store_true",
-                        help="Regenerate plots from final_scores.json without evaluating checkpoints")
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Number of parallel workers (default: from original run config)")
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Flywheel run name (e.g. run-019). Auto-detects latest if omitted.",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=None,
+        help="Total episodes per checkpoint (default: run config, otherwise 100)",
+    )
+    parser.add_argument(
+        "--final-eval-seed",
+        type=int,
+        default=None,
+        help="Root seed for five held-out seeds (default: run config)",
+    )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Regenerate plots from final_scores.json without evaluating checkpoints",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel workers (default: final_eval_workers from run config)",
+    )
+    parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=None,
+        help="Policy inference rate (default: final_eval_capture_hz from run config)",
+    )
     args = parser.parse_args()
-    if args.eval_episodes < FINAL_EVAL_SEED_COUNT:
+    if args.eval_episodes is not None and args.eval_episodes < FINAL_EVAL_SEED_COUNT:
         parser.error(f"--eval-episodes must be at least {FINAL_EVAL_SEED_COUNT}")
-    if args.eval_episodes % FINAL_EVAL_SEED_COUNT != 0:
+    if (
+        args.eval_episodes is not None
+        and args.eval_episodes % FINAL_EVAL_SEED_COUNT != 0
+    ):
         parser.error(
             f"--eval-episodes must be divisible by {FINAL_EVAL_SEED_COUNT}"
         )
-    if args.final_eval_seed < 0:
+    if args.final_eval_seed is not None and args.final_eval_seed < 0:
         parser.error("--final-eval-seed must be non-negative")
+    if args.workers is not None and args.workers < 1:
+        parser.error("--workers must be at least 1")
+    if args.capture_hz is not None and args.capture_hz <= 0.0:
+        parser.error("--capture-hz must be positive")
     return args
 
 
@@ -127,10 +198,15 @@ def main() -> None:
     config = metrics_data.get("config", {})
     eval_max_steps = metrics_data.get("eval_max_steps", 1400)
     original_episodes = metrics_data.get("eval_episodes", 25)
-    workers = args.workers or config.get("workers", 6)
-    eval_episodes = args.eval_episodes
+    eval_episodes, final_eval_seed, workers, capture_hz = resolve_final_eval_settings(
+        config=config,
+        eval_episodes=args.eval_episodes,
+        final_eval_seed=args.final_eval_seed,
+        workers=args.workers,
+        capture_hz=args.capture_hz,
+    )
     episodes_per_seed = eval_episodes // FINAL_EVAL_SEED_COUNT
-    final_eval_seeds = make_final_eval_seeds(seed=args.final_eval_seed)
+    final_eval_seeds = make_final_eval_seeds(seed=final_eval_seed)
     selection_mode: EvalSelectionMode = metrics_data.get("eval_selection_mode", "mode-b")
 
     if args.plot_only:
@@ -172,7 +248,8 @@ def main() -> None:
         f"Final eval: {FINAL_EVAL_SEED_COUNT} held-out seeds x "
         f"{episodes_per_seed} episodes x {eval_max_steps} steps, workers={workers}"
     )
-    print(f"Held-out root seed: {args.final_eval_seed}")
+    print(f"Held-out root seed: {final_eval_seed}")
+    print(f"Capture rate: {capture_hz:g} Hz")
     print(f"Original eval: {original_episodes} episodes")
     print()
 
@@ -195,6 +272,7 @@ def main() -> None:
                 max_steps=eval_max_steps,
                 episodes=episodes_per_seed,
                 workers=workers,
+                capture_hz=capture_hz,
             )
             print(
                 f"score={result['mean_score']:.4f} "
@@ -264,13 +342,14 @@ def main() -> None:
     output = {
         "run_name": run_name,
         "original_eval_seed": metrics_data.get("eval_seed", 42),
-        "final_eval_seed": args.final_eval_seed,
+        "final_eval_seed": final_eval_seed,
         "final_eval_seeds": final_eval_seeds,
         "seed_count": FINAL_EVAL_SEED_COUNT,
         "eval_episodes": eval_episodes,
         "episodes_per_seed": episodes_per_seed,
         "eval_max_steps": eval_max_steps,
         "workers": workers,
+        "capture_hz": capture_hz,
         "eval_selection_mode": selection_mode,
         "overall_best_round": best_by_score["round"],
         "overall_best_checkpoint": best_by_score["checkpoint"],

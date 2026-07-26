@@ -286,6 +286,10 @@ def run_flywheel(
     eval_seed: int,
     eval_episodes: int,
     eval_max_steps: int,
+    final_eval_episodes: int,
+    final_eval_seed: int,
+    final_eval_workers: int,
+    final_eval_capture_hz: float,
     workers: int,
     dataloader_workers: int = 0,
     persistent_workers: bool = False,
@@ -364,6 +368,10 @@ def run_flywheel(
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
         "eval_selection_mode": eval_selection_mode,
+        "final_eval_episodes": final_eval_episodes,
+        "final_eval_seed": final_eval_seed,
+        "final_eval_workers": final_eval_workers,
+        "final_eval_capture_hz": final_eval_capture_hz,
         "workers": workers,
         "dataloader_workers": dataloader_workers,
         "persistent_workers": persistent_workers,
@@ -680,6 +688,10 @@ def parse_args():
     parser.add_argument("--eval-interval", type=int, default=20)
     parser.add_argument("--eval-episodes", type=int, default=25)
     parser.add_argument("--eval-max-steps", type=int, default=1400)
+    parser.add_argument("--final-eval-episodes", type=int, default=100)
+    parser.add_argument("--final-eval-seed", type=int, default=20260716)
+    parser.add_argument("--final-eval-workers", type=int, default=6)
+    parser.add_argument("--final-eval-capture-hz", type=float, default=60.0)
     parser.add_argument(
         "--mode",
         choices=EVAL_SELECTION_MODES,
@@ -765,6 +777,16 @@ def parse_args():
         parser.error("--eval-episodes must be at least 1")
     if args.eval_max_steps < 1:
         parser.error("--eval-max-steps must be at least 1")
+    if args.final_eval_episodes < 5:
+        parser.error("--final-eval-episodes must be at least 5")
+    if args.final_eval_episodes % 5 != 0:
+        parser.error("--final-eval-episodes must be divisible by 5")
+    if args.final_eval_seed < 0:
+        parser.error("--final-eval-seed must be non-negative")
+    if args.final_eval_workers < 1:
+        parser.error("--final-eval-workers must be at least 1")
+    if args.final_eval_capture_hz <= 0.0:
+        parser.error("--final-eval-capture-hz must be positive")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
     if args.dataloader_workers < 0:
@@ -813,6 +835,10 @@ def main():
         eval_seed=seeds["eval_seed"],
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
+        final_eval_episodes=args.final_eval_episodes,
+        final_eval_seed=args.final_eval_seed,
+        final_eval_workers=args.final_eval_workers,
+        final_eval_capture_hz=args.final_eval_capture_hz,
         workers=args.workers,
         dataloader_workers=args.dataloader_workers,
         persistent_workers=args.persistent_workers,

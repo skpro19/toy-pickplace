@@ -1,521 +1,759 @@
 ---
-description: Provision a Vast.ai RTX 4090 instance and start the flywheel pipeline
+description: Provision one RTX 4090 and run one config-defined flywheel
 agent: build
 ---
 
-Provision and set up a Vast.ai instance to run the flywheel training pipeline.
+Run one standard flywheel on one Vast.ai RTX 4090. This command owns baseline
+confirmation, provisioning, hardware acceptance, setup, durable launch,
+checkpoint backup, automatic held-out evaluation, result upload, and instance
+destruction. It is
+self-contained: follow this workflow without consulting another runbook.
 
-## Workload profile
+The experiment is fixed by the committed YAML config. Do not collect sweep
+parameters, construct a grid, or modify the config on the instance. Do not add
+experiment CLI overrides. The only flywheel CLI arguments supplied by this
+workflow are `--config` and `--run-name`. The run name encodes the
+architecture (`arch`) and user-selected config parameters.
 
-The optional first command argument selects the workload profile:
+## Workflow at a glance
 
-| Invocation | Profile | Instance label | Workload session | Local TensorBoard tunnel |
-|---|---|---|---|---|
-| `/flywheel-4090` or `/flywheel-4090 standard` | Standard flywheel | `toy-pickplace-flywheel` | `flywheel` | `tb-setup` |
-| `/flywheel-4090 intervention-threshold` | Intervention-threshold ablation (parallel default) | `toy-pickplace-ablation-intervention-threshold` | `ablation-0.05` … `ablation-0.3` | `tb-ablation` |
-| `/flywheel-4090 dagger-intervention-ratio` | Dagger-intervention-ratio ablation (parallel default) | `toy-pickplace-ablation-dagger-intervention-ratio` | `ablation-0.2` … `ablation-1.0` | `tb-ablation` |
+1. Confirm the remote branch, commit, exact config contents, selected
+   run-name-encoded parameters, run name, and effective S3 path.
+2. Load secrets, select an offer, and provision one instance.
+3. Accept or reject the instance using SSH hardware checks.
+4. Clone the exact commit and verify CUDA and headless MuJoCo.
+5. Start TensorBoard, local wrappers, one durable flywheel runner, and backup.
+6. Start a durable local supervisor that monitors terminal state.
+7. After a successful fresh backup, automatically run held-out evaluation,
+   upload its JSON and plots, then destroy the instance. On failure, upload
+   diagnostics best-effort and destroy the instance.
 
-Requested profile: `$1`
+## Baseline and run planning
 
-Treat an empty argument as `standard`. Accept only `standard`,
-`intervention-threshold`, and `dagger-intervention-ratio`; for any other value,
-ask the user to choose a supported profile and stop. Set `INSTANCE_LABEL` to
-the label in the table before creating the instance.
+This command accepts no experiment parameter arguments. If arguments are
+provided, explain that this workflow runs the committed config unchanged and
+stop.
 
-For ablation profiles (`intervention-threshold`, `dagger-intervention-ratio`),
-this command owns shared provisioning, instance setup, and sweep launch. The
-ablation-specific launch commands, TensorBoard setup, backup prefix, local
-tunnel, and follow-up commands are defined in the matching ablation document:
-- `intervention-threshold` → @docs/ablation/intervention-threshold.md
-- `dagger-intervention-ratio` → @docs/ablation/dagger-intervention-ratio.md
+Ask the user to select the Git branch to clone, defaulting to `dev`, and set:
 
-**Ablation sweep mode:** launch the **parallel** batch (four concurrent tmux
-sessions on one instance) by default. Fall back to the **sequential** batch
-only when the user explicitly requests it or the accepted instance has fewer
-than 32 effective vCPUs after the hardware gate in Step 6. Do not provision one
-instance per swept value in either mode.
+```text
+GIT_BRANCH=<confirmed branch>
+FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml
+```
 
-This command is the source of truth for provisioning control flow, confirmation
-gates, failure handling, and setup commands.
+Validate and load the remote files without changing the local checkout:
 
-Use @docs/vast-ai/instance-filter-criteria.md as the source of truth for offer
-filtering, CPU-family ranking, and post-provision hardware acceptance. Do not
-weaken its hard requirements without explicit user approval.
+```bash
+case "$GIT_BRANCH" in
+  ""|*[!A-Za-z0-9._/-]*)
+    printf '%s\n' 'ERROR: Branch may contain only letters, digits, ., _, /, and -' >&2
+    exit 1
+    ;;
+esac
+git check-ref-format --branch "$GIT_BRANCH"
+git fetch origin "$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH" || {
+  printf 'ERROR: Could not fetch origin/%s\n' "$GIT_BRANCH" >&2
+  exit 1
+}
+GIT_COMMIT=$(git rev-parse "origin/$GIT_BRANCH^{commit}") || exit 1
+REMOTE_CONFIG=$(git show "$GIT_COMMIT:$FLYWHEEL_CONFIG") || {
+  printf 'ERROR: %s does not exist on origin/%s\n' \
+    "$FLYWHEEL_CONFIG" "$GIT_BRANCH" >&2
+  exit 1
+}
+REMOTE_FLYWHEEL=$(git show "$GIT_COMMIT:scripts/flywheel.py") || {
+  printf 'ERROR: scripts/flywheel.py does not exist at %s\n' \
+    "$GIT_COMMIT" >&2
+  exit 1
+}
+printf 'Branch: %s\nCommit: %s\nConfig: %s\n\n%s\n' \
+  "$GIT_BRANCH" "$GIT_COMMIT" "$FLYWHEEL_CONFIG" "$REMOTE_CONFIG"
+```
+
+Confirm from `REMOTE_FLYWHEEL` that `--config` and `--run-name` are supported.
+Parse the complete top-level config with `yaml.safe_load` and resolve
+`global_seed`, `arch`, `final_eval_episodes`, `final_eval_seed`,
+`final_eval_workers`, and `final_eval_capture_hz` from `REMOTE_CONFIG`; do
+not use local working-tree copies for planning. Display the exact branch,
+commit, config path, config contents, and resolved seed, then ask the user to
+confirm this immutable experiment baseline.
+
+After the user confirms the baseline, ask which top-level config parameters
+should be encoded in the run name. Present the parsed key-value pairs from
+`REMOTE_CONFIG` and let the user select zero or more parameters by name.
+`arch` is always included implicitly. Validate each selected name exists in
+the parsed config and that its value is a scalar. Collect the ordered list:
+
+```text
+RUN_NAME_PARAMS=<ordered list of selected param names>
+```
+
+After confirmation, set each value once:
+
+```bash
+RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+UNIX_TIME_NS=$(date +%s%N)
+ARCH=$(printf '%s\n' "$REMOTE_CONFIG" | uv run python -c \
+  'import sys, yaml; print(yaml.safe_load(sys.stdin)["arch"])')
+RUN_NAME_PARAM_SUFFIX=""
+for param in $RUN_NAME_PARAMS; do
+  val=$(printf '%s\n' "$REMOTE_CONFIG" | PARAM="$param" uv run python -c \
+    'import os, sys, yaml; print(yaml.safe_load(sys.stdin)[os.environ["PARAM"]])')
+  RUN_NAME_PARAM_SUFFIX="${RUN_NAME_PARAM_SUFFIX}${param}=${val}_"
+done
+RUN_NAME="${ARCH}-flywheel-${RUN_NAME_PARAM_SUFFIX}${RUN_TIMESTAMP}"
+INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
+CONTROL_DIR="/workspace/toy-pickplace/.flywheel/${RUN_NAME}"
+```
+
+The user may replace the generated `RUN_NAME` before provisioning. Validate a
+custom name against `^[A-Za-z0-9][A-Za-z0-9._=-]*$`. Keep `RUN_NAME` unchanged
+after confirmation and derive `INSTANCE_LABEL`, and
+`CONTROL_DIR` from the final value. A new launch must not reuse an existing S3
+prefix. A recovery may retain its previously recorded prefix only when the
+matching instance and control state establish that it is the same workflow.
+
+Display and explicitly confirm the complete plan before loading secrets:
+
+| Item | Required value |
+|---|---|
+| Branch and commit | Confirmed `GIT_BRANCH` and immutable `GIT_COMMIT` |
+| Config | Exact committed `FLYWHEEL_CONFIG` contents |
+| Experiment parameters | Every value resolved from the config; no overrides |
+| Root seed | Config-resolved `global_seed` |
+| Encoded params | Selected `RUN_NAME_PARAMS` from config |
+| Run name | `RUN_NAME` |
+| Held-out evaluation | Committed `final_eval_episodes`, `final_eval_seed`, `final_eval_workers`, and `final_eval_capture_hz` |
+| Hardware gate | One RTX 4090, 24 physical cores, 64 GB RAM |
+| Launch command | `scripts/flywheel.py --config FLYWHEEL_CONFIG --run-name RUN_NAME` |
+
+After a unique numeric `INSTANCE_ID` has been established, every unrecoverable
+terminal failure must trigger best-effort diagnostics followed by automatic
+destruction and removal verification. Before the local supervisor starts, the
+agent performs this policy directly. After it starts, the supervisor owns the
+policy. Never apply automatic destruction while duplicate-instance identity is
+ambiguous; list duplicates and resolve the target with the user first.
+
+## Fixed hardware profile
+
+Use one fixed profile. There are no tiers, concurrency calculations, or
+batches of experiment runs.
+
+| Requirement | Value |
+|---|---:|
+| Search effective vCPU minimum | 24 |
+| SSH physical-core minimum | 24 |
+| Concurrent flywheel runs | 1 |
+| `workers` | Committed config value |
+| `dataloader_workers` | Committed config value |
+| `batch_size` | Committed config value |
+| Held-out evaluation | Committed config values; always runs after final backup |
 
 ## Prerequisites
-
-Before starting, ensure these are available on the dev machine:
 
 | Tool / key | Check |
 |---|---|
 | `vastai` CLI | `which vastai` |
-| `VAST_API_KEY` | Set in `.env` file (copy `.env.example` → `.env` if missing) |
-| `S3_BUCKET` and AWS credentials | Set in `.env` file, unless the instance has an IAM role |
+| `VAST_API_KEY` | Set in `.env` |
+| `S3_BUCKET` and AWS credentials | Set in `.env`, unless the instance has an IAM role |
+| `AWS_PROFILE` | Alternative to access-key variables via `~/.aws/credentials` |
+| `aws` CLI | May be required to log in when `AWS_PROFILE` uses SSO |
 | `tmux` | `which tmux` |
-
-The agent will source `.env` at the start and abort if any key is missing.
-Instructions will be printed for missing items.
+| `flock` | `which flock` |
 
 ## Workflow
 
 ### 0. Load secrets
 
-Source `.env` and verify `VAST_API_KEY` and `S3_BUCKET` are non-empty. Unless
-the instance has an IAM role, also require `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`. If required configuration is missing, print
-instructions pointing to `.env.example` and stop.
+Load `.env` without shell tracing and require `VAST_API_KEY` and `S3_BUCKET`:
 
-### 1. Search offers
+```bash
+set -a
+. ./.env
+set +a
+test -n "${VAST_API_KEY:-}" || {
+  printf '%s\n' 'ERROR: VAST_API_KEY is missing from .env' >&2
+  exit 1
+}
+test -n "${S3_BUCKET:-}" || {
+  printf '%s\n' 'ERROR: S3_BUCKET is missing from .env' >&2
+  exit 1
+}
+```
 
-Run this search command and parse the raw JSON output.
+Unless the instance has an IAM role, require either a complete access-key pair
+or `AWS_PROFILE`. Reject a partial access-key pair. If only `AWS_PROFILE` is
+set, resolve it before SSH transfer:
 
-For `standard`, require `cpu_cores_effective>=24`. For ablation profiles
-(`intervention-threshold`, `dagger-intervention-ratio`), require
-`cpu_cores_effective>=32` (parallel default). If the user explicitly requested
-sequential fallback for the ablation, use `cpu_cores_effective>=24` instead.
+```bash
+if test -n "${AWS_ACCESS_KEY_ID:-}" || test -n "${AWS_SECRET_ACCESS_KEY:-}"; then
+  test -n "${AWS_ACCESS_KEY_ID:-}" && test -n "${AWS_SECRET_ACCESS_KEY:-}" || {
+    printf '%s\n' 'ERROR: Both AWS access-key variables are required' >&2
+    exit 1
+  }
+elif test -n "${AWS_PROFILE:-}"; then
+  mapfile -t RESOLVED_AWS < <(uv run python -c '
+import os
+import boto3
+
+session = boto3.Session(profile_name=os.environ["AWS_PROFILE"])
+credentials = session.get_credentials()
+if credentials is None:
+    raise SystemExit(1)
+frozen = credentials.get_frozen_credentials()
+print(frozen.access_key)
+print(frozen.secret_key)
+print(frozen.token or "")
+print(session.region_name or "")
+') || exit 1
+  test "${#RESOLVED_AWS[@]}" -eq 4 || {
+    printf 'ERROR: Could not resolve credentials from AWS profile %s\n' \
+      "$AWS_PROFILE" >&2
+    exit 1
+  }
+  AWS_ACCESS_KEY_ID=${RESOLVED_AWS[0]}
+  AWS_SECRET_ACCESS_KEY=${RESOLVED_AWS[1]}
+  AWS_SESSION_TOKEN=${RESOLVED_AWS[2]}
+  test -n "${AWS_REGION:-}" || AWS_REGION=${RESOLVED_AWS[3]}
+  test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" || exit 1
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION
+  unset RESOLVED_AWS
+fi
+```
+
+Tell the user which required variable is missing. Never print secret values or
+enable shell tracing. Before provisioning, use `boto3` to list at most one
+object under the exact effective prefix
+`S3_PREFIX/RUN_NAME/`. If an object exists, stop and require the user to
+choose a new run name. Continue only when recovering the matching instance and
+control state rather than launching a new run. Explain that the backup sync
+deletes remote keys absent locally, so prefix reuse can be destructive.
+
+### 1. Search and select offers
+
+Search with every hard searchable requirement:
 
 ```bash
 vastai search offers \
-  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 gpu_ram>=24 gpu_max_power>=400 compute_cap>=890 total_flops>=80 cpu_cores_effective>=MIN_EFFECTIVE_VCPUS cpu_ram>=64 disk_bw>=1000 pci_gen>=4 pcie_bw>=20 inet_down>=500 inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false' \
+  'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 gpu_ram>=24 gpu_max_power>=400 compute_cap>=890 total_flops>=80 cpu_cores_effective>=24 cpu_ram>=64 disk_bw>=1000 pci_gen>=4 pcie_bw>=20 inet_down>=500 inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false' \
   --order dph_total+ \
   --raw
 ```
 
-Substitute `MIN_EFFECTIVE_VCPUS` with `32` for ablation profiles unless
-sequential fallback was requested, otherwise `24`. For `standard`, use `24`.
-
-Show results as a table with exactly these columns:
+Show exactly these columns:
 
 | Offer ID | CPU model | Effective vCPUs | RAM | Disk MB/s | PCIe GB/s | GPU power | Down/Up Mb/s | Reliability | $/hr | Location |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 
-Recommend the best offer using this deterministic ordering:
-1. **CPU generation**: EPYC 9005, EPYC 9004, Threadripper 7000, then EPYC
-   7003. Modern Ryzen 7000/9000 is eligible only when its published physical
-   core count is at least 24, but actual allocation still requires the
-   post-provision check.
-2. **$/hr** (lowest first within the CPU-generation tier).
-3. **Disk bandwidth** (higher first when prices tie).
-4. **Host reliability** (higher first when the preceding values tie).
+Rank eligible offers by CPU family (EPYC 9005, EPYC 9004, Threadripper 7000,
+EPYC 7003, then modern Ryzen 7000/9000), lowest price, disk bandwidth, and
+reliability. Reject EPYC 7001/7002. CPU model is only a ranking hint because
+the SSH allocation gate is authoritative. Do not use `cpu_ghz`.
 
-Reject EPYC 7001/7002 and CPU models whose published physical-core count is
-below 24. Treat raw `cpu_name` as a ranking hint only because offer metadata
-can be stale or inconsistent; the SSH acceptance gate is authoritative. Do not
-use `cpu_ghz` as a ranking criterion.
+Do not weaken a hard filter without explicit approval. If no offer passes, ask
+whether to wait or relax named criteria. Otherwise recommend an offer and ask
+the user to confirm one offer or an ordered shortlist of three to five current
+offers. Do not run a separate availability check.
 
-If the query returns no offers, show that no candidate meets all hard filters
-and ask whether the user wants to wait or explicitly relax named criteria. Do
-not silently remove or lower filters. If the user approves a relaxation, state
-which criteria changed and preserve every other hard filter.
+### 2. Provision one instance
 
-Show the recommendation with a brief rationale, then **ask the user to confirm**
-or select a different offer before proceeding.
-
-### 2. User confirms priority list
-
-After the user picks a top offer (or a priority-ordered shortlist of 3-5 offers),
-note the ordered list. Do not run a separate availability check; offers
-disappear within seconds on RTX 4090.
-
-### 3. Rapid-fire create
-
-Iterate the priority list. For each offer, call `vastai create instance` directly
-with `--cancel-unavail`. If the offer is gone, the API returns an error — move
-to the next in the list. **Stop at the first successful create.** Do not
-continue iterating after a success (use a flag or `break`). Record the returned
-instance ID.
+Try the confirmed offers in order:
 
 ```bash
-# IMPORTANT: The output is NOT valid JSON — it's a mix of "Started." prefix
-# and a Python dict literal. grep for 'new_contract' key as plain text.
 CREATED=false
-OFFER_IDS=(OFFER_1 OFFER_2 OFFER_3) # Include every user-confirmed offer (3-5).
+OFFER_IDS=(OFFER_1 OFFER_2 OFFER_3)
 for id in "${OFFER_IDS[@]}"; do
   output=$(vastai create instance "$id" \
     --image pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
     --disk 100 --ssh --direct --label "$INSTANCE_LABEL" \
     --cancel-unavail 2>&1)
-  if echo "$output" | grep -q "new_contract"; then
-    INSTANCE_ID=$(echo "$output" | grep -oP "new_contract': \K\d+")
-    if [ -n "$INSTANCE_ID" ]; then
+  if printf '%s\n' "$output" | grep -q "new_contract"; then
+    CREATED=true
+    INSTANCE_ID=$(printf '%s\n' "$output" | grep -oP "new_contract': \K\d+")
+    break
+  fi
+  for reconcile_attempt in 1 2 3; do
+    INSTANCE_ID=$(vastai show instances --raw | \
+      INSTANCE_LABEL="$INSTANCE_LABEL" uv run python -c '
+import json
+import os
+import sys
+
+instances = json.load(sys.stdin)
+if isinstance(instances, dict):
+    instances = instances.get("instances", [instances])
+matches = [
+    item
+    for item in instances
+    if item.get("label") == os.environ["INSTANCE_LABEL"]
+]
+if len(matches) > 1:
+    ids = ", ".join(str(item.get("id")) for item in matches)
+    print(f"ERROR: Multiple exact-label instances: {ids}", file=sys.stderr)
+    raise SystemExit(2)
+if matches:
+    print(matches[0]["id"])
+')
+    reconcile_status=$?
+    test "$reconcile_status" -eq 0 || exit "$reconcile_status"
+    if test -n "$INSTANCE_ID"; then
       CREATED=true
       break
     fi
+    sleep 2
+  done
+  if test "$CREATED" = true; then
+    break
   fi
   sleep 1
 done
-if [ "$CREATED" = false ]; then
-  echo "ERROR: Could not create any instance from the priority list"
-  exit 1
-fi
+test "$CREATED" = true ||
+  printf '%s\n' 'WARNING: Create output did not yield an instance ID; reconciling by label' >&2
 ```
 
-If no instance is created or no instance ID can be parsed, stop the workflow.
-Do not poll, clean up, or run setup commands with an empty instance ID.
+Reconcile by exact label after every create response that does not report
+`new_contract`, before trying the next offer. Stop after the first reported or
+reconciled success. Whether ID parsing succeeds or not, always run
+`vastai show instances --raw` and identify every instance whose label exactly
+equals `INSTANCE_LABEL`. This reconciliation prevents a changed or truncated
+create response from leaving an untracked billed instance. If no matching
+instance exists, stop without polling or cleanup against an empty ID. If one
+exists, use its numeric ID as `INSTANCE_ID`. If multiple instances exist, list
+their IDs, status, hardware, and price; never destroy one before obtaining user
+confirmation. Verify exactly one remains before continuing.
 
-### 4. Post-create duplicate cleanup
+### 3. Wait for running and secure SSH
 
-Check `vastai show instances` for other instances with the same label
-(`$INSTANCE_LABEL`). If more than one exists (e.g. from a previous
-attempt that wasn't cleaned up), ask the user which to keep and destroy the
-rest, OR keep the one with the best specs and destroy the others
-automatically after listing them.
+Poll `vastai show instance "$INSTANCE_ID" --raw` every ten seconds for up to
+30 attempts. Parse `actual_status` with `uv run python`; stop if it does not
+become `running`. Then resolve a fresh endpoint with
+`vastai ssh-url "$INSTANCE_ID"`; do not reuse create-response host data.
 
-### 5. Poll for running and SSH readiness
+Probe SSH for up to 12 attempts at ten-second intervals. The first successful
+probe may use `StrictHostKeyChecking=accept-new`. Verify the key is pinned with
+`ssh-keygen -F "[$HOST]:$PORT"`, then require
+`StrictHostKeyChecking=yes` and `BatchMode=yes` for every later connection,
+including credential transfers.
 
-Poll every 10 seconds for at most 30 attempts until `actual_status` is
-`"running"`, then get the SSH URL. If the instance reports a terminal failure
-or is not running after 30 attempts, print its latest status and stop. Do not
-continue to SSH setup.
+If running or SSH readiness fails, report the instance ID, latest status,
+endpoint when available, and attempts. Automatically destroy the instance and
+verify removal. Ask whether to retry only after destruction; a retry must repeat
+the offer search and obtain a fresh shortlist.
 
-```bash
-for i in $(seq 1 30); do
-  status=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | \
-    python3 -c "import sys,json; print(json.load(sys.stdin).get('actual_status',''))" 2>/dev/null)
-  echo "Poll $i: status=$status"
-  [ "$status" = "running" ] && break
-  sleep 10
-done
-[ "$status" = "running" ] || {
-  echo "ERROR: Instance did not reach running state; latest status=$status" >&2
-  exit 1
-}
-SSH_URL=$(vastai ssh-url "$INSTANCE_ID")
-HOST=$(echo "$SSH_URL" | sed 's/.*@//;s/:.*//')
-PORT=$(echo "$SSH_URL" | sed 's/.*://')
-```
+### 4. Verify provisioned hardware
 
-`actual_status=running` does not guarantee that the mapped SSH port is ready.
-After resolving the SSH URL, probe SSH every 10 seconds for at most 12 attempts.
-Use batch mode so a failed key negotiation cannot block for interactive input.
+Treat the rental as provisional. Before cloning, collect:
 
 ```bash
-SSH_READY=false
-for i in $(seq 1 12); do
-  echo "SSH probe $i"
-  if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-      -o ConnectTimeout=10 -p "$PORT" "root@$HOST" true 2>/dev/null; then
-    SSH_READY=true
-    break
-  fi
-  sleep 10
-done
-
-[ "$SSH_READY" = true ] || {
-  echo "ERROR: Instance is running but SSH did not become ready" >&2
-  exit 1
-}
-```
-
-Do not run clone, configuration, tmux, or backup commands unless the SSH probe
-succeeds.
-
-#### SSH failure recovery
-
-If SSH does not become ready within 12 attempts:
-
-1. Print the instance ID, latest `actual_status`, SSH URL, and the failed probe
-   count. Do not print API keys or other instance secrets.
-2. Ask the user whether to destroy the unusable instance and retry provisioning.
-3. Do not destroy the instance without confirmation.
-4. If confirmed, destroy that instance and verify it no longer appears in
-   `vastai show instances`.
-5. Return to **Step 1: Search offers** and obtain a fresh offer snapshot. RTX
-   4090 offers from the previous priority list may already be stale, so ask the
-   user to confirm the new priority list before creating another instance.
-6. If the user declines destruction or retry, stop the workflow. Do not attempt
-   setup commands against the failed instance.
-
-Do not change the image, add SSH installation commands, reboot repeatedly, or
-otherwise modify the provisioning command as an SSH workaround. A replacement
-host using the original create command is the recovery path.
-
-### 6. Verify provisioned hardware
-
-Treat every new rental as provisional. After SSH becomes ready, run these
-checks before cloning the repository, tuning configuration, generating data,
-or launching a workload:
-
-```bash
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p "$PORT" "root@$HOST" '
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" '
   set -e
-  echo "=== CPU topology ==="
   lscpu
-  echo "=== Physical cores ==="
+  lscpu -e=CPU,CORE,SOCKET,ONLINE
   lscpu -p=CORE,SOCKET | grep -v "^#" | sort -u | wc -l
-  echo "=== Logical CPUs ==="
   nproc
-  echo "=== CPU quota ==="
-  if [ -r /sys/fs/cgroup/cpu.max ]; then
-    cat /sys/fs/cgroup/cpu.max
-  elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
-    cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us
-    cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
-  else
-    echo "No readable CPU quota file"
-  fi
-  echo "=== GPU and PCIe ==="
+  grep "^Cpus_allowed_list:" /proc/self/status
+  free -b
+  test ! -r /sys/fs/cgroup/memory.max || cat /sys/fs/cgroup/memory.max
+  test ! -r /sys/fs/cgroup/memory/memory.limit_in_bytes || cat /sys/fs/cgroup/memory/memory.limit_in_bytes
+  test ! -r /sys/fs/cgroup/cpu.max || cat /sys/fs/cgroup/cpu.max
+  test ! -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us
+  test ! -r /sys/fs/cgroup/cpu/cpu.cfs_period_us || cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
+  df -hT /workspace /
   nvidia-smi --query-gpu=name,memory.total,power.limit,power.default_limit,pcie.link.gen.max,pcie.link.width.max,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.hw_power_brake_slowdown --format=csv
 '
 ```
 
-Parse and show the results as an acceptance table. Compare actual values with
-the selected offer and enforce all of these requirements:
+Parse and display an acceptance table:
 
 | Check | Requirement |
 |---|---|
-| Physical cores | At least 24 unique `(CORE, SOCKET)` pairs |
+| Physical cores | At least 24 allowed unique `(CORE, SOCKET)` pairs |
 | CPU generation | Zen 3 or newer; reject EPYC 7001/7002 |
-| SMT | Prefer `Thread(s) per core: 1`; call out SMT when physical-core count still passes |
-| CPU quota | At least 90% of advertised `cpu_cores_effective` |
+| CPU quota | At least 90% of advertised effective vCPUs |
+| RAM | At least 64 GB allocated |
 | GPU | Exactly one RTX 4090 with approximately 24 GB VRAM |
 | GPU power | At least 400 W |
-| PCIe capability | At least Gen4 x16; measured offer `pcie_bw` at least 20 GB/s |
-| Throttling | Hardware thermal and power-brake slowdown both inactive |
+| PCIe | Gen4 x16 capability and offer `pcie_bw >= 20` GB/s |
+| Throttling | Thermal and power-brake slowdown inactive |
 
-For cgroup v2, `cpu.max` contains `QUOTA PERIOD`; `max PERIOD` means no quota.
-For cgroup v1, divide `cpu.cfs_quota_us` by `cpu.cfs_period_us`. Values between
-90% and 100% of the advertised effective vCPUs pass but must be called out. A
-finite quota that is below 90%, or an unreadable quota with no way to establish
-the allocation, fails acceptance.
+Count physical cores only from online CPU IDs in `Cpus_allowed_list`, counting
+unique `(CORE, SOCKET)` pairs. Fail if the allowed cpuset cannot be established.
+Interpret finite cgroup CPU and memory limits as the allocation gates; use
+visible memory only when the cgroup limit is unlimited. An idle PCIe link may
+downshift, so maximum Gen4 x16 capability plus the passing offer measurement is
+sufficient unless other evidence indicates restriction.
 
-The active PCIe generation may downshift while idle. Do not reject an instance
-solely because `pcie.link.gen.current` is below Gen4 at idle when the maximum
-link is Gen4 x16 and the offer's measured `pcie_bw` passes. Recheck under CUDA
-load if other evidence suggests a restricted link.
+Compare CPU model, logical CPUs, RAM, GPU identity, GPU power, and PCIe with the
+recorded offer and list every mismatch. Disk and network values come from the
+offer; do not claim the SSH checks measured workload, disk, or upload speed.
 
-If any hard requirement fails, stop before setup, list every failed criterion,
-and ask whether to destroy the provisional instance and return to Step 1. Do
-not destroy it without confirmation. If confirmed, destroy it, verify it no
-longer appears in `vastai show instances`, and obtain a fresh offer snapshot.
+On failure, stop before setup, automatically destroy the provisional instance,
+verify removal, and ask whether to return to Step 1.
+After acceptance, display the committed `workers`, `dataloader_workers`,
+`batch_size`, and all four `final_eval_*` values and ask for final launch
+confirmation. No instance-side config override is permitted.
 
-The repository does not currently provide a dedicated short workload
-acceptance benchmark. Do not claim that workload throughput was validated by
-the hardware checks above; use the documented benchmark as a separate manual
-gate when one is available.
+### 5. Clone and verify the environment
 
-### 7. Tune config
-
-Apply profile-specific overrides for `configs/flywheel/default.yaml`.
-
-**`standard` profile** — all accepted offers have at least 24 verified physical
-cores:
-
-| Physical cores | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
-|---|---:|---:|---:|
-| >= 24 | 12 | 0 | 768 (benchmarked best) |
-
-Benchmark reference (`docs/vast-ai/vast-ai-1.md`):
-- `workers: 12` — 12% faster evaluation, 31% faster DAgger collection vs 6
-- `batch_size: 768` — 49% faster training than 200, best placement (36%)
-- `dataloader_workers: 0` — dataset is in-memory; IPC overhead not justified
-
-**Ablation profiles — parallel (default)** (`intervention-threshold`,
-`dagger-intervention-ratio`) — accepted instance has at least 32 effective vCPUs:
-
-| Effective vCPUs | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
-|---|---:|---:|---:|
-| >= 32 | 6 | 2 | 768 |
-
-Benchmark reference (`docs/vast-ai/ablation-study.md`): four concurrent runs on
-one RTX 4090; identical checkpoints vs sequential with ~3.8× end-to-end speedup.
-
-**Ablation profiles — sequential (fallback)** — use only when the user requested
-sequential or the accepted instance has fewer than 32 effective vCPUs:
-
-| Physical cores | Recommended `workers` | Recommended `dataloader_workers` | `batch_size` |
-|---|---:|---:|---:|
-| >= 24 | 12 | 0 | 768 |
-
-After Step 6, set `ABLATION_SWEEP_MODE` to `parallel` unless sequential fallback
-applies. Record the chosen mode in the final summary.
-
-**Ask the user to confirm** the recommendation or adjust before applying it to
-`configs/flywheel/default.yaml`.
-
-**Do NOT edit, commit, push, or copy the local config file** — these are
-instance-specific tuning values, not repository changes. Apply the overrides
-only on the cloned repository on the instance via SSH after cloning (for
-example, `sed -i -E 's/^workers:.*/workers: 12/' ...`). Verify the instance-side
-overrides with `grep -E 'workers:|batch_size:|dataloader_workers:'`.
-
-### 8. Setup on the instance
-
-Use the SSH URL from `vastai ssh-url INSTANCE_ID` (host and port may differ from
-the create output). Break the setup into batches to avoid overly long SSH
-commands. Substitute the user-approved numeric values for all `CONFIRMED_*`
-placeholders before execution.
+Clone only after all prior confirmations. Substitute the confirmed values:
 
 ```bash
-# Batch 1: clone, uv, CUDA verify
-ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
-  "git clone --branch dev --single-branch \
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "git clone --branch 'GIT_BRANCH' --single-branch \
      https://github.com/skpro19/toy-pickplace.git /workspace/toy-pickplace && \
+   cd /workspace/toy-pickplace && \
+   test \"\$(git branch --show-current)\" = 'GIT_BRANCH' && \
+   test \"\$(git rev-parse HEAD)\" = 'GIT_COMMIT' && \
+   test -f 'FLYWHEEL_CONFIG' && \
+   apt-get update -qq && apt-get install -y -qq \
+     libgl1-mesa-glx libglib2.0-0 libegl1-mesa libgles2-mesa libglfw3 && \
    curl -LsSf https://astral.sh/uv/install.sh | sh && \
    /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
-   cd /workspace/toy-pickplace && \
-   /root/.local/bin/uv run python -c \
-     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'"
-
-# Batch 2: tmux config and confirmed config overrides
-ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
-  "set -e; \
-   touch ~/.no_auto_tmux; \
-   printf '%s\n' 'set -g mouse on' > ~/.tmux.conf; \
-   cd /workspace/toy-pickplace; \
-   sed -i -E \
-     -e 's/^workers:.*/workers: CONFIRMED_WORKERS/' \
-     -e 's/^batch_size:.*/batch_size: CONFIRMED_BATCH_SIZE/' \
-     -e 's/^dataloader_workers:.*/dataloader_workers: CONFIRMED_DATALOADER_WORKERS/' \
-     configs/flywheel/default.yaml; \
-   grep -E '^(workers|batch_size|dataloader_workers):' \
-     configs/flywheel/default.yaml"
-
-# Batch 3: standard profile only -- launch flywheel and TensorBoard
-ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" \
-  "tmux new-session -d -s flywheel \
-     'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python scripts/flywheel.py --config configs/flywheel/default.yaml' && \
-   tmux new-session -d -s tensorboard \
-      'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
+   MUJOCO_GL=egl /root/.local/bin/uv run python -c \
+     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0)); import mujoco, glfw; print(mujoco.__version__, glfw.__version__)'"
 ```
 
-Run Batch 3 only for the `standard` profile. For ablation profiles, do not start
-the `flywheel` session or this TensorBoard session; after Batches 1 and 2, run
-the matching ablation doc's Batch 1 verify step, then:
-- **parallel** (`ABLATION_SWEEP_MODE=parallel`): ablation doc parallel Batch 2
-- **sequential** (`ABLATION_SWEEP_MODE=sequential`): ablation doc sequential Batch 2
+If the checked-out commit differs, stop before setup and restart baseline
+confirmation. Configure tmux only; do not edit YAML:
 
-Then complete ablation Batches 3–4 in the profile's ablation document and
-return to Step 9 to create `vast-ssh` and `tb-ablation`:
-- `intervention-threshold` → @docs/ablation/intervention-threshold.md
-- `dagger-intervention-ratio` → @docs/ablation/dagger-intervention-ratio.md
-
-**ckpt-bkp critical details** (based on `scripts/s3_backup.py`):
-- Always pass `--components checkpoints,runs,results,dagger`; S3 supports the
-  per-episode DAgger objects without the former repository file-count limit.
-- Use the full path `/root/.local/bin/uv` inside tmux sessions started via SSH
-  (the tmux session doesn't inherit the SSH login PATH)
-- Transfer AWS credentials and S3 configuration over SSH standard input. Never
-  interpolate credentials into the SSH command string, arguments, or output.
-  Set them in the remote tmux server environment so the backup session inherits
-  them. `AWS_SESSION_TOKEN`, `AWS_REGION`, and `S3_PREFIX` may be empty.
-
-For the `standard` profile, start this backup session after Batch 3 with the
-timestamp prefix shown below. For ablation profiles, start it only after the
-ablation sweep and TensorBoard sessions have been launched, using the
-ablation-specific prefix specified in the matching ablation document. Do not
-start a second `ckpt-bkp` session.
-
-Example:
 ```bash
-set -a
-. ./.env
-set +a
-BACKUP_PREFIX=$(date +%Y%m%d-%H%M%S)
-printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
-  "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" \
-  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" | \
-  ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" "
-  IFS= read -r S3_BUCKET
-  IFS= read -r AWS_ACCESS_KEY_ID
-  IFS= read -r AWS_SECRET_ACCESS_KEY
-  IFS= read -r AWS_SESSION_TOKEN
-  IFS= read -r AWS_REGION
-  IFS= read -r S3_PREFIX
-  IFS= read -r S3_ENDPOINT_URL
-  [ -n \"\$S3_BUCKET\" ] || { echo 'ERROR: S3_BUCKET transfer failed' >&2; exit 1; }
-  for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
-    [ -z \"\${!name}\" ] || tmux set-environment -g \"\$name\" \"\${!name}\"
-  done
-  tmux new-session -d -s ckpt-bkp \
-    'cd /workspace/toy-pickplace && while true; do \
-      /root/.local/bin/uv run python scripts/s3_backup.py upload \
-        --prefix $BACKUP_PREFIX \
-        --components checkpoints,runs,results,dagger; \
-      sleep 120; \
-    done'
-  for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
-    tmux set-environment -gu \"\$name\"
-  done
-"
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "touch ~/.no_auto_tmux && printf '%s\n' 'set -g mouse on' > ~/.tmux.conf"
 ```
 
-Do not enable shell tracing while handling secrets. Verify that neither
-credentials nor the contents of `.env` appear in command output.
+### 6. Start TensorBoard and local wrappers
 
-Verify the backup is working:
-`ssh -p "$PORT" "root@$HOST" "tmux capture-pane -t ckpt-bkp -p -S -10"`.
-Verify the profile-specific instance-side sessions exist with:
-`ssh -p "$PORT" "root@$HOST" "tmux ls"`.
-
-### 9. Local tmux wrappers
-
-On the dev machine, parse HOST/PORT from `vastai ssh-url INSTANCE_ID` and create
-`vast-ssh` (SSH shell into the instance, using `ServerAliveInterval=30` to
-prevent idle disconnects). For the `standard` profile, also create `tb-setup`.
-For ablation profiles, create `tb-ablation` from the matching ablation document.
+Start one remote TensorBoard session:
 
 ```bash
-SSH_URL=$(vastai ssh-url "$INSTANCE_ID")
-HOST=$(echo "$SSH_URL" | sed 's/.*@//;s/:.*//')
-PORT=$(echo "$SSH_URL" | sed 's/.*://')
-
-tmux new-session -d -s vast-ssh \
-  "ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p $PORT root@$HOST"
-tmux new-session -d -s tb-setup \
-  "ssh -N -L 6006:127.0.0.1:6006 -p $PORT root@$HOST"
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "tmux new-session -d -s tensorboard \
+     'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main \
+      --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
 ```
 
-Run the `tb-setup` command only for the `standard` profile.
-
-### 10. Local download and replay (follow-up)
-
-Do not wait for training or a checkpoint before completing the `standard`
-profile. Print these as follow-up commands after flywheel has produced at least
-one checkpoint (or after the run completes). For ablation profiles, use the
-offline download and replay instructions in the matching ablation document.
+Poll its local endpoint for up to 12 attempts at five-second intervals. Stop
+before launch if the session exits or `http://127.0.0.1:6006/` does not become
+reachable:
 
 ```bash
-# List available sessions in S3
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "for i in \$(seq 1 12); do
+     tmux has-session -t tensorboard 2>/dev/null &&
+       curl -fsS http://127.0.0.1:6006/ >/dev/null && exit 0
+     sleep 5
+   done
+   tmux capture-pane -t tensorboard -p -S -20 2>/dev/null || true
+   exit 1"
+```
+
+Immediately allocate the lowest unused non-negative `LOCAL_WORKFLOW_INDEX`
+under `flock` on `/tmp/toy-pickplace-flywheel-local-wrapper.lock`. Set:
+
+```text
+LOCAL_TB_PORT=6006 + LOCAL_WORKFLOW_INDEX
+LOCAL_SSH_SESSION=vast-ssh-LOCAL_WORKFLOW_INDEX
+LOCAL_TB_SESSION=tb-flywheel-LOCAL_WORKFLOW_INDEX
+```
+
+An index is occupied if either tmux session exists or its port is listening.
+Select and create the wrappers while holding the lock:
+
+```bash
+set -e
+exec 9>/tmp/toy-pickplace-flywheel-local-wrapper.lock
+flock 9
+LOCAL_WORKFLOW_INDEX=""
+for index in $(seq 0 999); do
+  candidate_ssh_session="vast-ssh-$index"
+  candidate_tb_session="tb-flywheel-$index"
+  candidate_tb_port=$((6006 + index))
+  if tmux has-session -t "$candidate_ssh_session" 2>/dev/null ||
+    tmux has-session -t "$candidate_tb_session" 2>/dev/null ||
+    ss -ltn "sport = :$candidate_tb_port" | grep -q LISTEN; then
+    continue
+  fi
+  LOCAL_WORKFLOW_INDEX=$index
+  LOCAL_SSH_SESSION=$candidate_ssh_session
+  LOCAL_TB_SESSION=$candidate_tb_session
+  LOCAL_TB_PORT=$candidate_tb_port
+  break
+done
+test -n "$LOCAL_WORKFLOW_INDEX"
+tmux new-session -d -s "$LOCAL_SSH_SESSION" \
+  "ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+    -o ServerAliveInterval=30 -p $PORT root@$HOST"
+tmux new-session -d -s "$LOCAL_TB_SESSION" \
+  "ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -N \
+    -L $LOCAL_TB_PORT:127.0.0.1:6006 -p $PORT root@$HOST"
+tmux has-session -t "$LOCAL_SSH_SESSION"
+tmux has-session -t "$LOCAL_TB_SESSION"
+LOCAL_TB_READY=false
+for i in $(seq 1 12); do
+  if tmux has-session -t "$LOCAL_TB_SESSION" 2>/dev/null &&
+    curl -fsS "http://127.0.0.1:$LOCAL_TB_PORT/" >/dev/null; then
+    LOCAL_TB_READY=true
+    break
+  fi
+  sleep 1
+done
+test "$LOCAL_TB_READY" = true
+flock -u 9
+exec 9>&-
+```
+
+Print `http://localhost:$LOCAL_TB_PORT`. Stop before launch and report the
+relevant local tmux output if either wrapper fails. Do not ask the user to
+choose an index.
+
+### 7. Materialize and launch the durable runner
+
+Create these paths on the instance:
+
+```text
+CONTROL_DIR/
+CONTROL_DIR/logs/
+CONTROL_DIR/state/
+CONTROL_DIR/state/history/
+```
+
+Build `runner.sh` locally, base64-encode it, and decode it into `CONTROL_DIR`.
+Do not use a heredoc inside a double-quoted SSH command because its variables
+can expand in the wrong shell. Do not copy transient control files back to the
+repository.
+
+The executable runner must:
+
+1. use `set -o pipefail` and export `MUJOCO_GL=egl`;
+2. atomically write `running` to `state/run-status`;
+3. run exactly `/root/.local/bin/uv run python scripts/flywheel.py --config
+   FLYWHEEL_CONFIG --run-name RUN_NAME` from `/workspace/toy-pickplace`;
+4. stream stdout and stderr to both the pane and `logs/RUN_NAME.log` with
+   `tee -a`;
+5. preserve the flywheel exit code using `${PIPESTATUS[0]}`;
+6. atomically write `succeeded 0` and `state/completed` on success, or
+   `failed EXIT_CODE` and `state/failed` on failure;
+7. exit with the flywheel process's exit code.
+
+Every state update must use a temporary file followed by `mv`. A missing tmux
+session is never a success signal. The persisted log and state files are
+authoritative.
+
+Before the first launch, fail if any of these run-specific artifact paths
+already exists, even if the control directory is new:
+
+```text
+data/flywheel/RUN_NAME
+checkpoints/flywheel/RUN_NAME
+runs/flywheel/RUN_NAME
+results/flywheel/RUN_NAME
+```
+
+List every collision and require a new run name for a new launch. Existing
+artifacts may be inspected during recovery, but this workflow never relaunches
+`flywheel.py` into them. Never treat an unrelated existing run as a recovery
+target. Start the runner once in remote session `flywheel-run`. Refuse to launch
+if the session or any run/control artifact already exists. Poll until
+`state/run-status` says `running`, verify `flywheel-run` and `tensorboard` exist,
+and stop if the runner exits before the marker appears. The runner may continue
+after the agent disconnects.
+
+### 8. Start checkpoint backup
+
+After the run is marked `running`, start one `ckpt-bkp` session. Its wrapper
+must wait until an artifact exists specifically under
+`checkpoints/flywheel/RUN_NAME`, `runs/flywheel/RUN_NAME`,
+`data/flywheel/RUN_NAME`, or `results/flywheel/RUN_NAME`, then run every 120
+seconds:
+
+```bash
+/root/.local/bin/uv run python scripts/s3_backup.py upload \
+  --prefix "$RUN_NAME" \
+  --components checkpoints,runs,results,dagger \
+  "$RUN_NAME"
+```
+
+The positional `RUN_NAME` is mandatory. Never upload whole component roots;
+that can mix artifacts from other runs and can let old files satisfy the new
+run's initial-backup gate.
+
+Before each upload, atomically update `state/backup-cycle-started`. After a
+successful upload, atomically update `state/backup-last-succeeded`. On failure,
+atomically write `state/backup-failed` and exit non-zero.
+
+Transfer `S3_BUCKET`, AWS credentials, region, prefix, endpoint, and profile
+over SSH standard input only. Pass them to the backup wrapper with an `env`
+prefix on `tmux new-session`; never place credentials in the SSH command,
+wrapper file, logs, pane output, or tmux global environment. Use the absolute
+`uv` path. Refuse to start if `ckpt-bkp` already exists.
+
+Poll for up to ten minutes for `state/backup-last-succeeded`. Fail immediately
+if `state/backup-failed` appears or `ckpt-bkp` exits. After success, inspect the
+last ten pane lines without exposing credentials and verify the session remains
+active. A later `backup-failed` marker or unexpected stopped session is a
+workflow failure even if an earlier upload succeeded. If the initial backup
+fails before the local supervisor starts, upload diagnostics best-effort,
+destroy the instance, and verify removal directly.
+
+### 9. Materialize automatic held-out evaluation
+
+Materialize `CONTROL_DIR/heldout-eval.sh` before starting the local supervisor,
+using the same local-build and base64-transfer method as the runner. It must:
+
+1. use `set -o pipefail`, export `MUJOCO_GL=egl`, and refuse to run if
+   `state/heldout-completed` or `state/heldout-failed` exists;
+2. parse `results/flywheel/RUN_NAME/metrics.json`, require a non-empty `rounds`
+   list, and verify every listed round has
+   `checkpoints/flywheel/RUN_NAME/round-NNN/best.pt`;
+3. read `final_eval_episodes`, `final_eval_seed`, `final_eval_workers`, and
+   `final_eval_capture_hz` from `metrics.json.config`, validate them against the
+   same constraints used by `scripts/flywheel.py`, and never prompt or invent
+   overrides;
+4. fail if any expected output already exists. Automated first launch never
+   archives, overwrites, or treats an old output as current;
+5. run exactly `/root/.local/bin/uv run python scripts/final_score.py --run-name
+   RUN_NAME` from `/workspace/toy-pickplace`. The evaluator inherits all four
+   held-out values from `metrics.json`;
+6. stream stdout and stderr to `logs/heldout-eval-RUN_NAME.log` and preserve the
+   evaluator exit code using `${PIPESTATUS[0]}`;
+7. validate that these three non-empty outputs exist:
+
+```text
+results/flywheel/RUN_NAME/final_scores.json
+results/flywheel/RUN_NAME/final_scores_comparison.png
+results/RUN_NAME-final-score-curve.png
+```
+
+8. validate that `final_scores.json` records the exact committed episodes,
+   seed, workers, capture rate, and every round from `metrics.json`;
+9. strip leading/trailing `/` from `S3_PREFIX`, then upload the three files
+   with `boto3.client("s3").upload_file` to these effective keys (omit the
+   leading `S3_PREFIX/` segment when it is empty):
+
+```text
+S3_PREFIX/RUN_NAME/results/RUN_NAME/final_scores.json
+S3_PREFIX/RUN_NAME/results/RUN_NAME/final_scores_comparison.png
+S3_PREFIX/RUN_NAME/results/RUN_NAME/RUN_NAME-final-score-curve.png
+```
+
+10. verify each exact object with `head_object` and matching content length;
+11. atomically write `state/heldout-completed` only after all three
+    verifications, or `state/heldout-failed` with the exit code on any failure.
+
+Do not use a component-wide results upload after evaluation. It can delete or
+mix objects outside this exact output set. Give AWS credentials only to the
+single `heldout-eval` process through SSH standard input and its inherited
+environment. Never put credentials in the wrapper, command arguments, tmux
+global environment, logs, or pane output.
+
+### 10. Start the durable local supervisor
+
+Set `LOCAL_SUPERVISOR_SESSION=flywheel-supervisor-LOCAL_WORKFLOW_INDEX` and
+reserve it under the same local wrapper lock. Build a generic local supervisor
+at `/tmp/toy-pickplace-flywheel-supervisor.sh`; the file may refer to `.env` but
+must not contain secret values or a transient endpoint. Pass `INSTANCE_ID`,
+`HOST`, `PORT`, `RUN_NAME`, `CONTROL_DIR`, and local tmux session names as
+arguments when starting it. Source `.env` inside the supervisor with tracing
+disabled so `VAST_API_KEY` and AWS credentials remain local.
+
+The supervisor must implement this state machine:
+
+| State | Required action |
+|---|---|
+| Running | Poll remote state files every 30 seconds; tmux membership is diagnostic only |
+| Training failed | Record the exit code, upload control logs/state best-effort, then clean up |
+| Backup failed or stopped | Record the failure, upload control logs/state best-effort, then clean up |
+| Training completed | Wait up to ten minutes for a backup cycle started after `state/completed` and succeeded after its start |
+| Final backup fresh | Stop and verify removal of `ckpt-bkp`, then launch `heldout-eval` exactly once via secure credential transfer |
+| Evaluation failed | Upload control logs/state best-effort, then clean up |
+| Evaluation completed | Recheck the three exact S3 objects and sizes from the local supervisor, then clean up successfully |
+| SSH degraded | Refresh `actual_status` and `vastai ssh-url`; repin a changed endpoint and continue polling while Vast reports `running` |
+| Instance terminal | When Vast reports a terminal status, upload diagnostics when reachable, then clean up |
+
+The fresh-backup gate remains:
+
+```bash
+test "$CONTROL_DIR/state/backup-cycle-started" -nt "$CONTROL_DIR/state/completed"
+test "$CONTROL_DIR/state/backup-last-succeeded" -nt "$CONTROL_DIR/state/backup-cycle-started"
+```
+
+For best-effort failure diagnostics, upload regular files under
+`CONTROL_DIR/logs` and `CONTROL_DIR/state` below
+`S3_PREFIX/RUN_NAME/control/logs/` and `S3_PREFIX/RUN_NAME/control/state/`,
+preserving relative names and omitting the `S3_PREFIX/` segment when empty.
+Never upload credential material. Diagnostic upload failure must be recorded
+locally but must not block destruction, per the selected cleanup policy. Bound
+the entire diagnostic attempt to five minutes so cleanup cannot hang on S3.
+
+On every terminal state, successful or failed, the supervisor must:
+
+1. run `vastai destroy instance "$INSTANCE_ID"` locally;
+2. poll `vastai show instances --raw` until the numeric ID is absent, for up to
+   30 attempts at ten-second intervals;
+3. retry the destroy command once if the ID remains, then record a prominent
+   local cleanup failure instead of claiming success;
+4. stop the local SSH and TensorBoard wrapper sessions after destruction;
+5. atomically write a terminal summary to
+   `/tmp/toy-pickplace-flywheel-RUN_NAME.status`, including workflow outcome,
+   diagnostic-upload outcome, destruction outcome, and uploaded result keys.
+
+Start the supervisor in detached tmux and verify it remains active through its
+first successful remote poll. Print its attach command. Never transfer
+`VAST_API_KEY` to the instance. The local machine and tmux server must remain
+running; a terminal or OpenCode disconnect is safe, but a local reboot is not.
+Do not treat SSH or local-network unavailability as terminal. Refresh the Vast
+status and endpoint after three failed probes. If the endpoint changes, pin its
+host key before reconnecting. While Vast reports `running`, keep polling and
+never destroy based only on failed SSH probes. After 120 consecutive failures,
+write a prominent local alert and continue at a slower five-minute interval.
+If both the Vast API and SSH are unavailable, keep retrying and record the
+degraded state; do not infer instance failure from missing connectivity.
+
+### 11. Follow-up download and replay
+
+Print these as optional commands only; do not download automatically:
+
+```bash
 set -a; . ./.env; set +a
-uv run python scripts/s3_backup.py list
-
-# Download a specific run from the latest session
-uv run python scripts/s3_backup.py download 20260717-153000/run-003
-
-# View TensorBoard locally (no SSH tunnel needed)
-tensorboard --logdir runs/flywheel/
-
-# Re-evaluate on held-out seeds
-uv run python scripts/final_score.py --run-name run-003
+uv run python scripts/s3_backup.py download RUN_NAME/RUN_NAME
+uv run python scripts/final_score.py --run-name RUN_NAME/RUN_NAME
+uv run python scripts/final_score.py --run-name RUN_NAME/RUN_NAME --plot-only
 ```
 
 ## Final output
 
-Provisioning is complete after the profile-specific instance-side sessions and
-local tmux wrappers have been verified. Then print a summary with:
-- Instance ID
-- For ablation profiles: active profile name, `ABLATION_SWEEP_MODE`
-  (`parallel` or `sequential`), and applied `workers` / `dataloader_workers`
-  values
-- SSH URL retrieval command (`vastai ssh-url INSTANCE_ID`)
-- Local attach commands for `vast-ssh` and the profile-specific TensorBoard
-  tunnel (`tb-setup` or `tb-ablation`)
-- SSH commands that attach directly to the remote workload session(s):
-  - `standard`: `flywheel`
-  - `intervention-threshold` parallel: `ablation-0.05`, `ablation-0.1`,
-    `ablation-0.2`, `ablation-0.3`
-  - `intervention-threshold` sequential: `ablation-sweep`
-  - `dagger-intervention-ratio` parallel: `ablation-0.2`, `ablation-0.5`,
-    `ablation-0.8`, `ablation-1.0`
-  - `dagger-intervention-ratio` sequential: `ablation-sweep`
-  - plus `tensorboard` and `ckpt-bkp` (for example,
-    `ssh -t -p "$PORT" "root@$HOST" 'tmux attach -t flywheel'`)
-- TensorBoard URL
-- Download command (`uv run python scripts/s3_backup.py download ...`)
-- Destroy command for cleanup
+Provisioning setup is complete after hardware acceptance, TensorBoard, local
+wrappers, `flywheel-run`, initial backup, held-out wrapper, and local supervisor
+are verified. The workflow is complete only when the supervisor reaches a
+terminal state and verifies instance destruction. A successful workflow also
+requires training completion, a fresh final backup, held-out completion, and
+all three result objects verified on S3.
 
-## Notes
+Print:
 
-- Do not store API keys, instance API keys, Jupyter tokens, SSH keys, or transient host/port in any file.
-- **RTX 4090 offers are extremely volatile** — they appear and disappear within seconds. Do not check availability before creating; just try `--cancel-unavail` and move to the next offer on failure.
-- The rapid-fire loop must **stop after the first successful create** to avoid creating multiple instances. Use a flag variable and `break` carefully.
+- confirmed branch, commit, config path, exact fixed parameters, and root seed;
+- run name (encoding arch and selected params), instance label, instance ID, and SSH URL command;
+- advertised effective vCPUs, verified physical cores, CPU quota, RAM, GPU,
+  power, and PCIe acceptance results;
+- committed `workers`, `dataloader_workers`, `batch_size`, and all four
+  `final_eval_*` values;
+- `CONTROL_DIR`, durable run state, log path, and remote attach command;
+- local SSH, TensorBoard, and supervisor attach commands and TensorBoard URL;
+- backup state, S3 prefix, optional download and replay commands;
+- held-out settings, state, log, and all three exact uploaded result paths;
+- terminal supervisor status path and verified instance-destruction state.
+
+## Safety notes
+
+- Never store API keys, AWS credentials, tokens, or transient SSH endpoints in
+  repository or remote workflow files.
+- RTX 4090 offers are volatile. Use the confirmed shortlist directly with
+  `--cancel-unavail` and stop after the first successful create.
+- Advertised effective vCPUs never bypass the SSH physical-core gate.
+- The committed config is immutable for this workflow; there are no parameter
+  sweeps, per-run experiment overrides, concurrency calculations, or batches.
+- Held-out evaluation always runs after a fresh final backup and uploads only
+  its JSON and two plots under `S3_PREFIX/RUN_NAME/results/RUN_NAME/`.
+- Every terminal state triggers destruction. Failure diagnostics are
+  best-effort so an upload outage cannot keep a billed instance alive.
