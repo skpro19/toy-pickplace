@@ -44,4 +44,4 @@ final_eval_capture_hz: 60
 workers: 12 # eval + rollout workers
 
 # seeds
-global_seed: 1  # derives expert collection, training, DAgger, and in-loop evaluation seeds
+global_seed: 420  # derives expert collection, training, DAgger, and in-loop evaluation seeds
