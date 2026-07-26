@@ -1,6 +1,6 @@
 ---
 description: Provision one RTX 4090 and run one config-defined flywheel
-agent: build
+agent: flywheel-4090
 ---
 
 Run one standard flywheel on one Vast.ai RTX 4090. This command owns baseline
@@ -34,15 +34,38 @@ This command accepts no experiment parameter arguments. If arguments are
 provided, explain that this workflow runs the committed config unchanged and
 stop.
 
-Ask the user to select the Git branch and committed flywheel config to clone,
-defaulting to `dev` and the standard config, then set:
+Before asking questions, inspect only the local `configs/flywheel/` directory.
+Collect regular files ending in `.yaml` or `.yml`, rank them newest first by
+the later of their filesystem creation and modification timestamps (use the
+modification timestamp when creation time is unavailable), and retain the top
+five. Resolve ties by path in ascending order. Do not read config contents or
+run any other workflow commands yet.
+
+Then make exactly one call to the built-in Question tool containing all three
+of these questions at the same time:
+
+1. **Branch**: select the Git branch to clone. Recommend `dev`, offer `main`,
+   and allow a custom branch.
+2. **Config file**: select the committed flywheel config path. Offer the five
+   paths discovered above in newest-first order and allow a custom path. Mark
+   the newest path as recommended.
+3. **Run-name params**: select zero or more additional top-level config
+   parameter names to encode in the run name. Explain that `arch` is always
+   included implicitly. Offer `No additional params`, `dagger_rounds`,
+   `num_expert_episodes`, `epochs`, and `batch_size`; allow multiple choices
+   and a custom comma-separated answer. Treat `No additional params` as an
+   empty selection and reject it if combined with another choice.
+
+Do not ask these three questions separately or repeat any of them later. From
+the single Question-tool response, set:
 
 ```text
 GIT_BRANCH=<confirmed branch>
 FLYWHEEL_CONFIG=<confirmed committed config path>
+RUN_NAME_PARAMS=<ordered list of selected param names, excluding arch>
 ```
 
-The default config path is
+The standard config path is
 `configs/flywheel/default_mlp_vision_instance.yaml`. A smoke test may use a
 dedicated committed smoke config, but it remains immutable and follows every
 normal workflow gate. Display and confirm its complete contents before
@@ -87,15 +110,11 @@ working-tree copies for planning. Then ask the user to confirm this immutable
 experiment baseline. Never dump raw YAML in the response — always use the
 grouped table format.
 
-After the user confirms the baseline, ask which top-level config parameters
-should be encoded in the run name. Present the parsed key-value pairs from
-`REMOTE_CONFIG` and let the user select zero or more parameters by name.
-`arch` is always included implicitly. Validate each selected name exists in
-the parsed config and that its value is a scalar. Collect the ordered list:
-
-```text
-RUN_NAME_PARAMS=<ordered list of selected param names>
-```
+After the user confirms the baseline, validate every previously selected
+`RUN_NAME_PARAMS` name against the parsed `REMOTE_CONFIG`. Each name must exist
+at the top level, must not be `arch`, and must have a scalar value. Preserve the
+selection order and reject duplicates. If a selection is invalid, explain why
+and stop; do not ask the three initial questions again in the same invocation.
 
 After confirmation, set each value once:
 
@@ -115,14 +134,13 @@ INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
 CONTROL_DIR="/workspace/toy-pickplace/.flywheel/${RUN_NAME}"
 ```
 
-The user may replace the generated `RUN_NAME` before provisioning. Validate a
-custom name against `^[A-Za-z0-9][A-Za-z0-9._=-]*$`. Keep `RUN_NAME` unchanged
-after confirmation and derive `INSTANCE_LABEL`, and
-`CONTROL_DIR` from the final value. A new launch must not reuse an existing S3
-prefix. A recovery may retain its previously recorded prefix only when the
-matching instance and control state establish that it is the same workflow.
+Keep the generated `RUN_NAME` unchanged and derive `INSTANCE_LABEL` and
+`CONTROL_DIR` from it. A new launch must not reuse an existing S3 prefix. A
+recovery may retain its previously recorded prefix only when the matching
+instance and control state establish that it is the same workflow.
 
-Display and explicitly confirm the complete plan before loading secrets:
+Display the complete plan for information, then proceed without asking for
+another confirmation:
 
 | Item | Required value |
 |---|---|
