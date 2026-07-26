@@ -260,14 +260,17 @@ EPYC 7003, then modern Ryzen 7000/9000), lowest price, disk bandwidth, and
 reliability. Reject EPYC 7001/7002. CPU model is only a ranking hint because
 the SSH allocation gate is authoritative. Do not use `cpu_ghz`.
 
-Do not weaken a hard filter without explicit approval. If no offer passes, ask
-whether to wait or relax named criteria. Otherwise recommend an offer and ask
-the user to confirm one offer or an ordered shortlist of three to five current
-offers. Do not run a separate availability check.
+Automatically select the best offer (or an ordered shortlist of up to three)
+as long as every selected offer is priced below $0.60/hr. Do not ask the user
+to confirm the selection. If the first offer becomes unavailable during
+provisioning, fall back to the next without asking. Do not weaken a hard
+filter without explicit approval. If no offer passes the filters, stop and
+ask whether to wait or relax named criteria. Do not run a separate
+availability check.
 
 ### 2. Provision one instance
 
-Try the confirmed offers in order:
+Try the selected offers in order:
 
 ```bash
 CREATED=false
@@ -397,11 +400,12 @@ Compare CPU model, logical CPUs, RAM, GPU identity, GPU power, and PCIe with the
 recorded offer and list every mismatch. Disk and network values come from the
 offer; do not claim the SSH checks measured workload, disk, or upload speed.
 
-On failure, stop before setup, automatically destroy the provisional instance,
-verify removal, and ask whether to return to Step 1.
+On failure, automatically destroy the provisional instance, verify removal,
+then return to Step 1 automatically to search for and provision a replacement.
+Do not seek user permission for the retry.
 After acceptance, display the committed `workers`, `dataloader_workers`,
-`batch_size`, and all four `final_eval_*` values and ask for final launch
-confirmation. No instance-side config override is permitted.
+`batch_size`, and all four `final_eval_*` values and proceed with the launch
+automatically. No instance-side config override is permitted.
 
 ### 5. Clone and verify the environment
 
