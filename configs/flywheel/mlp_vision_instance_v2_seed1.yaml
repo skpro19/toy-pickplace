@@ -13,7 +13,7 @@ train_capture_hz: 60  # obs/action/image rate for expert data and DAgger rollout
 # training
 epochs: 1000
 batch_size: 768
-early_stop_patience: 50
+early_stop_patience: 100
 dataloader_workers: 4
 persistent_workers: true
 
@@ -44,4 +44,4 @@ final_eval_capture_hz: 60
 workers: 12 # eval + rollout workers
 
 # seeds
-global_seed: 0  # derives expert collection, training, DAgger, and in-loop evaluation seeds
+global_seed: 1  # derives expert collection, training, DAgger, and in-loop evaluation seeds
