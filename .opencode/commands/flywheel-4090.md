@@ -34,12 +34,19 @@ This command accepts no experiment parameter arguments. If arguments are
 provided, explain that this workflow runs the committed config unchanged and
 stop.
 
-Ask the user to select the Git branch to clone, defaulting to `dev`, and set:
+Ask the user to select the Git branch and committed flywheel config to clone,
+defaulting to `dev` and the standard config, then set:
 
 ```text
 GIT_BRANCH=<confirmed branch>
-FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml
+FLYWHEEL_CONFIG=<confirmed committed config path>
 ```
+
+The default config path is
+`configs/flywheel/default_mlp_vision_instance.yaml`. A smoke test may use a
+dedicated committed smoke config, but it remains immutable and follows every
+normal workflow gate. Display and confirm its complete contents before
+provisioning.
 
 Validate and load the remote files without changing the local checkout:
 
