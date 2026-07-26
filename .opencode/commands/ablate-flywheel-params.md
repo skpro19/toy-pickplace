@@ -108,7 +108,7 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    planned concurrency range, estimated batch count, and the exact resolved
    `BACKUP_PREFIX`. Clearly distinguish config-resolved experiment values from
    tier-derived infrastructure overrides. Ask the user to explicitly confirm
-   the entire run and infrastructure plan, including the HF backup prefix name,
+   the entire run and infrastructure plan, including the S3 backup prefix name,
    before Step 0. Do not ask them to reconfirm the baseline. Do not reconfirm it
    after provisioning or immediately before cloning; the post-provision launch
    confirmation remains required.
@@ -243,19 +243,20 @@ Before starting, ensure these are available on the development machine:
 |---|---|
 | `vastai` CLI | `which vastai` |
 | `VAST_API_KEY` | Set in `.env` |
-| `HF_TOKEN` | Set in `.env` |
+| `S3_BUCKET` and AWS credentials | Set in `.env`, unless the instance has an IAM role |
 | `tmux` | `which tmux` |
 | `flock` | `which flock` |
 
-Source `.env` at the start and abort if either token is missing. Tell the user
-which variable is missing and that it must be added to `.env`; never print
-secret values or enable shell tracing.
+Source `.env` at the start and require `VAST_API_KEY` and `S3_BUCKET`. Unless
+the instance has an IAM role, also require `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`. Tell the user which variable is missing and that it
+must be added to `.env`; never print secret values or enable shell tracing.
 
 ## Workflow
 
 ### 0. Load secrets
 
-Load `.env` without shell tracing and require both tokens:
+Load `.env` without shell tracing and require the configuration:
 
 ```bash
 set -a
@@ -265,8 +266,8 @@ test -n "${VAST_API_KEY:-}" || {
   printf '%s\n' 'ERROR: VAST_API_KEY is missing from .env' >&2
   exit 1
 }
-test -n "${HF_TOKEN:-}" || {
-  printf '%s\n' 'ERROR: HF_TOKEN is missing from .env' >&2
+test -n "${S3_BUCKET:-}" || {
+  printf '%s\n' 'ERROR: S3_BUCKET is missing from .env' >&2
   exit 1
 }
 ```
@@ -771,21 +772,30 @@ pane and stop.
 
 After `state/batch-1-started` exists, start one `ckpt-bkp` session once.
 The uploader must use `BACKUP_PREFIX` and run every 120 seconds so newly written
-checkpoints, TensorBoard logs, and results are copied during long grids. Exclude
-the `dagger` component: its per-episode `.npz` count can exceed the HuggingFace
-Hub 20,000-file limit.
+checkpoints, TensorBoard logs, DAgger data, and results are copied during long
+grids.
 
-Transfer `HF_TOKEN` over SSH standard input only. Do not place it in the SSH
-command string, arguments, output, or a file. Set it in the remote tmux server
-environment so `ckpt-bkp` inherits it:
+Transfer AWS credentials and S3 configuration over SSH standard input only. Do
+not place credentials in the SSH command string, arguments, output, or a file.
+Set the values in the remote tmux server environment so `ckpt-bkp` inherits
+them. `AWS_SESSION_TOKEN`, `AWS_REGION`, `S3_PREFIX`, and `S3_ENDPOINT_URL` may
+be empty:
 
 ```bash
-printf '%s\n' "$HF_TOKEN" | \
+printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
+  "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" \
+  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" | \
   ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" "
     set -e
-    IFS= read -r HF_TOKEN
-    test -n \"\$HF_TOKEN\" || {
-      printf '%s\\n' 'ERROR: HF_TOKEN transfer failed' >&2
+    IFS= read -r S3_BUCKET
+    IFS= read -r AWS_ACCESS_KEY_ID
+    IFS= read -r AWS_SECRET_ACCESS_KEY
+    IFS= read -r AWS_SESSION_TOKEN
+    IFS= read -r AWS_REGION
+    IFS= read -r S3_PREFIX
+    IFS= read -r S3_ENDPOINT_URL
+    test -n \"\$S3_BUCKET\" || {
+      printf '%s\\n' 'ERROR: S3_BUCKET transfer failed' >&2
       exit 1
     }
     if tmux has-session -t ckpt-bkp 2>/dev/null; then
@@ -799,8 +809,10 @@ printf '%s\n' "$HF_TOKEN" | \
           $CONTROL_DIR/state/backup-history/\$marker-\$(date +%s%N)
       fi
     done
-    tmux set-environment -g HF_TOKEN \"\$HF_TOKEN\"
-    trap 'tmux set-environment -gu HF_TOKEN' EXIT
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+      test -z \"\${!name}\" || tmux set-environment -g \"\$name\" \"\${!name}\"
+    done
+    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do tmux set-environment -gu "\$name"; done' EXIT
     tmux new-session -d -s ckpt-bkp \
       'cd /workspace/toy-pickplace && while true; do \
          if ! find checkpoints/flywheel runs/flywheel results/flywheel \
@@ -809,10 +821,9 @@ printf '%s\n' "$HF_TOKEN" | \
            continue; \
          fi; \
          touch $CONTROL_DIR/state/backup-cycle-started; \
-         if /root/.local/bin/uv run python scripts/hf_backup.py \
-              --repo skpro19/toy-pickplace-flywheel upload \
+         if /root/.local/bin/uv run python scripts/s3_backup.py upload \
               --prefix $BACKUP_PREFIX \
-              --components checkpoints,runs,results; then \
+              --components checkpoints,runs,results,dagger; then \
            touch $CONTROL_DIR/state/backup-last-succeeded; \
          else \
            touch $CONTROL_DIR/state/backup-failed; \
@@ -820,21 +831,23 @@ printf '%s\n' "$HF_TOKEN" | \
          fi; \
          sleep 120; \
        done'
-    tmux set-environment -gu HF_TOKEN
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+      tmux set-environment -gu \"\$name\"
+    done
     trap - EXIT
-    unset HF_TOKEN
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
   "
 ```
 
-The `--repo` option must precede the `upload` subcommand. Use the absolute uv
-path because detached tmux sessions do not reliably inherit the login `PATH`.
-The backup session inherits the token at creation, after which the command
-removes it from tmux's global environment and the remote shell. The `EXIT` trap
-also clears it if session creation fails. Do not start another backup session
-if `ckpt-bkp` already exists. Before a confirmed restart, old backup markers
-are moved to `state/backup-history/` so they cannot satisfy or fail the new
-attempt. The uploader waits for the first artifact file instead of treating an
-empty new run as an upload failure.
+Use the absolute uv path because detached tmux sessions do not reliably inherit
+the login `PATH`. The backup session inherits S3 configuration at creation,
+after which the command removes it from tmux's global environment and removes
+credentials from the remote shell. The `EXIT` trap also clears it if session
+creation fails. Do not start another backup session if `ckpt-bkp` already
+exists. Before a confirmed restart, old backup markers are moved to
+`state/backup-history/` so they cannot satisfy or fail the new attempt. The
+uploader waits for the first artifact file instead of treating an empty new run
+as an upload failure.
 
 Verify a completed initial upload, not merely the tmux session. Poll for up to
 ten minutes and fail immediately if the uploader exits or writes
@@ -951,7 +964,7 @@ GPU is never shared by multiple held-out evaluations.
 Run this stage entirely on the accepted instance. Do not download checkpoints,
 metrics, or results to the development machine. Instance paths use the original
 `RUN_PLAN` run names, such as `checkpoints/flywheel/RUN_NAME` and
-`results/flywheel/RUN_NAME`; `BACKUP_PREFIX` is an HF session namespace and is
+`results/flywheel/RUN_NAME`; `BACKUP_PREFIX` is an S3 session namespace and is
 not part of those instance-side paths.
 
 #### Stop the periodic backup after final freshness
@@ -996,15 +1009,15 @@ script must:
 6. validate that `results/flywheel/{run_name}/final_scores.json` is non-empty,
    valid JSON, records the confirmed evaluation settings, and contains a result
    for every discovered `best.pt` round;
-7. upload exactly that JSON file with `HfApi.upload_file` to
+7. upload exactly that JSON file with `boto3.client("s3").upload_file` to
    `BACKUP_PREFIX/results/{run_name}/final_scores.json`;
-8. verify that exact path appears in `HfApi.list_repo_files`;
+8. verify that exact object with `head_object` and its content length;
 9. atomically write per-run running, succeeded, or failed status and stop on
    the first failure without evaluating later runs;
 10. atomically write `state/heldout-completed` only after every run's JSON was
     uploaded and verified.
 
-Use `HfApi.upload_file`, not `scripts/hf_backup.py upload --components
+Use `boto3` directly, not `scripts/s3_backup.py upload --components
 results`: component upload would include `metrics.json`, plots, and any other
 files in the results directories. `final_score.py` may generate plots on the
 instance, but this stage must not upload them. They can be regenerated later
@@ -1020,10 +1033,10 @@ import os
 import sys
 from pathlib import Path
 
-from huggingface_hub import HfApi
+import boto3
 
 result_path = Path(sys.argv[1])
-hf_path = sys.argv[2]
+s3_key = sys.argv[2]
 expected_episodes = int(sys.argv[3])
 expected_seed = int(sys.argv[4])
 expected_rounds = int(sys.argv[5])
@@ -1033,18 +1046,17 @@ assert data["eval_episodes"] == expected_episodes, data["eval_episodes"]
 assert data["final_eval_seed"] == expected_seed, data["final_eval_seed"]
 assert len(data["rounds"]) == expected_rounds, len(data["rounds"])
 
-api = HfApi(token=os.environ["HF_TOKEN"])
-api.upload_file(
-    path_or_fileobj=str(result_path),
-    path_in_repo=hf_path,
-    repo_id="skpro19/toy-pickplace-flywheel",
-    repo_type="model",
-    commit_message="add held-out evaluation scores",
+bucket = os.environ["S3_BUCKET"]
+key_prefix = os.environ.get("S3_PREFIX", "").strip("/")
+object_key = "/".join(part for part in (key_prefix, s3_key) if part)
+client = boto3.client(
+    "s3",
+    region_name=os.environ.get("AWS_REGION"),
+    endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
 )
-assert hf_path in api.list_repo_files(
-    repo_id="skpro19/toy-pickplace-flywheel",
-    repo_type="model",
-), hf_path
+client.upload_file(str(result_path), bucket, object_key)
+metadata = client.head_object(Bucket=bucket, Key=object_key)
+assert metadata["ContentLength"] == result_path.stat().st_size, metadata
 ' \
   "results/flywheel/$run_name/final_scores.json" \
   "$BACKUP_PREFIX/results/$run_name/final_scores.json" \
@@ -1052,33 +1064,45 @@ assert hf_path in api.list_repo_files(
 ```
 
 Start the materialized script once in a remote `heldout-eval` tmux session.
-Transfer `HF_TOKEN` over SSH standard input only, let the new tmux session
-inherit it, then immediately remove it from tmux's global environment and the
-remote setup shell:
+Transfer AWS credentials and S3 configuration over SSH standard input only, let
+the new tmux session inherit them, then immediately remove them from tmux's
+global environment and remove credentials from the remote setup shell:
 
 ```bash
-printf '%s\n' "$HF_TOKEN" | \
+printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
+  "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" \
+  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" | \
   ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" "
     set -e
-    IFS= read -r HF_TOKEN
-    test -n \"\$HF_TOKEN\" || exit 1
+    IFS= read -r S3_BUCKET
+    IFS= read -r AWS_ACCESS_KEY_ID
+    IFS= read -r AWS_SECRET_ACCESS_KEY
+    IFS= read -r AWS_SESSION_TOKEN
+    IFS= read -r AWS_REGION
+    IFS= read -r S3_PREFIX
+    IFS= read -r S3_ENDPOINT_URL
+    test -n \"\$S3_BUCKET\" || exit 1
     ! tmux has-session -t heldout-eval 2>/dev/null || {
       printf '%s\\n' 'ERROR: heldout-eval already exists' >&2
       exit 1
     }
-    tmux set-environment -g HF_TOKEN \"\$HF_TOKEN\"
-    trap 'tmux set-environment -gu HF_TOKEN' EXIT
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+      test -z \"\${!name}\" || tmux set-environment -g \"\$name\" \"\${!name}\"
+    done
+    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do tmux set-environment -gu "\$name"; done' EXIT
     tmux new-session -d -s heldout-eval \
       'exec bash $CONTROL_DIR/heldout-eval.sh'
-    tmux set-environment -gu HF_TOKEN
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+      tmux set-environment -gu \"\$name\"
+    done
     trap - EXIT
-    unset HF_TOKEN
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
     tmux has-session -t heldout-eval
   "
 ```
 
-The inherited token exists only in the evaluator process environment. Never
-write it to a file, command argument, log, status marker, or pane output.
+Inherited credentials exist only in the evaluator process environment. Never
+write them to a file, command argument, log, status marker, or pane output.
 
 #### Monitor held-out evaluation
 
@@ -1103,20 +1127,19 @@ Use the persisted per-run log after a process exits.
 Do not report held-out evaluation as complete or destroy the instance until
 `state/heldout-completed` exists and every expected
 `BACKUP_PREFIX/results/{run_name}/final_scores.json` path has been verified on
-HF. On failure, report the run, exit code, and log path; do not auto-retry or
+S3. On failure, report the run, exit code, and log path; do not auto-retry or
 upload a stale JSON. Ask the user whether to retry or stop.
 
 ### 11. Follow-up download and replay
 
 After the grid and final backup freshness check have completed, print the
 following as optional commands only. Do not download anything automatically.
-If the held-out stage ran, `final_scores.json` is already on HF and its plots
+If the held-out stage ran, `final_scores.json` is already on S3 and its plots
 can be recreated after an explicitly requested download with `--plot-only`:
 
 ```bash
 set -a; . ./.env; set +a
-uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel \
-  download BACKUP_PREFIX/RUN_NAME
+uv run python scripts/s3_backup.py download BACKUP_PREFIX/RUN_NAME
 uv run python scripts/final_score.py --run-name RUN_NAME
 uv run python scripts/final_score.py --run-name RUN_NAME --plot-only
 ```
@@ -1132,7 +1155,7 @@ verified. Grid execution completes only when `state/completed` exists and the
 final backup freshness check passes, or a failure has been explicitly handled
 by the user. If the user confirms held-out evaluation, the overall workflow is
 complete only when `state/heldout-completed` exists and every expected
-`final_scores.json` has been verified on HF.
+`final_scores.json` has been verified on S3.
 
 Print:
 
@@ -1148,9 +1171,9 @@ Print:
   run-specific tmux attach commands;
 - local `LOCAL_SSH_SESSION` and `LOCAL_TB_SESSION` attach commands;
 - the indexed local TensorBoard URL;
-- HF backup prefix, download commands, and `final_score.py` commands;
+- S3 backup prefix, download commands, and `final_score.py` commands;
 - held-out episode count, root seed, workers, state, per-run log and tmux attach
-  commands, and exact uploaded HF JSON paths when the held-out stage runs;
+  commands, and exact uploaded S3 JSON paths when the held-out stage runs;
 - cleanup destroy command.
 
 ## Safety notes

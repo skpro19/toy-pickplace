@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Download all checkpoints and results from a HuggingFace backup session, then
+# Download all checkpoints and results from an S3 backup session, then
 # re-evaluate each flywheel run's best.pt checkpoint using final_score.py.
 #
 # Usage:
-#   ./bash/score_from_hf.sh <HF_SESSION_PREFIX> [--workers <N>]
+#   ./bash/score_from_s3.sh <S3_SESSION_PREFIX> [--workers <N>]
 #
 # Example:
-#   ./bash/score_from_hf.sh ablation-dagger-intervention-ratio-20260718-033707
-#   ./bash/score_from_hf.sh ablation-dagger-intervention-ratio-20260718-033707 --workers 6
+#   ./bash/score_from_s3.sh ablation-dagger-intervention-ratio-20260718-033707
+#   ./bash/score_from_s3.sh ablation-dagger-intervention-ratio-20260718-033707 --workers 6
 #
 # This will:
-#   1. Download checkpoints/ and results/ for the given session from HF Hub.
+#   1. Download checkpoints/ and results/ for the given session from S3.
 #   2. For every run folder under results/flywheel/<prefix>/, run
 #      final_score.py --run-name <prefix>/<run>.
 #
-# Requirements: uv, huggingface_hub, EGL-capable MuJoCo rendering, and HF_TOKEN
-# (for private repos). Defaults to MUJOCO_GL=egl; set MUJOCO_GL to override it.
+# Requirements: uv, AWS credentials, S3_BUCKET, and EGL-capable MuJoCo rendering.
+# Defaults to MUJOCO_GL=egl; set MUJOCO_GL to override it.
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <HF_SESSION_PREFIX> [--workers <N>]"
+    echo "Usage: $0 <S3_SESSION_PREFIX> [--workers <N>]"
     exit 1
 fi
 
@@ -44,7 +44,7 @@ done
 
 echo "=== MuJoCo renderer: $MUJOCO_GL ==="
 echo "=== Downloading checkpoints and results ==="
-uv run python scripts/hf_backup.py download --components checkpoints,results "$PREFIX"
+uv run python scripts/s3_backup.py download --components checkpoints,results "$PREFIX"
 
 for run_dir in "results/flywheel/$PREFIX"/*/; do
     [ -d "$run_dir" ] || continue

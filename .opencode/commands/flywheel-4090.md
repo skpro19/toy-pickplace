@@ -50,7 +50,7 @@ Before starting, ensure these are available on the dev machine:
 |---|---|
 | `vastai` CLI | `which vastai` |
 | `VAST_API_KEY` | Set in `.env` file (copy `.env.example` → `.env` if missing) |
-| `HF_TOKEN` | Set in `.env` file |
+| `S3_BUCKET` and AWS credentials | Set in `.env` file, unless the instance has an IAM role |
 | `tmux` | `which tmux` |
 
 The agent will source `.env` at the start and abort if any key is missing.
@@ -60,8 +60,10 @@ Instructions will be printed for missing items.
 
 ### 0. Load secrets
 
-Source `.env` and verify both `VAST_API_KEY` and `HF_TOKEN` are non-empty.
-If either is missing, print instructions pointing to `.env.example` and stop.
+Source `.env` and verify `VAST_API_KEY` and `S3_BUCKET` are non-empty. Unless
+the instance has an IAM role, also require `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`. If required configuration is missing, print
+instructions pointing to `.env.example` and stop.
 
 ### 1. Search offers
 
@@ -387,18 +389,15 @@ return to Step 9 to create `vast-ssh` and `tb-ablation`:
 - `intervention-threshold` → @docs/ablation/intervention-threshold.md
 - `dagger-intervention-ratio` → @docs/ablation/dagger-intervention-ratio.md
 
-**ckpt-bkp critical details** (based on `scripts/hf_backup.py`):
-- `--repo` flag must come **before** the `upload` subcommand, not after  
-  - Correct: `uv run python scripts/hf_backup.py --repo ORG/REPO upload --prefix PREFIX`
-  - Wrong: `uv run python scripts/hf_backup.py upload --repo ORG/REPO --prefix PREFIX`
-- Always pass `--components checkpoints,runs,results`. Do **not** upload the
-  `dagger` component: its per-episode `.npz` files (tens of thousands on grid
-  runs) exceed the HuggingFace Hub 20,000-file limit and the push is rejected.
+**ckpt-bkp critical details** (based on `scripts/s3_backup.py`):
+- Always pass `--components checkpoints,runs,results,dagger`; S3 supports the
+  per-episode DAgger objects without the former repository file-count limit.
 - Use the full path `/root/.local/bin/uv` inside tmux sessions started via SSH
   (the tmux session doesn't inherit the SSH login PATH)
-- Transfer `HF_TOKEN` over SSH standard input. Never interpolate its value into
-  the SSH command string, command arguments, or output. Set it in the remote
-  tmux server environment so the backup session inherits it.
+- Transfer AWS credentials and S3 configuration over SSH standard input. Never
+  interpolate credentials into the SSH command string, arguments, or output.
+  Set them in the remote tmux server environment so the backup session inherits
+  them. `AWS_SESSION_TOKEN`, `AWS_REGION`, and `S3_PREFIX` may be empty.
 
 For the `standard` profile, start this backup session after Batch 3 with the
 timestamp prefix shown below. For ablation profiles, start it only after the
@@ -412,23 +411,36 @@ set -a
 . ./.env
 set +a
 BACKUP_PREFIX=$(date +%Y%m%d-%H%M%S)
-printf '%s\n' "$HF_TOKEN" | \
+printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
+  "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" \
+  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" | \
   ssh -o StrictHostKeyChecking=no -p "$PORT" "root@$HOST" "
-  IFS= read -r HF_TOKEN
-  [ -n \"\$HF_TOKEN\" ] || { echo 'ERROR: HF_TOKEN transfer failed' >&2; exit 1; }
-  tmux set-environment -g HF_TOKEN \"\$HF_TOKEN\"
+  IFS= read -r S3_BUCKET
+  IFS= read -r AWS_ACCESS_KEY_ID
+  IFS= read -r AWS_SECRET_ACCESS_KEY
+  IFS= read -r AWS_SESSION_TOKEN
+  IFS= read -r AWS_REGION
+  IFS= read -r S3_PREFIX
+  IFS= read -r S3_ENDPOINT_URL
+  [ -n \"\$S3_BUCKET\" ] || { echo 'ERROR: S3_BUCKET transfer failed' >&2; exit 1; }
+  for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+    [ -z \"\${!name}\" ] || tmux set-environment -g \"\$name\" \"\${!name}\"
+  done
   tmux new-session -d -s ckpt-bkp \
     'cd /workspace/toy-pickplace && while true; do \
-      /root/.local/bin/uv run python scripts/hf_backup.py \
-        --repo skpro19/toy-pickplace-flywheel upload --prefix $BACKUP_PREFIX \
-        --components checkpoints,runs,results; \
+      /root/.local/bin/uv run python scripts/s3_backup.py upload \
+        --prefix $BACKUP_PREFIX \
+        --components checkpoints,runs,results,dagger; \
       sleep 120; \
     done'
+  for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+    tmux set-environment -gu \"\$name\"
+  done
 "
 ```
 
-Do not enable shell tracing while handling secrets. Verify that neither the
-token nor the contents of `.env` appear in command output.
+Do not enable shell tracing while handling secrets. Verify that neither
+credentials nor the contents of `.env` appear in command output.
 
 Verify the backup is working:
 `ssh -p "$PORT" "root@$HOST" "tmux capture-pane -t ckpt-bkp -p -S -10"`.
@@ -463,12 +475,12 @@ one checkpoint (or after the run completes). For ablation profiles, use the
 offline download and replay instructions in the matching ablation document.
 
 ```bash
-# List available sessions in the HF repo
+# List available sessions in S3
 set -a; . ./.env; set +a
-uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel list
+uv run python scripts/s3_backup.py list
 
 # Download a specific run from the latest session
-uv run python scripts/hf_backup.py --repo skpro19/toy-pickplace-flywheel download 20260717-153000/run-003
+uv run python scripts/s3_backup.py download 20260717-153000/run-003
 
 # View TensorBoard locally (no SSH tunnel needed)
 tensorboard --logdir runs/flywheel/
@@ -499,7 +511,7 @@ local tmux wrappers have been verified. Then print a summary with:
   - plus `tensorboard` and `ckpt-bkp` (for example,
     `ssh -t -p "$PORT" "root@$HOST" 'tmux attach -t flywheel'`)
 - TensorBoard URL
-- Download command (`uv run python scripts/hf_backup.py --repo REPO download ...`)
+- Download command (`uv run python scripts/s3_backup.py download ...`)
 - Destroy command for cleanup
 
 ## Notes

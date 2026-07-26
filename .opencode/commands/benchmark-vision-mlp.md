@@ -350,7 +350,8 @@ Load only the Vast token without shell tracing:
 
 ```bash
 . ./.env
-unset HF_TOKEN
+unset S3_BUCKET S3_PREFIX S3_ENDPOINT_URL AWS_REGION
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 test -n "${VAST_API_KEY:-}" || {
   printf '%s\n' 'ERROR: VAST_API_KEY is missing from .env' >&2
   exit 1
@@ -358,8 +359,8 @@ test -n "${VAST_API_KEY:-}" || {
 export VAST_API_KEY
 ```
 
-Do not require, read, export, transfer, or use `HF_TOKEN`. This workflow creates
-no Hugging Face backup. Unset `VAST_API_KEY` after provisioning and SSH endpoint
+Do not require, export, transfer, or use S3 configuration or AWS credentials.
+This workflow creates no S3 backup. Unset `VAST_API_KEY` after provisioning and SSH endpoint
 resolution. Reload it only for a later Vast status or confirmed destroy command.
 
 Run `vastai show instances --raw` before searching. List every existing
@@ -1198,7 +1199,7 @@ At every handoff, print:
 - Never edit or commit the cloned repository for a transient benchmark.
 - Never treat persistent workers as supported unless the selected commit exposes
   and validates the production setting.
-- Never require, read, transfer, or use `HF_TOKEN`.
+- Never require, export, transfer, or use S3 configuration or AWS credentials.
 - Never store secrets or SSH endpoints in benchmark artifacts. The required
   `known_hosts` pin is the sole endpoint-storage exception.
 - Never destroy an instance without listing it and receiving confirmation for
