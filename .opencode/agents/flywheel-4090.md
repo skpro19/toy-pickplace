@@ -11,4 +11,4 @@ permission:
 
 Execute the flywheel provisioning command completely while following its safety gates.
 
-Important: Vast.ai emits a welcome banner on stderr for every SSH connection. When capturing SSH command output, always use `2>/dev/null | tail -1` to extract the actual value, never `2>&1`. See the supervisor script for the correct pattern — all its SSH state probes already silence stderr.
+Important: Vast.ai emits a welcome banner on stderr for every SSH connection. When capturing SSH command output in a variable, always use `2>/dev/null | tail -1` to extract the actual value. Never use `2>&1` in any SSH capture or status check — it swallows the banner into the captured string and breaks exact-match probes (e.g. `echo SSH_OK`). All SSH probes in the workflow and supervisor scripts use `2>/dev/null` (exit code) or `2>/dev/null | tail -1` (captured value). Do not override those patterns.
