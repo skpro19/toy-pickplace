@@ -532,51 +532,16 @@ CONTROL_DIR/state/
 CONTROL_DIR/state/history/
 ```
 
-Build `runner.sh` locally using a quoted heredoc (`<< 'EOF'` so shell variables
-are literal), then base64-encode it and decode it into `CONTROL_DIR`. Use short
-bash variable names and distinct placeholder tokens that `sed` can replace
-safely. Never use `${PLACEHOLDER}` as a token because after `sed` substitution
-it becomes `${value}` — an invalid bash reference. Use uppercase tokens
-surrounded by underscores (e.g. `__RUN_NAME__`). Replace with `sed` using `|`
-delimiter (safe with paths containing `/`). Do not copy transient files back.
-
-Example runner template:
+Instantiate the runner template from `.opencode/commands/scripts/flywheel-4090/runner.sh`,
+base64-encode it, decode it into `CONTROL_DIR`, and start it:
 
 ```bash
-cat > /tmp/runner.sh << 'RUNEOF'
-#!/bin/bash
-set -o pipefail
-export MUJOCO_GL=egl
-
-_R=__RUN_NAME__
-_F=__FLYWHEEL_CONFIG__
-_C=__CONTROL_DIR__
-
-echo "running" > "${_C}/state/run-status.tmp"
-mv "${_C}/state/run-status.tmp" "${_C}/state/run-status"
-
-cd /workspace/toy-pickplace
-
-/root/.local/bin/uv run python scripts/flywheel.py \
-  --config "${_F}" --run-name "${_R}" 2>&1 | \
-  tee -a "${_C}/logs/${_R}.log"
-exit_code=${PIPESTATUS[0]}
-
-if [ "$exit_code" -eq 0 ]; then
-  echo "succeeded 0" > "${_C}/state/completed.tmp"
-  mv "${_C}/state/completed.tmp" "${_C}/state/completed"
-else
-  echo "failed ${exit_code}" > "${_C}/state/failed.tmp"
-  mv "${_C}/state/failed.tmp" "${_C}/state/failed"
-fi
-
-exit "${exit_code}"
-RUNEOF
-RUN_NAME=<value>; FLYWHEEL_CONFIG=<value>; CONTROL_DIR=<value>
+cp .opencode/commands/scripts/flywheel-4090/runner.sh /tmp/runner.sh
 sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__FLYWHEEL_CONFIG__|${FLYWHEEL_CONFIG}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/runner.sh
+B64=$(base64 -w0 /tmp/runner.sh)
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/runner.sh' && chmod +x '${CONTROL_DIR}/runner.sh'"
 ```
-
-Base64-encode and transfer, then start the runner.
 
 The executable runner must:
 
@@ -637,77 +602,44 @@ Before each upload, atomically update `state/backup-cycle-started`. After a
 successful upload, atomically update `state/backup-last-succeeded`. On failure,
 atomically write `state/backup-failed` and exit non-zero.
 
-Transfer credentials to the instance by piping a heredoc through SSH that
-writes a temporary env file with 600 permissions. Have the backup wrapper
-source that file, then shred it after the first upload. Never place
-credentials in the SSH command string, wrapper script file, tmux global
-environment, pane output, or logs. Use the absolute `uv` path.
-
-Example credential transfer (run locally before launching ckpt-bkp):
-
-Do not include `S3_ENDPOINT_URL` — an empty value causes `Invalid endpoint`. Omit it entirely:
+Transfer credentials to the instance by writing an env file. Resolve the AWS
+profile credentials locally first, then write the file via SSH using an
+unquoted heredoc so variables expand locally. Never place credentials in the
+SSH command string, wrapper script file, tmux global environment, pane output,
+or logs. Use the absolute `uv` path. Do not include `S3_ENDPOINT_URL` — an
+empty value causes `Invalid endpoint`.
 
 ```bash
-set -a; . ./.env; set +a
+# resolve profile credentials if needed
+if test -n "${AWS_PROFILE:-}"; then
+  mapfile -t RESOLVED_AWS < <(uv run python -c '
+import os, boto3
+s = boto3.Session(profile_name=os.environ["AWS_PROFILE"])
+c = s.get_credentials().get_frozen_credentials()
+print(c.access_key); print(c.secret_key); print(c.token or ""); print(s.region_name or "")
+') || exit 1
+  AWS_ACCESS_KEY_ID=${RESOLVED_AWS[0]}; AWS_SECRET_ACCESS_KEY=${RESOLVED_AWS[1]}
+  AWS_SESSION_TOKEN=${RESOLVED_AWS[2]}; AWS_REGION=${RESOLVED_AWS[3]}
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION
+fi
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "cat > '${CONTROL_DIR}/s3-creds.sh' << 'CREDEOF'
+  "cat > '${CONTROL_DIR}/s3-env.env' << ENVEOF
 S3_BUCKET=${S3_BUCKET}
 AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
 AWS_REGION=${AWS_REGION}
 S3_PREFIX=${S3_PREFIX}
-CREDEOF
-chmod 600 '${CONTROL_DIR}/s3-creds.sh'"
+ENVEOF
+chmod 600 '${CONTROL_DIR}/s3-env.env'"
 ```
 
-The backup wrapper must source that file before each upload and shred it
-after the first successful cycle. Build the wrapper locally and transfer it
-via base64, using the same `_C`, `_R` placeholder pattern as `runner.sh`:
+The wrapper uses `uv run --env-file` so credentials never appear on the command
+line or in the script itself. Instantiate, transfer, and start the backup:
 
 ```bash
-cat > /tmp/ckpt-bkp-wrapper.sh << 'WRAPEOF'
-#!/bin/bash
-set -o pipefail
-_R=__RUN_NAME__
-_C=__CONTROL_DIR__
-
-# wait for any artifact
-for i in $(seq 1 60); do
-  for d in checkpoints/flywheel/${_R} runs/flywheel/${_R} \
-           data/flywheel/${_R} results/flywheel/${_R}; do
-    if test -d "/workspace/toy-pickplace/$d" && \
-       find "/workspace/toy-pickplace/$d" -type f 2>/dev/null | \
-       head -1 | grep -q .; then break 2; fi
-  done; sleep 5
-done
-
-# source credentials once
-. "${_C}/s3-creds.sh"
-shred -u "${_C}/s3-creds.sh" 2>/dev/null
-
-while true; do
-  touch "${_C}/state/backup-cycle-started"
-  cd /workspace/toy-pickplace
-  S3_BUCKET="$S3_BUCKET" S3_PREFIX="$S3_PREFIX" \
-    AWS_REGION="$AWS_REGION" \
-    AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-    AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-    AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
-    /root/.local/bin/uv run python scripts/s3_backup.py upload \
-      --prefix "${_R}" --components checkpoints,runs,results,dagger "${_R}"
-  if [ "$?" -eq 0 ]; then
-    touch "${_C}/state/backup-last-succeeded"
-  else
-    echo "failed" > "${_C}/state/backup-failed.tmp"
-    mv "${_C}/state/backup-failed.tmp" "${_C}/state/backup-failed"
-    exit 1
-  fi
-  sleep 120
-done
-WRAPEOF
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" \
-  /tmp/ckpt-bkp-wrapper.sh
+cp .opencode/commands/scripts/flywheel-4090/ckpt-bkp-wrapper.sh /tmp/ckpt-bkp-wrapper.sh
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/ckpt-bkp-wrapper.sh
 B64=$(base64 -w0 /tmp/ckpt-bkp-wrapper.sh)
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'
@@ -729,118 +661,63 @@ destroy the instance, and verify removal directly.
 
 ### 9. Materialize automatic held-out evaluation
 
-Materialize `CONTROL_DIR/heldout-eval.sh` before starting the local supervisor,
-using the same local-build and base64-transfer method as the runner. It must:
+Instantiate `CONTROL_DIR/heldout-eval.sh` from the template and transfer it to
+the instance before starting the local supervisor:
 
-1. use `set -o pipefail`, export `MUJOCO_GL=egl`, and refuse to run if
-   `state/heldout-completed` or `state/heldout-failed` exists;
-2. parse `results/flywheel/RUN_NAME/metrics.json`, require a non-empty `rounds`
-   list, and verify every listed round has
-   `checkpoints/flywheel/RUN_NAME/round-NNN/best.pt`;
-3. read `final_eval_episodes`, `final_eval_seed`, `final_eval_workers`, and
-   `final_eval_capture_hz` from `metrics.json.config`, validate them against the
-   same constraints used by `scripts/flywheel.py`, and never prompt or invent
-   overrides;
-4. fail if any expected output already exists. Automated first launch never
-   archives, overwrites, or treats an old output as current;
-5. run exactly `/root/.local/bin/uv run python scripts/final_score.py --run-name
-   RUN_NAME` from `/workspace/toy-pickplace`. The evaluator inherits all four
-   held-out values from `metrics.json`;
-6. stream stdout and stderr to `logs/heldout-eval-RUN_NAME.log` and preserve the
-   evaluator exit code using `${PIPESTATUS[0]}`;
-7. validate that these three non-empty outputs exist:
-
-```text
-results/flywheel/RUN_NAME/final_scores.json
-results/flywheel/RUN_NAME/final_scores_comparison.png
-results/RUN_NAME-final-score-curve.png
+```bash
+cp .opencode/commands/scripts/flywheel-4090/heldout-eval.sh /tmp/heldout-eval.sh
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/heldout-eval.sh
+B64=$(base64 -w0 /tmp/heldout-eval.sh)
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/heldout-eval.sh'
+   chmod +x '${CONTROL_DIR}/heldout-eval.sh'"
 ```
 
-8. validate that `final_scores.json` records the exact committed episodes,
-   seed, workers, capture rate, and every round from `metrics.json`;
-9. strip leading/trailing `/` from `S3_PREFIX`, then upload the three files
-   with `boto3.client("s3").upload_file` to these effective keys (omit the
-   leading `S3_PREFIX/` segment when it is empty):
-
-```text
-S3_PREFIX/RUN_NAME/results/RUN_NAME/final_scores.json
-S3_PREFIX/RUN_NAME/results/RUN_NAME/final_scores_comparison.png
-S3_PREFIX/RUN_NAME/results/RUN_NAME/RUN_NAME-final-score-curve.png
-```
-
-10. verify each exact object with `head_object` and matching content length;
-11. atomically write `state/heldout-completed` only after all three
-    verifications, or `state/heldout-failed` with the exit code on any failure.
-
-Do not use a component-wide results upload after evaluation. It can delete or
-mix objects outside this exact output set. Give AWS credentials only to the
-single `heldout-eval` process through SSH standard input and its inherited
-environment. Never put credentials in the wrapper, command arguments, tmux
-global environment, logs, or pane output.
+The template at `.opencode/commands/scripts/flywheel-4090/heldout-eval.sh`
+implements the full specification (validation, scoring, upload, verification)
+and embeds the trailing-slash fix for the S3 key prefix. Read it before
+proceeding if unfamiliar. Do not use a component-wide results upload after
+evaluation — it can delete or mix objects outside this exact output set.
 
 ### 10. Start the durable local supervisor
 
-Set `LOCAL_SUPERVISOR_SESSION=flywheel-supervisor-LOCAL_WORKFLOW_INDEX` and
-reserve it under the same local wrapper lock. Build a generic local supervisor
-at `/tmp/toy-pickplace-flywheel-supervisor.sh`; the file may refer to `.env` but
-must not contain secret values or a transient endpoint. Pass `INSTANCE_ID`,
-`HOST`, `PORT`, `RUN_NAME`, `CONTROL_DIR`, and local tmux session names as
-arguments when starting it. Source `.env` inside the supervisor with tracing
-disabled so `VAST_API_KEY` and AWS credentials remain local.
+The supervisor lives at `.opencode/commands/scripts/flywheel-4090/supervisor.sh`.
+It implements the full state machine, diagnostic upload, endpoint refresh, and
+cleanup lifecycle. Read it before proceeding if unfamiliar.
 
-The supervisor must implement this state machine:
-
-| State | Required action |
-|---|---|
-| Running | Poll remote state files every 30 seconds; tmux membership is diagnostic only |
-| Training failed | Record the exit code, upload control logs/state best-effort, then clean up |
-| Backup failed or stopped | Record the failure, upload control logs/state best-effort, then clean up |
-| Training completed | Wait up to ten minutes for a backup cycle started after `state/completed` and succeeded after its start |
-| Final backup fresh | Stop `ckpt-bkp`, then launch `heldout-eval` exactly once via secure credential transfer; set `HELDOUT_LAUNCHED` flag and advance to evaluation-running state. Do not re-enter the completed/fresh-backup branch after this transition |
-| Evaluation running | Poll only for `heldout-completed`, `heldout-failed`, SSH degradation, or instance terminal. Never re-check `state/completed` or `state/backup-failed` while evaluation is running. Log progress every 30 s |
-| Evaluation failed | Upload control logs/state best-effort, then clean up |
-| Evaluation completed | Recheck the three exact S3 objects and sizes from the local supervisor, then clean up successfully |
-| SSH degraded | Refresh `actual_status` and `vastai ssh-url`; repin a changed endpoint and continue polling while Vast reports `running` |
-| Instance terminal | When Vast reports a terminal status, upload diagnostics when reachable, then clean up |
-
-The fresh-backup gate remains:
+Allocate `LOCAL_SUPERVISOR_SESSION` under the same local wrapper lock and start
+it:
 
 ```bash
-test "$CONTROL_DIR/state/backup-cycle-started" -nt "$CONTROL_DIR/state/completed"
-test "$CONTROL_DIR/state/backup-last-succeeded" -nt "$CONTROL_DIR/state/backup-cycle-started"
+set -e
+exec 9>/tmp/toy-pickplace-flywheel-local-wrapper.lock
+flock 9
+
+LOCAL_SUPERVISOR_SESSION="flywheel-supervisor-$LOCAL_WORKFLOW_INDEX"
+
+HOST="$HOST" PORT="$PORT" INSTANCE_ID="$INSTANCE_ID" \
+RUN_NAME="$RUN_NAME" CONTROL_DIR="$CONTROL_DIR" \
+LOCAL_SSH_SESSION="$LOCAL_SSH_SESSION" \
+LOCAL_TB_SESSION="$LOCAL_TB_SESSION" \
+tmux new-session -d -s "$LOCAL_SUPERVISOR_SESSION" \
+  ".opencode/commands/scripts/flywheel-4090/supervisor.sh \
+    $INSTANCE_ID $HOST $PORT $RUN_NAME $CONTROL_DIR \
+    $LOCAL_SSH_SESSION $LOCAL_TB_SESSION"
+
+sleep 5
+tmux has-session -t "$LOCAL_SUPERVISOR_SESSION" || {
+  echo "ERROR: supervisor failed to start"
+  tmux capture-pane -t "$LOCAL_SUPERVISOR_SESSION" -p -S -10
+  exit 1
+}
+
+flock -u 9
+exec 9>&-
 ```
 
-For best-effort failure diagnostics, upload regular files under
-`CONTROL_DIR/logs` and `CONTROL_DIR/state` below
-`S3_PREFIX/RUN_NAME/control/logs/` and `S3_PREFIX/RUN_NAME/control/state/`,
-preserving relative names and omitting the `S3_PREFIX/` segment when empty.
-Never upload credential material. Diagnostic upload failure must be recorded
-locally but must not block destruction, per the selected cleanup policy. Bound
-the entire diagnostic attempt to five minutes so cleanup cannot hang on S3.
-
-On every terminal state, successful or failed, the supervisor must:
-
-1. run `vastai destroy instance -y "$INSTANCE_ID"` locally; the `-y` flag is required to skip the interactive confirmation prompt which would otherwise stall cleanup silently
-2. poll `vastai show instances --raw` until the numeric ID is absent, for up to
-   30 attempts at ten-second intervals;
-3. retry the destroy command once if the ID remains, then record a prominent
-   local cleanup failure instead of claiming success;
-4. stop the local SSH and TensorBoard wrapper sessions after destruction;
-5. atomically write a terminal summary to
-   `/tmp/toy-pickplace-flywheel-RUN_NAME.status`, including workflow outcome,
-   diagnostic-upload outcome, destruction outcome, and uploaded result keys.
-
-Start the supervisor in detached tmux and verify it remains active through its
-first successful remote poll. Print its attach command. Never transfer
+Verify the supervisor is alive and print its attach command. Never transfer
 `VAST_API_KEY` to the instance. The local machine and tmux server must remain
 running; a terminal or OpenCode disconnect is safe, but a local reboot is not.
-Do not treat SSH or local-network unavailability as terminal. Refresh the Vast
-status and endpoint after three failed probes. If the endpoint changes, pin its
-host key before reconnecting. While Vast reports `running`, keep polling and
-never destroy based only on failed SSH probes. After 120 consecutive failures,
-write a prominent local alert and continue at a slower five-minute interval.
-If both the Vast API and SSH are unavailable, keep retrying and record the
-degraded state; do not infer instance failure from missing connectivity.
 
 ### 11. Follow-up download and replay
 
