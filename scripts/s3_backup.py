@@ -131,6 +131,9 @@ def _sync_directory(
 
 
 def cmd_upload(args: argparse.Namespace) -> None:
+    if not args.run:
+        raise ValueError("A run name is required for upload")
+    run_name = _validate_remote_path(args.run)
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     selected = _selected_components(args.components)
     discovered = 0
@@ -138,12 +141,12 @@ def cmd_upload(args: argparse.Namespace) -> None:
 
     for name in selected:
         local_root, remote_dir = COMPONENT_MAP[name]
-        source = local_root / args.run if args.run else local_root
+        source = local_root / run_name
         if not source.is_dir() or not any(
             path.is_file() for path in source.rglob("*")
         ):
             continue
-        destination = _key(remote_dir, args.run or "")
+        destination = _key(remote_dir, run_name)
         component_files, component_uploads = _sync_directory(
             client=client,
             bucket=args.bucket,
@@ -306,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Comma-separated checkpoints,runs,dagger,results",
     )
-    upload.add_argument("run", nargs="?", help="Specific run, such as run-003")
+    upload.add_argument("run", help="Specific run, such as run-003")
 
     download = subparsers.add_parser("download", help="Download backup components")
     download.add_argument("path", help="Run name to download")

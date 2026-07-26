@@ -83,6 +83,13 @@ def main() -> None:
     s3_backup._s3_client = lambda **_: client
 
     try:
+        try:
+            s3_backup.cmd_upload(args(run=None))
+        except ValueError as error:
+            assert str(error) == "A run name is required for upload"
+        else:
+            raise AssertionError("Component-root uploads must be rejected")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             original_directory = Path.cwd()
             os.chdir(temp_dir)
@@ -93,57 +100,55 @@ def main() -> None:
                 result = Path("results/flywheel/run-001/metrics.json")
                 result.parent.mkdir(parents=True)
                 result.write_text("{}")
-                stale_key = (
-                    "toy-pickplace/flywheel/ablation-ratio-seed1-20260726-120000/"
-                    "checkpoints/stale.pt"
-                )
+                stale_key = "checkpoints/flywheel/run-001/stale.pt"
                 client.objects[stale_key] = b"stale"
                 client.modified[stale_key] = datetime.now(timezone.utc)
+                other_run_key = "checkpoints/flywheel/run-002/round-000/best.pt"
+                client.objects[other_run_key] = b"other-run"
+                client.modified[other_run_key] = datetime.now(timezone.utc)
 
-                s3_backup.cmd_upload(args(components="checkpoints,results"))
-                checkpoint_key = (
-                    "toy-pickplace/flywheel/ablation-ratio-seed1-20260726-120000/"
-                    "checkpoints/run-001/round-000/best.pt"
+                s3_backup.cmd_upload(
+                    args(components="checkpoints,results", run="run-001")
                 )
-                result_key = (
-                    "toy-pickplace/flywheel/ablation-ratio-seed1-20260726-120000/"
-                    "results/run-001/metrics.json"
-                )
+                checkpoint_key = "checkpoints/flywheel/run-001/round-000/best.pt"
+                result_key = "results/flywheel/run-001/metrics.json"
                 assert client.objects[checkpoint_key] == b"checkpoint-v1"
                 assert client.objects[result_key] == b"{}"
                 assert stale_key not in client.objects
+                assert client.objects[other_run_key] == b"other-run"
                 assert client.upload_count == 2
 
-                s3_backup.cmd_upload(args(components="checkpoints,results"))
+                s3_backup.cmd_upload(
+                    args(components="checkpoints,results", run="run-001")
+                )
                 assert client.upload_count == 2
 
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     s3_backup.cmd_list(args())
-                assert "ablation-ratio-seed1-20260726-120000/  [run-001]" in output.getvalue()
+                assert "run-001" in output.getvalue()
+                assert "run-002" in output.getvalue()
 
                 checkpoint.unlink()
                 result.unlink()
                 restore_root = Path("restore")
                 s3_backup.cmd_download(
                     args(
-                        path="ablation-ratio-seed1-20260726-120000/run-001",
+                        path="run-001",
                         components="checkpoints,results",
                         output=str(restore_root),
                     )
                 )
                 restored_checkpoint = (
                     restore_root
-                    / "checkpoints/flywheel/ablation-ratio-seed1-20260726-120000"
-                    / "run-001/round-000/best.pt"
+                    / "checkpoints/flywheel/run-001/round-000/best.pt"
                 )
                 assert restored_checkpoint.read_bytes() == b"checkpoint-v1"
 
-                s3_backup.cmd_rm(
-                    args(path="ablation-ratio-seed1-20260726-120000/run-001")
-                )
+                s3_backup.cmd_rm(args(path="run-001"))
                 assert checkpoint_key not in client.objects
                 assert result_key not in client.objects
+                assert client.objects[other_run_key] == b"other-run"
             finally:
                 os.chdir(original_directory)
     finally:

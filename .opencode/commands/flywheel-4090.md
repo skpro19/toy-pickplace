@@ -781,6 +781,6 @@ Print:
 - The committed config is immutable for this workflow; there are no parameter
   sweeps, per-run experiment overrides, concurrency calculations, or batches.
 - Held-out evaluation always runs after a fresh final backup and uploads only
-  its JSON and two plots at `results/flywheel/RUN_NAME/` and `results/RUN_NAME-final-score-curve.png`.
+  its JSON and two plots under `results/flywheel/RUN_NAME/`.
 - Every terminal state triggers destruction. Failure diagnostics are
   best-effort so an upload outage cannot keep a billed instance alive.

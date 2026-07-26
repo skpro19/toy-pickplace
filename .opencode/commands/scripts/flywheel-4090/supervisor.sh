@@ -163,7 +163,7 @@ while true; do
         verify_ok=true
         for key in "results/flywheel/${RUN_NAME}/final_scores.json" \
                    "results/flywheel/${RUN_NAME}/final_scores_comparison.png" \
-                   "results/${RUN_NAME}-final-score-curve.png"; do
+                   "results/flywheel/${RUN_NAME}/final-score-curve.png"; do
           uv run python -c "
 import boto3, os
 c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')

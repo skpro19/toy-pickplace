@@ -29,7 +29,7 @@ fi
 # Validate outputs
 for f in "results/flywheel/${_R}/final_scores.json" \
          "results/flywheel/${_R}/final_scores_comparison.png" \
-         "results/${_R}-final-score-curve.png"; do
+         "results/flywheel/${_R}/final-score-curve.png"; do
   if test ! -f "/workspace/toy-pickplace/$f"; then
     echo "ERROR: missing output $f" >&2
     echo "failed 1" > "${_C}/state/heldout-failed.tmp"
@@ -72,8 +72,8 @@ upload_and_verify \
   "results/flywheel/${_R}/final_scores_comparison.png" || exit 1
 
 upload_and_verify \
-  "/workspace/toy-pickplace/results/${_R}-final-score-curve.png" \
-  "results/${_R}-final-score-curve.png" || exit 1
+  "/workspace/toy-pickplace/results/flywheel/${_R}/final-score-curve.png" \
+  "results/flywheel/${_R}/final-score-curve.png" || exit 1
 
 echo "succeeded 0" > "${_C}/state/heldout-completed.tmp"
 mv "${_C}/state/heldout-completed.tmp" "${_C}/state/heldout-completed"

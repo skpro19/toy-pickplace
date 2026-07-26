@@ -1,11 +1,12 @@
 from pathlib import Path
 import sys
+import tempfile
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from final_score import resolve_final_eval_settings  # noqa: E402
+from final_score import plot_comparison, resolve_final_eval_settings  # noqa: E402
 
 
 def main() -> None:
@@ -67,6 +68,27 @@ def main() -> None:
             pass
         else:
             raise AssertionError(f"invalid final eval settings accepted: {invalid}")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        run_results_dir = Path(temp_dir) / "results/flywheel/test-run"
+        run_results_dir.mkdir(parents=True)
+        plot_comparison(
+            final_rounds=[
+                {
+                    "round": 0,
+                    "original_score": 0.5,
+                    "final_score": 0.75,
+                    "original_placement_success_rate": 0.4,
+                    "final_placement_success_rate": 0.7,
+                }
+            ],
+            run_name="test-run",
+            save_dir=run_results_dir,
+            eval_episodes=100,
+            original_episodes=25,
+        )
+        assert (run_results_dir / "final_scores_comparison.png").is_file()
+        assert (run_results_dir / "final-score-curve.png").is_file()
 
     print("Final score config smoke test passed.")
 
