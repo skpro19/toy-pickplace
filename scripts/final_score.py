@@ -368,11 +368,10 @@ def plot_comparison(
     score_ax.grid(True, alpha=0.3)
     score_ax.legend()
     score_fig.tight_layout()
-    safe_name = run_name.replace("/", "_")
-    root_save_path = Path("results") / f"{safe_name}-final-score-curve.png"
-    score_fig.savefig(root_save_path, dpi=160)
+    score_curve_path = save_dir / "final_score_curve.png"
+    score_fig.savefig(score_curve_path, dpi=160)
     plt.close(score_fig)
-    print(f"Plot saved: {root_save_path}")
+    print(f"Plot saved: {score_curve_path}")
 
 
 if __name__ == "__main__":

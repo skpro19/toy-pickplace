@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Download all checkpoints and results from an S3 backup session, then
-# re-evaluate each flywheel run's best.pt checkpoint using final_score.py.
+# Re-evaluate each flywheel run's best.pt checkpoint from an S3 backup session.
+# Completed evaluation artifacts are uploaded back to the same S3 session.
 #
 # Usage:
 #   ./bash/score_from_s3.sh <S3_SESSION_PREFIX> [--workers <N>]
@@ -10,13 +10,21 @@
 #   ./bash/score_from_s3.sh ablation-dagger-intervention-ratio-20260718-033707 --workers 6
 #
 # This will:
-#   1. Download checkpoints/ and results/ for the given session from S3.
-#   2. For every run folder under results/flywheel/<prefix>/, run
-#      final_score.py --run-name <prefix>/<run>.
+#   1. Reuse locally complete evaluation artifacts, if available; otherwise,
+#      download checkpoints/ and results/ for the given session from S3.
+#   2. Skip runs whose complete artifacts are already in S3.
+#   3. Evaluate the remaining runs and upload their artifacts to S3.
 #
 # Requirements: uv, AWS credentials, S3_BUCKET, and EGL-capable MuJoCo rendering.
 # Defaults to MUJOCO_GL=egl; set MUJOCO_GL to override it.
 set -euo pipefail
+
+# Auto-load project configuration so S3 settings are available without manual exports.
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <S3_SESSION_PREFIX> [--workers <N>]"
@@ -43,16 +51,78 @@ while [ $# -gt 0 ]; do
 done
 
 echo "=== MuJoCo renderer: $MUJOCO_GL ==="
-echo "=== Downloading checkpoints and results ==="
-uv run python scripts/s3_backup.py download --components checkpoints,results "$PREFIX"
 
-for run_dir in "results/flywheel/$PREFIX"/*/; do
+LOCAL_RESULTS_ROOT="results/flywheel/$PREFIX"
+ARTIFACTS=(
+    final_scores.json
+    final_scores_comparison.png
+    final_score_curve.png
+)
+
+local_artifacts_complete() {
+    local run_dir="$1"
+    local artifact
+    for artifact in "${ARTIFACTS[@]}"; do
+        [ -f "$run_dir/$artifact" ] || return 1
+    done
+}
+
+local_session_complete() {
+    local run_dir
+    local found_run=false
+
+    [ -d "$LOCAL_RESULTS_ROOT" ] || return 1
+    for run_dir in "$LOCAL_RESULTS_ROOT"/*/; do
+        [ -d "$run_dir" ] || continue
+        found_run=true
+        local_artifacts_complete "$run_dir" || return 1
+    done
+    "$found_run"
+}
+
+remote_artifacts_complete() {
+    local full_run_name="$1"
+    uv run python scripts/s3_backup.py has-files \
+        --components results \
+        "$full_run_name" \
+        "${ARTIFACTS[@]}" \
+        >/dev/null 2>&1
+}
+
+# A completed local session contains every artifact needed for upload. Keeping it
+# intact avoids overwriting newer local scores with the version stored in S3.
+if local_session_complete; then
+    echo "=== Reusing locally completed evaluation artifacts ==="
+else
+    echo "=== Downloading checkpoints and results ==="
+    uv run python scripts/s3_backup.py download --components checkpoints,results "$PREFIX"
+fi
+
+for run_dir in "$LOCAL_RESULTS_ROOT"/*/; do
     [ -d "$run_dir" ] || continue
     run_name=$(basename "$run_dir")
     full_run_name="$PREFIX/$run_name"
+
+    # All three files mark a successful, fully persisted final evaluation.
+    if remote_artifacts_complete "$full_run_name"; then
+        echo "=== Skipping $full_run_name: artifacts already uploaded ==="
+        continue
+    fi
+
+    if local_artifacts_complete "$run_dir"; then
+        echo "=== Uploading existing artifacts for $full_run_name ==="
+    else
+        echo ""
+        echo "=== Evaluating $full_run_name ==="
+        uv run python scripts/final_score.py --run-name "$full_run_name" "${WORKERS_ARGS[@]}"
+    fi
+
     echo ""
-    echo "=== Evaluating $full_run_name ==="
-    uv run python scripts/final_score.py --run-name "$full_run_name" "${WORKERS_ARGS[@]}"
+    echo "=== Uploading artifacts for $full_run_name ==="
+    uv run python scripts/s3_backup.py upload \
+        --components results \
+        --prefix "$PREFIX" \
+        "$run_name"
 done
 
 echo ""

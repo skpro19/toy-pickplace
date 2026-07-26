@@ -193,6 +193,43 @@ def cmd_download(args: argparse.Namespace) -> None:
     print(f"Downloaded {downloaded} file(s) from {backup_path}.")
 
 
+def cmd_has_files(args: argparse.Namespace) -> None:
+    client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
+    backup_path = _validate_remote_path(args.path)
+    parts = backup_path.split("/", 1)
+    if len(parts) != 2:
+        raise ValueError("has-files requires a session/run backup path")
+    session, run_name = parts
+    selected = _selected_components(args.components)
+
+    for filename in args.files:
+        relative_path = PurePosixPath(filename)
+        if relative_path.is_absolute() or any(
+            part in {".", ".."} for part in relative_path.parts
+        ):
+            raise ValueError(f"Invalid relative file path: {filename}")
+
+        for name in selected:
+            _, remote_dir = COMPONENT_MAP[name]
+            object_key = _key(
+                args.key_prefix,
+                session,
+                remote_dir,
+                run_name,
+                relative_path.as_posix(),
+            )
+            try:
+                client.head_object(Bucket=args.bucket, Key=object_key)
+            except ClientError as error:
+                error_code = error.response.get("Error", {}).get("Code", "")
+                if error_code in {"404", "NoSuchKey", "NotFound"}:
+                    print(f"Missing: s3://{args.bucket}/{object_key}")
+                    raise SystemExit(1) from error
+                raise
+
+    print(f"All requested files exist for {backup_path}.")
+
+
 def cmd_list(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     root = _key(args.key_prefix)
@@ -300,6 +337,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     download.add_argument("--output", default=".", help="Output directory")
 
+    has_files = subparsers.add_parser(
+        "has-files",
+        help="Check whether files exist for a backed-up run",
+    )
+    has_files.add_argument("path", help="Session/run backup path")
+    has_files.add_argument("files", nargs="+", help="Files relative to the run directory")
+    has_files.add_argument(
+        "--components",
+        default="all",
+        help="Comma-separated checkpoints,runs,dagger,results",
+    )
+
     subparsers.add_parser("list", help="List backup sessions and runs")
     remove = subparsers.add_parser("rm", help="Remove a session or run")
     remove.add_argument("path", help="Session or session/run path")
@@ -316,6 +365,8 @@ def main() -> None:
             cmd_upload(args)
         elif args.command == "download":
             cmd_download(args)
+        elif args.command == "has-files":
+            cmd_has_files(args)
         elif args.command == "list":
             cmd_list(args)
         elif args.command == "rm":
