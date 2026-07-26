@@ -3,7 +3,7 @@ run_name: null
 arch: vision_mlp
 
 # flywheel loop
-dagger_rounds: 3
+dagger_rounds: 1
 
 # expert data collection
 num_expert_episodes: 100
