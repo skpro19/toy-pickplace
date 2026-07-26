@@ -272,13 +272,16 @@ Before starting, ensure these are available on the development machine:
 | `vastai` CLI | `which vastai` |
 | `VAST_API_KEY` | Set in `.env` |
 | `S3_BUCKET` and AWS credentials | Set in `.env`, unless the instance has an IAM role |
+| `AWS_PROFILE` | Alternative to `AWS_ACCESSORY_KEY_ID`/`AWS_SECRET_ACCESS_KEY` when using `~/.aws/credentials` |
 | `tmux` | `which tmux` |
 | `flock` | `which flock` |
 
 Source `.env` at the start and require `VAST_API_KEY` and `S3_BUCKET`. Unless
-the instance has an IAM role, also require `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`. Tell the user which variable is missing and that it
-must be added to `.env`; never print secret values or enable shell tracing.
+the instance has an IAM role, also require at least one of:
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` or `AWS_PROFILE`. When
+`AWS_PROFILE` is set, resolve its credentials from `~/.aws/credentials` before
+the SSH transfer (see Step 0). Tell the user which variable is missing and that
+it must be added to `.env`; never print secret values or enable shell tracing.
 
 ## Workflow
 
@@ -298,6 +301,25 @@ test -n "${S3_BUCKET:-}" || {
   printf '%s\n' 'ERROR: S3_BUCKET is missing from .env' >&2
   exit 1
 }
+```
+
+If `AWS_PROFILE` is set but `AWS_ACCESS_KEY_ID` is not, resolve the profile's
+credentials into environment variables:
+
+```bash
+if test -n "${AWS_PROFILE:-}" && test -z "${AWS_ACCESS_KEY_ID:-}"; then
+  AWS_ACCESS_KEY_ID=$(aws configure get aws_access_key_id --profile "$AWS_PROFILE") || {
+    printf 'ERROR: Could not resolve %s from AWS profile %s\n' \
+      'aws_access_key_id' "$AWS_PROFILE" >&2
+    exit 1
+  }
+  AWS_SECRET_ACCESS_KEY=$(aws configure get aws_secret_access_key --profile "$AWS_PROFILE") || {
+    printf 'ERROR: Could not resolve %s from AWS profile %s\n' \
+      'aws_secret_access_key' "$AWS_PROFILE" >&2
+    exit 1
+  }
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+fi
 ```
 
 Do not print either value or run with `set -x`.
@@ -750,9 +772,12 @@ Create an executable `controller.sh` in `CONTROL_DIR` and start it once in a
 remote `ablation-controller` tmux session. The controller must:
 
 1. read the materialized plan in deterministic order;
-2. skip cells whose current status is already `succeeded 0` or `skipped 0`, then
-   launch at most `ABLATION_CONCURRENCY` remaining `ablation-*` sessions for a
-   batch and atomically write `failed 125` if any `tmux new-session` call fails;
+ 2. skip cells whose current status is already `succeeded 0` or `skipped 0`, then
+    launch at most `ABLATION_CONCURRENCY` remaining `ablation-*` sessions for a
+    batch and atomically write `failed 125` if any `tmux new-session` call fails.
+    Before launching, if a tmux session exists for a cell but no corresponding
+    status file exists (orphaned from a prior controller invocation), kill the
+    old session before retrying;
 3. atomically write `state/batch-N-started` after those sessions are launched;
 4. wait for `succeeded 0`, `skipped 0`, or `failed EXIT_CODE` for every cell in
    that batch;
@@ -763,7 +788,14 @@ remote `ablation-controller` tmux session. The controller must:
    status is `succeeded 0` or `skipped 0`;
 7. on the first failure, write `state/failed` with the run name, exit code,
    and log path, then exit non-zero without launching later batches;
-8. after the final successful batch, write `state/completed`.
+ 8. after the final successful batch, write `state/completed`.
+
+   **`set -e` trap:** Under `set -eo pipefail`, a post-increment expression
+   that evaluates to zero (`(( LAUNCHED++ ))` when `LAUNCHED=0`) causes an
+   immediate exit. Use `LAUNCHED=$((LAUNCHED + 1))` instead. Likewise, avoid
+   bare `$VAR && command` for boolean checks; use
+   `[ "$VAR" = true ] && command`. Apply these rules to every arithmetic or
+   compound expression in the controller.
 
 `ablation-controller` is the durable batch scheduler. It may run for days
 after the agent disconnects or times out. It must not auto-retry a failed cell
@@ -812,7 +844,8 @@ be empty:
 ```bash
 printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
   "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" \
-  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" | \
+  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" \
+  "${AWS_PROFILE:-}" | \
   ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" "
     set -e
     IFS= read -r S3_BUCKET
@@ -822,6 +855,7 @@ printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
     IFS= read -r AWS_REGION
     IFS= read -r S3_PREFIX
     IFS= read -r S3_ENDPOINT_URL
+    IFS= read -r AWS_PROFILE
     test -n \"\$S3_BUCKET\" || {
       printf '%s\\n' 'ERROR: S3_BUCKET transfer failed' >&2
       exit 1
@@ -837,10 +871,10 @@ printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
           $CONTROL_DIR/state/backup-history/\$marker-\$(date +%s%N)
       fi
     done
-    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do
       test -z \"\${!name}\" || tmux set-environment -g \"\$name\" \"\${!name}\"
     done
-    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do tmux set-environment -gu "\$name"; done' EXIT
+    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do tmux set-environment -gu "\$name"; done' EXIT
     tmux new-session -d -s ckpt-bkp \
       'cd /workspace/toy-pickplace && while true; do \
          if ! find checkpoints/flywheel runs/flywheel results/flywheel \
@@ -859,11 +893,11 @@ printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
          fi; \
          sleep 120; \
        done'
-    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do
       tmux set-environment -gu \"\$name\"
     done
     trap - EXIT
-    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
   "
 ```
 
@@ -1099,7 +1133,8 @@ global environment and remove credentials from the remote setup shell:
 ```bash
 printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
   "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" \
-  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" | \
+  "${AWS_REGION:-}" "${S3_PREFIX:-}" "${S3_ENDPOINT_URL:-}" \
+  "${AWS_PROFILE:-}" | \
   ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" "
     set -e
     IFS= read -r S3_BUCKET
@@ -1109,22 +1144,23 @@ printf '%s\n' "$S3_BUCKET" "${AWS_ACCESS_KEY_ID:-}" \
     IFS= read -r AWS_REGION
     IFS= read -r S3_PREFIX
     IFS= read -r S3_ENDPOINT_URL
+    IFS= read -r AWS_PROFILE
     test -n \"\$S3_BUCKET\" || exit 1
     ! tmux has-session -t heldout-eval 2>/dev/null || {
       printf '%s\\n' 'ERROR: heldout-eval already exists' >&2
       exit 1
     }
-    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do
       test -z \"\${!name}\" || tmux set-environment -g \"\$name\" \"\${!name}\"
     done
-    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do tmux set-environment -gu "\$name"; done' EXIT
+    trap 'for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do tmux set-environment -gu "\$name"; done' EXIT
     tmux new-session -d -s heldout-eval \
       'exec bash $CONTROL_DIR/heldout-eval.sh'
-    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL; do
+    for name in S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION S3_PREFIX S3_ENDPOINT_URL AWS_PROFILE; do
       tmux set-environment -gu \"\$name\"
     done
     trap - EXIT
-    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
     tmux has-session -t heldout-eval
   "
 ```
