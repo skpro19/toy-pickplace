@@ -816,7 +816,7 @@ the entire diagnostic attempt to five minutes so cleanup cannot hang on S3.
 
 On every terminal state, successful or failed, the supervisor must:
 
-1. run `vastai destroy instance "$INSTANCE_ID"` locally;
+1. run `vastai destroy instance -y "$INSTANCE_ID"` locally; the `-y` flag is required to skip the interactive confirmation prompt which would otherwise stall cleanup silently
 2. poll `vastai show instances --raw` until the numeric ID is absent, for up to
    30 attempts at ten-second intervals;
 3. retry the destroy command once if the ID remains, then record a prominent

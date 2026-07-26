@@ -1163,7 +1163,7 @@ Then print, but do not execute without explicit confirmation:
 ```bash
 . ./.env
 export VAST_API_KEY
-vastai destroy instance "$INSTANCE_ID"
+vastai destroy instance -y "$INSTANCE_ID"
 unset VAST_API_KEY
 ```
 

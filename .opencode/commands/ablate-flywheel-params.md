@@ -483,7 +483,7 @@ never use `accept-new` or disable strict checking.
 If the instance fails to become running or SSH-ready, report its ID, latest
 status, SSH URL when available, and failed attempt count. Ask whether to destroy
 it and retry. Do not destroy without confirmation. On confirmation, run
-`vastai destroy instance "$INSTANCE_ID"`, verify the ID no longer appears in
+`vastai destroy instance -y "$INSTANCE_ID"`, verify the ID no longer appears in
 `vastai show instances`, return to Step 1 for a fresh offer snapshot, and obtain
 a newly confirmed priority list. Do not reuse the stale offer list, change the
 image, install SSH manually, or repeatedly reboot as a workaround.
