@@ -56,7 +56,6 @@ LOCAL_RESULTS_ROOT="results/flywheel/$PREFIX"
 ARTIFACTS=(
     final_scores.json
     final_scores_comparison.png
-    final_score_curve.png
 )
 
 local_artifacts_complete() {
@@ -103,7 +102,7 @@ for run_dir in "$LOCAL_RESULTS_ROOT"/*/; do
     run_name=$(basename "$run_dir")
     full_run_name="$PREFIX/$run_name"
 
-    # All three files mark a successful, fully persisted final evaluation.
+    # Both files mark a successful, fully persisted final evaluation.
     if remote_artifacts_complete "$full_run_name"; then
         echo "=== Skipping $full_run_name: artifacts already uploaded ==="
         continue
@@ -119,10 +118,7 @@ for run_dir in "$LOCAL_RESULTS_ROOT"/*/; do
 
     echo ""
     echo "=== Uploading artifacts for $full_run_name ==="
-    uv run python scripts/s3_backup.py upload \
-        --components results \
-        --prefix "$PREFIX" \
-        "$run_name"
+    aws s3 sync "results/flywheel/$PREFIX/$run_name/" "s3://$S3_BUCKET/$S3_PREFIX/$PREFIX/results/$run_name/"
 done
 
 echo ""
