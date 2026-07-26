@@ -163,6 +163,7 @@ batches of experiment runs.
 | `vastai` CLI | `which vastai` |
 | `VAST_API_KEY` | Set in `.env` |
 | `S3_BUCKET` and AWS credentials | Set in `.env`, unless the instance has an IAM role |
+
 | `AWS_PROFILE` | Alternative to access-key variables via `~/.aws/credentials` |
 | `aws` CLI | May be required to log in when `AWS_PROFILE` uses SSO |
 | `tmux` | `which tmux` |
@@ -525,10 +526,51 @@ CONTROL_DIR/state/
 CONTROL_DIR/state/history/
 ```
 
-Build `runner.sh` locally, base64-encode it, and decode it into `CONTROL_DIR`.
-Do not use a heredoc inside a double-quoted SSH command because its variables
-can expand in the wrong shell. Do not copy transient control files back to the
-repository.
+Build `runner.sh` locally using a quoted heredoc (`<< 'EOF'` so shell variables
+are literal), then base64-encode it and decode it into `CONTROL_DIR`. Use short
+bash variable names and distinct placeholder tokens that `sed` can replace
+safely. Never use `${PLACEHOLDER}` as a token because after `sed` substitution
+it becomes `${value}` — an invalid bash reference. Use uppercase tokens
+surrounded by underscores (e.g. `__RUN_NAME__`). Replace with `sed` using `|`
+delimiter (safe with paths containing `/`). Do not copy transient files back.
+
+Example runner template:
+
+```bash
+cat > /tmp/runner.sh << 'RUNEOF'
+#!/bin/bash
+set -o pipefail
+export MUJOCO_GL=egl
+
+_R=__RUN_NAME__
+_F=__FLYWHEEL_CONFIG__
+_C=__CONTROL_DIR__
+
+echo "running" > "${_C}/state/run-status.tmp"
+mv "${_C}/state/run-status.tmp" "${_C}/state/run-status"
+
+cd /workspace/toy-pickplace
+
+/root/.local/bin/uv run python scripts/flywheel.py \
+  --config "${_F}" --run-name "${_R}" 2>&1 | \
+  tee -a "${_C}/logs/${_R}.log"
+exit_code=${PIPESTATUS[0]}
+
+if [ "$exit_code" -eq 0 ]; then
+  echo "succeeded 0" > "${_C}/state/completed.tmp"
+  mv "${_C}/state/completed.tmp" "${_C}/state/completed"
+else
+  echo "failed ${exit_code}" > "${_C}/state/failed.tmp"
+  mv "${_C}/state/failed.tmp" "${_C}/state/failed"
+fi
+
+exit "${exit_code}"
+RUNEOF
+RUN_NAME=<value>; FLYWHEEL_CONFIG=<value>; CONTROL_DIR=<value>
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__FLYWHEEL_CONFIG__|${FLYWHEEL_CONFIG}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/runner.sh
+```
+
+Base64-encode and transfer, then start the runner.
 
 The executable runner must:
 
@@ -589,11 +631,86 @@ Before each upload, atomically update `state/backup-cycle-started`. After a
 successful upload, atomically update `state/backup-last-succeeded`. On failure,
 atomically write `state/backup-failed` and exit non-zero.
 
-Transfer `S3_BUCKET`, AWS credentials, region, prefix, endpoint, and profile
-over SSH standard input only. Pass them to the backup wrapper with an `env`
-prefix on `tmux new-session`; never place credentials in the SSH command,
-wrapper file, logs, pane output, or tmux global environment. Use the absolute
-`uv` path. Refuse to start if `ckpt-bkp` already exists.
+Transfer credentials to the instance by piping a heredoc through SSH that
+writes a temporary env file with 600 permissions. Have the backup wrapper
+source that file, then shred it after the first upload. Never place
+credentials in the SSH command string, wrapper script file, tmux global
+environment, pane output, or logs. Use the absolute `uv` path.
+
+Example credential transfer (run locally before launching ckpt-bkp):
+
+```bash
+set -a; . ./.env; set +a
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "cat > '${CONTROL_DIR}/s3-creds.sh' << 'CREDEOF'
+S3_BUCKET=${S3_BUCKET}
+AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+AWS_REGION=${AWS_REGION}
+S3_PREFIX=${S3_PREFIX}
+S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+CREDEOF
+chmod 600 '${CONTROL_DIR}/s3-creds.sh'"
+```
+
+The backup wrapper must source that file before each upload and shred it
+after the first successful cycle. Build the wrapper locally and transfer it
+via base64, using the same `_C`, `_R` placeholder pattern as `runner.sh`:
+
+```bash
+cat > /tmp/ckpt-bkp-wrapper.sh << 'WRAPEOF'
+#!/bin/bash
+set -o pipefail
+_R=__RUN_NAME__
+_C=__CONTROL_DIR__
+
+# wait for any artifact
+for i in $(seq 1 60); do
+  for d in checkpoints/flywheel/${_R} runs/flywheel/${_R} \
+           data/flywheel/${_R} results/flywheel/${_R}; do
+    if test -d "/workspace/toy-pickplace/$d" && \
+       find "/workspace/toy-pickplace/$d" -type f 2>/dev/null | \
+       head -1 | grep -q .; then break 2; fi
+  done; sleep 5
+done
+
+# source credentials once
+. "${_C}/s3-creds.sh"
+shred -u "${_C}/s3-creds.sh" 2>/dev/null
+
+while true; do
+  touch "${_C}/state/backup-cycle-started"
+  cd /workspace/toy-pickplace
+  S3_BUCKET="$S3_BUCKET" S3_PREFIX="$S3_PREFIX" \
+    AWS_REGION="$AWS_REGION" S3_ENDPOINT_URL="$S3_ENDPOINT_URL" \
+    AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+    AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
+    /root/.local/bin/uv run python scripts/s3_backup.py upload \
+      --prefix "${_R}" --components checkpoints,runs,results,dagger "${_R}"
+  if [ "$?" -eq 0 ]; then
+    touch "${_C}/state/backup-last-succeeded"
+  else
+    echo "failed" > "${_C}/state/backup-failed.tmp"
+    mv "${_C}/state/backup-failed.tmp" "${_C}/state/backup-failed"
+    exit 1
+  fi
+  sleep 120
+done
+WRAPEOF
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" \
+  /tmp/ckpt-bkp-wrapper.sh
+B64=$(base64 -w0 /tmp/ckpt-bkp-wrapper.sh)
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'
+   chmod +x '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'"
+tmux -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "tmux new-session -d -s ckpt-bkp \
+     'cd /workspace/toy-pickplace && exec bash ${CONTROL_DIR}/ckpt-bkp-wrapper.sh'"
+```
+
+Refuse to start if `ckpt-bkp` already exists on the remote host.
 
 Poll for up to ten minutes for `state/backup-last-succeeded`. Fail immediately
 if `state/backup-failed` appears or `ckpt-bkp` exits. After success, inspect the
