@@ -42,7 +42,7 @@ Requested parameter names are `$1 $2 ... $N`. At least one name is required.
    only — the config's committed values are always authoritative.
 3. Ask the user to select the Git branch to clone, defaulting to `dev`, and set
    `GIT_BRANCH` to that exact value. Set
-   `FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml`. Before
+   `FLYWHEEL_CONFIG=configs/flywheel/mlp_vision/default_mlp_vision_instance.yaml`. Before
    any grid or infrastructure planning, verify that this config is committed on
    the selected remote branch and load its contents from that branch. Stop if it
    does not exist there; a local-only file is not sufficient. Display the exact

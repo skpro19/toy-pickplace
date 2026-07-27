@@ -44,4 +44,4 @@ final_eval_capture_hz: 60
 workers: 12
 
 # seeds
-global_seed: 0
+global_seed: 420

@@ -232,7 +232,7 @@ lower worker count when median paired time differs by no more than 2%.
 Ask the user to select the Git branch to clone, defaulting to `dev`. Set:
 
 ```text
-FLYWHEEL_CONFIG=configs/flywheel/default_mlp_vision_instance.yaml
+FLYWHEEL_CONFIG=configs/flywheel/mlp_vision/default_mlp_vision_instance.yaml
 BENCHMARK_STAMP=YYYYMMDD-HHMMSS
 INSTANCE_LABEL=toy-pickplace-benchmark-vision-mlp-${BENCHMARK_STAMP}
 ```

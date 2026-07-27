@@ -34,7 +34,7 @@ This command accepts no experiment parameter arguments. If arguments are
 provided, explain that this workflow runs the committed config unchanged and
 stop.
 
-Before asking questions, inspect only the local `configs/flywheel/` directory.
+Before asking questions, inspect only the local `configs/flywheel/mlp_vision/` directory.
 Collect regular files ending in `.yaml` or `.yml`, rank them newest first by
 the later of their filesystem creation and modification timestamps (use the
 modification timestamp when creation time is unavailable), and retain the top
@@ -66,7 +66,7 @@ RUN_NAME_PARAMS=<ordered list of selected param names, excluding arch>
 ```
 
 The standard config path is
-`configs/flywheel/default_mlp_vision_instance.yaml`. A smoke test may use a
+`configs/flywheel/mlp_vision/default_mlp_vision_instance.yaml`. A smoke test may use a
 dedicated committed smoke config, but it remains immutable and follows every
 normal workflow gate. Display and confirm its complete contents before
 provisioning.
