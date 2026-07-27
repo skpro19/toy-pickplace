@@ -29,7 +29,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
 
 COMPONENT_MAP: dict[str, tuple[Path, str]] = {
@@ -354,7 +361,28 @@ def main() -> None:
             cmd_list(args)
         elif args.command == "rm":
             cmd_rm(args)
-    except (BotoCoreError, ClientError, ValueError, RuntimeError) as error:
+    except ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code", "")
+        auth_codes = {
+            "AccessDenied",
+            "ExpiredToken",
+            "InvalidAccessKeyId",
+            "InvalidClientTokenId",
+            "SignatureDoesNotMatch",
+            "UnrecognizedClientException",
+        }
+        exit_code = 2 if error_code in auth_codes else 1
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(exit_code) from error
+    except (
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    ) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(3) from error
+    except (BotoCoreError, ValueError, RuntimeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(1) from error
 

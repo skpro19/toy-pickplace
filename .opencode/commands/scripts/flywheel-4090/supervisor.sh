@@ -14,7 +14,17 @@ SUPERVISOR_SESSION="flywheel-supervisor-${SUPERVISOR_SESSION}"
 
 STATUS_FILE="/tmp/toy-pickplace-flywheel-${RUN_NAME}.status"
 
-echo "supervisor-starting" > "$STATUS_FILE"
+write_status() {
+  local outcome="$1"
+  local now state_val
+  now=$(date -Iseconds)
+  state_val="${STATE:-starting}"
+  cat > "$STATUS_FILE" << EOF
+{"outcome":"${outcome}","timestamp":"${now}","run_name":"${RUN_NAME}","instance_id":"${INSTANCE_ID}","last_state":"${state_val}"}
+EOF
+}
+
+write_status "supervisor-starting"
 
 set -a; . ./.env; set +a
 
@@ -23,6 +33,10 @@ SSH_CMD="ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 
 cleanup() {
   local outcome="$1"
   echo "=== Cleanup: $outcome ==="
+  capture_local_diagnostics || true
+  echo "Instance destruction in 60s — SSH: ssh -p $PORT root@$HOST"
+  $SSH_CMD "printf '%s\n' 'pending-destruction at $(date -Iseconds)' > '${CONTROL_DIR}/state/pending-destruction'" 2>/dev/null || true
+  sleep 60
   vastai destroy instance -y "$INSTANCE_ID" 2>&1 || echo "destroy already done"
   for i in $(seq 1 30); do
     instances=$(vastai show instances --raw 2>/dev/null || echo "[]")
@@ -48,7 +62,7 @@ except: pass
   fi
   tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
   tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
-  echo "$outcome" > "$STATUS_FILE"
+  write_status "$outcome"
   echo "Cleanup complete: $outcome"
 }
 
@@ -85,6 +99,32 @@ c.upload_file('$f', os.environ['S3_BUCKET'], '$key')
   done
 }
 
+capture_local_diagnostics() {
+  local local_dir="/tmp/toy-pickplace-flywheel-${RUN_NAME}"
+  mkdir -p "$local_dir"
+  {
+    echo "=== Capture $(date -Iseconds) ==="
+    echo "=== Run: ${RUN_NAME} ==="
+    echo "=== Instance: ${INSTANCE_ID} ==="
+    echo "=== Host: ${HOST}:${PORT} ==="
+    echo "=== State: ${STATE} ==="
+    echo ""
+  } > "$local_dir/meta.txt"
+
+  $SSH_CMD "cat '${CONTROL_DIR}/state/'* 2>/dev/null; echo '---'; ls -la '${CONTROL_DIR}/state/'" \
+    > "$local_dir/state.txt" 2>/dev/null || true
+
+  for session in flywheel-run ckpt-bkp tensorboard; do
+    $SSH_CMD "tmux capture-pane -t '$session' -p -S -300 2>/dev/null" \
+      > "$local_dir/${session}.log" 2>/dev/null || true
+  done
+
+  $SSH_CMD "tail -500 '${CONTROL_DIR}/logs/${RUN_NAME}.log' 2>/dev/null" \
+    > "$local_dir/training-tail.log" 2>/dev/null || true
+
+  echo "Local diagnostics saved to $local_dir"
+}
+
 echo "Supervisor started: instance=$INSTANCE_ID host=$HOST port=$PORT run=$RUN_NAME"
 
 $SSH_CMD "echo connected" >/dev/null 2>&1 || {
@@ -110,46 +150,40 @@ while true; do
         cleanup "training-failed-${failed#failed }"
         break
       fi
-      if [ "$backup_failed" = "yes" ] || [ "$ckpt_alive" = "no" ]; then
-        echo "Backup failed or stopped"
-        upload_diagnostics
-        cleanup "backup-failed"
-        break
-      fi
       if [ "$completed" != "not_found" ]; then
         echo "Training completed: $completed"
         STATE="completed-wait-backup"
+      elif [ "$backup_failed" = "yes" ] || [ "$ckpt_alive" = "no" ]; then
+        echo "WARNING: backup unhealthy, continuing to monitor training"
+        BACKUP_HEALTHY=false
       fi
       ;;
 
     completed-wait-backup)
-      cycle_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/backup-cycle-started' 2>/dev/null || echo 0" 2>/dev/null)
       completed_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/completed' 2>/dev/null || echo 0" 2>/dev/null)
       succeeded_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/backup-last-succeeded' 2>/dev/null || echo 0" 2>/dev/null)
+      launch_eval=false
 
-      if [ "$cycle_stamp" -gt "$completed_stamp" ] && [ "$succeeded_stamp" -gt "$cycle_stamp" ] 2>/dev/null; then
-        echo "Fresh backup confirmed after completion. Stopping ckpt-bkp, launching held-out eval."
+      if [ "$succeeded_stamp" -gt "$completed_stamp" ] 2>/dev/null; then
+        echo "Fresh backup confirmed after completion. Launching held-out eval."
+        launch_eval=true
+      else
+        ckpt_alive=$($SSH_CMD "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no" 2>/dev/null)
+        backup_failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no" 2>/dev/null)
+        if [ "$ckpt_alive" = "no" ] || [ "$backup_failed" = "yes" ]; then
+          echo "WARNING: backup is dead, launching held-out eval from local data"
+          upload_diagnostics
+          launch_eval=true
+        fi
+      fi
+
+      if [ "$launch_eval" = true ]; then
         $SSH_CMD "tmux kill-session -t ckpt-bkp 2>/dev/null; echo ckpt-bkp-stopped" >/dev/null 2>&1
         . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
         $SSH_CMD "tmux new-session -d -s heldout-eval 'cd /workspace/toy-pickplace && export MUJOCO_GL=egl && exec bash ${CONTROL_DIR}/heldout-eval.sh'" 2>&1
         HELDOUT_LAUNCHED=true
         STATE="evaluation-running"
         echo "Held-out evaluation launched"
-      else
-        ckpt_alive=$($SSH_CMD "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no" 2>/dev/null)
-        if [ "$ckpt_alive" = "no" ]; then
-          echo "Backup stopped while waiting for fresh backup"
-          upload_diagnostics
-          cleanup "backup-stopped-during-wait"
-          break
-        fi
-      fi
-      backup_failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no" 2>/dev/null)
-      if [ "$backup_failed" = "yes" ]; then
-        echo "Backup failed while waiting for fresh backup"
-        upload_diagnostics
-        cleanup "backup-failed-during-wait"
-        break
       fi
       ;;
 
