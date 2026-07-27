@@ -6,6 +6,7 @@
 - refer `.opencode/rules/git.md` for git related instructions
 
 ## AWS Administration
+- source `.env` or always use `AWS_PROFILE=toy-pickplace-backup` when running `aws` CLI commands for S3; the bucket is `s3://toy-pickplace`, region is `ap-south-1`
 - when an application profile lacks permission to update its own IAM policy, use `aws login --profile <admin-profile> --region <region>` only after the user explicitly authorizes browser-based authentication
 - verify the authenticated principal with `aws sts get-caller-identity --profile <admin-profile>` before making changes
 - apply the narrowest required IAM policy from a reviewed JSON file; never place credentials, account-specific tokens, or browser-login URLs in repository files
