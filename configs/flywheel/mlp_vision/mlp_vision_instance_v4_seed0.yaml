@@ -1,0 +1,51 @@
+# same as v3, but dagger_intervention_ratio is 0.1 instead of 0.8 in v3
+# instance v4 — key run settings 
+
+
+# run 
+run_name: null
+arch: vision_mlp  # mlp | vision_mlp
+
+# flywheel loop 
+dagger_rounds: 10
+
+# expert data collection
+num_expert_episodes: 200
+max_steps: 8000
+train_capture_hz: 60  # obs/action/image rate for expert data and DAgger rollouts
+
+# training
+epochs: 1000
+batch_size: 768
+early_stop_patience: 100
+dataloader_workers: 4
+persistent_workers: true
+
+# dataset mixing (retrain rounds only; round 0 uses expert data only)
+expert_ratio: 0.5  # [expert vs dagger] data ratio
+dagger_intervention_ratio: 0.1  # [expert-executed vs policy-executed] ratio in DAgger sampling
+
+# dagger rollout 
+intervention_threshold: 0.1  # L2 arm threshold; gripper disagreement also triggers
+intervention_steps: 50         # min expert-control burst after trigger
+dagger_episodes: 100
+rollout_max_steps: 1400
+
+#  evaluation / checkpoint selection 
+eval_interval: 40
+eval_episodes: 50
+eval_max_steps: 1400
+eval_capture_hz: 60  # policy inference rate during in-loop checkpoint evaluation
+mode: mode-b  # mode-a = score first; mode-b = placement rate first
+
+# large held-out evaluation after the flywheel completes
+final_eval_episodes: 200
+final_eval_seed: 20260716
+final_eval_workers: 12
+final_eval_capture_hz: 60
+
+# parallelism 
+workers: 12 # eval + rollout workers
+
+# seeds
+global_seed: 0  # derives expert collection, training, DAgger, and in-loop evaluation seeds
