@@ -3,6 +3,15 @@ description: Provision one RTX 4090 and run one config-defined flywheel
 agent: flywheel-4090
 ---
 
+> **SSH banner handling**: Vast.ai emits a welcome banner on stderr for every SSH
+> connection. When capturing SSH command output in a variable, always use
+> `2>/dev/null | tail -1` to extract the actual value. Never use `2>&1` in any
+> SSH capture or status check — it swallows the banner into the captured string
+> and breaks exact-match probes (e.g. `echo SSH_OK`). All SSH probes in this
+> workflow use `2>/dev/null` (exit code) or `2>/dev/null | tail -1` (captured
+> value). Non-SSH commands (vastai CLI, local commands) are unaffected; they
+> can use `2>&1` or no redirect freely.
+
 Run one standard flywheel on one Vast.ai RTX 4090. This command owns baseline
 confirmation, provisioning, hardware acceptance, setup, durable launch,
 checkpoint backup, automatic held-out evaluation, result upload, and instance

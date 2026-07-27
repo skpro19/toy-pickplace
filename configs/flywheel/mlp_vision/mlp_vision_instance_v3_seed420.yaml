@@ -1,3 +1,10 @@
+# instance v3 — key run settings 
+# num_expert_episodes=200
+# early_stop_patience=100
+# dagger_episodes=100
+# eval_episodes=50
+# final_eval_episodes=200
+
 # run 
 run_name: null
 arch: vision_mlp  # mlp | vision_mlp
@@ -44,4 +51,4 @@ final_eval_capture_hz: 60
 workers: 12 # eval + rollout workers
 
 # seeds
-global_seed: 420  # derives expert collection, training, DAgger, and in-loop evaluation seeds
+global_seed: 5693  # derives expert collection, training, DAgger, and in-loop evaluation seeds
