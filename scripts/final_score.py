@@ -391,34 +391,6 @@ def plot_comparison(
     ])
     final_place = np.array([r["final_placement_success_rate"] for r in final_rounds])
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-
-    ax1.plot(rounds_arr, orig_scores, "o-", color="#888888", label=f"Original ({original_episodes} ep)", linewidth=1.5, markersize=6)
-    ax1.plot(rounds_arr, final_scores, "s-", color="#1f77b4", label=f"Final ({eval_episodes} ep)", linewidth=1.5, markersize=6)
-    ax1.set_ylabel("Score")
-    ax1.set_title(f"Score comparison - {run_name}")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    ax1.set_ylim(0, 1.05)
-
-    ax2.plot(rounds_arr, orig_place, "o-", color="#888888", label=f"Original ({original_episodes} ep)", linewidth=1.5, markersize=6)
-    ax2.plot(rounds_arr, final_place, "s-", color="#2ca02c", label=f"Final ({eval_episodes} ep)", linewidth=1.5, markersize=6)
-    ax2.set_xlabel("Round")
-    ax2.set_ylabel("Placement Success Rate")
-    ax2.set_title("Placement success rate comparison")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    ax2.set_ylim(0, 1.05)
-
-    ax2.set_xticks(rounds_arr)
-    ax2.set_xticklabels([f"{r:03d}" for r in rounds_arr])
-
-    fig.tight_layout()
-    save_path = save_dir / "final_scores_comparison.png"
-    fig.savefig(save_path, dpi=160)
-    plt.close(fig)
-    print(f"Plot saved: {save_path}")
-
     score_fig, score_ax = plt.subplots(figsize=(10, 5))
     score_ax.plot(
         rounds_arr,
@@ -451,6 +423,39 @@ def plot_comparison(
     score_fig.savefig(score_curve_path, dpi=160)
     plt.close(score_fig)
     print(f"Plot saved: {score_curve_path}")
+
+    place_fig, place_ax = plt.subplots(figsize=(10, 5))
+    place_ax.plot(
+        rounds_arr,
+        orig_place,
+        "o-",
+        color="#888888",
+        label=f"Flywheel evaluation ({original_episodes} ep)",
+        linewidth=1.5,
+        markersize=6,
+    )
+    place_ax.plot(
+        rounds_arr,
+        final_place,
+        "s-",
+        color="#2ca02c",
+        label=f"Large held-out evaluation ({eval_episodes} ep)",
+        linewidth=1.5,
+        markersize=6,
+    )
+    place_ax.set_xlabel("Round")
+    place_ax.set_ylabel("Placement success rate")
+    place_ax.set_title(f"Flywheel versus held-out evaluation - placement - {run_name}")
+    place_ax.set_xticks(rounds_arr)
+    place_ax.set_xticklabels([f"{round_index:03d}" for round_index in rounds_arr])
+    place_ax.set_ylim(0, 1.05)
+    place_ax.grid(True, alpha=0.3)
+    place_ax.legend()
+    place_fig.tight_layout()
+    place_curve_path = save_dir / "final-placement-score.png"
+    place_fig.savefig(place_curve_path, dpi=160)
+    plt.close(place_fig)
+    print(f"Plot saved: {place_curve_path}")
 
 
 if __name__ == "__main__":

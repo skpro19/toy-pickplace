@@ -87,7 +87,7 @@ def main() -> None:
             eval_episodes=100,
             original_episodes=25,
         )
-        assert (run_results_dir / "final_scores_comparison.png").is_file()
+        assert (run_results_dir / "final-placement-score.png").is_file()
         assert (run_results_dir / "final-score-curve.png").is_file()
 
     print("Final score config smoke test passed.")
