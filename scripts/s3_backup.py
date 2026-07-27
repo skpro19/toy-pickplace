@@ -37,6 +37,7 @@ from botocore.exceptions import (
     EndpointConnectionError,
     ReadTimeoutError,
 )
+from tqdm import tqdm
 
 
 COMPONENT_MAP: dict[str, tuple[Path, str]] = {
@@ -117,20 +118,23 @@ def _sync_directory(
     )
     uploaded = 0
 
-    for path, object_key in uploads:
-        remote = existing_objects.get(object_key)
-        modified = remote.get("LastModified") if remote else None
-        local = path.stat()
-        if (
-            remote
-            and remote.get("Size") == local.st_size
-            and modified is not None
-            and modified.timestamp() >= local.st_mtime
-        ):
-            continue
-        print(f"Uploading {path} -> s3://{bucket}/{object_key}")
-        client.upload_file(str(path), bucket, object_key)
-        uploaded += 1
+    total_bytes = sum(p.stat().st_size for p, _ in uploads)
+    with tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Uploading") as pbar:
+        for path, object_key in uploads:
+            remote = existing_objects.get(object_key)
+            modified = remote.get("LastModified") if remote else None
+            local = path.stat()
+            if (
+                remote
+                and remote.get("Size") == local.st_size
+                and modified is not None
+                and modified.timestamp() >= local.st_mtime
+            ):
+                pbar.update(local.st_size)
+                continue
+            client.upload_file(str(path), bucket, object_key)
+            pbar.update(local.st_size)
+            uploaded += 1
 
     stale_keys = sorted(set(existing_objects) - expected_keys)
     _delete_keys(client=client, bucket=bucket, keys=stale_keys)
@@ -179,23 +183,25 @@ def cmd_download(args: argparse.Namespace) -> None:
         local_root, remote_dir = COMPONENT_MAP[name]
         remote_base = _key(remote_dir)
         search_prefix = _key(remote_base, run_name) + "/"
-        object_keys = _list_keys(
+        objects = _list_objects(
             client=client,
             bucket=args.bucket,
             prefix=search_prefix,
         )
-        for object_key in object_keys:
-            relative_key = object_key.removeprefix(f"{remote_base}/")
-            relative_path = PurePosixPath(relative_key)
-            if not relative_key or ".." in relative_path.parts:
-                continue
-            destination = (
-                output_root / local_root / Path(*relative_path.parts)
-            )
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            print(f"Downloading s3://{args.bucket}/{object_key} -> {destination}")
-            client.download_file(args.bucket, object_key, str(destination))
-            downloaded += 1
+        total_bytes = sum(obj.get("Size", 0) for obj in objects.values())
+        with tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Downloading") as pbar:
+            for object_key in objects:
+                relative_key = object_key.removeprefix(f"{remote_base}/")
+                relative_path = PurePosixPath(relative_key)
+                if not relative_key or ".." in relative_path.parts:
+                    continue
+                destination = (
+                    output_root / local_root / Path(*relative_path.parts)
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                client.download_file(args.bucket, object_key, str(destination))
+                pbar.update(objects[object_key].get("Size", 0))
+                downloaded += 1
 
     if not downloaded:
         raise RuntimeError(f"No files found for run {run_name}")
