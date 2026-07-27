@@ -68,6 +68,23 @@ def aggregate_seed_results(*, seed_results: list[dict[str, object]]) -> dict[str
     }
 
 
+def validate_complete_rounds(*, metrics_data: dict[str, object]) -> None:
+    config = metrics_data.get("config", {})
+    if not isinstance(config, dict) or "dagger_rounds" not in config:
+        return
+
+    expected_rounds = list(range(int(config["dagger_rounds"]) + 1))
+    rounds = metrics_data.get("rounds", [])
+    if not isinstance(rounds, list):
+        raise ValueError("metrics rounds must be a list")
+    actual_rounds = [int(item["round"]) for item in rounds]
+    if actual_rounds != expected_rounds:
+        raise ValueError(
+            f"Incomplete flywheel metrics: expected rounds {expected_rounds}, "
+            f"found {actual_rounds}"
+        )
+
+
 def resolve_final_eval_settings(
     *,
     config: dict[str, object],
@@ -215,6 +232,9 @@ def main() -> None:
             print(f"Final scores file not found: {final_scores_path}")
             return
         final_scores_data = json.loads(final_scores_path.read_text())
+        validate_complete_rounds(
+            metrics_data={**metrics_data, "rounds": final_scores_data["rounds"]}
+        )
         plot_comparison(
             final_rounds=final_scores_data["rounds"],
             run_name=run_name,
@@ -224,6 +244,7 @@ def main() -> None:
         )
         return
 
+    validate_complete_rounds(metrics_data=metrics_data)
     ckpt_root = Path("checkpoints/flywheel")
     checkpoints: list[tuple[int, Path]] = []
     for round_data in rounds:
@@ -240,8 +261,11 @@ def main() -> None:
         checkpoints.append((round_idx, ckpt_path))
 
     if not checkpoints:
-        print("No valid checkpoints found to evaluate.")
-        return
+        raise RuntimeError("No valid checkpoints found to evaluate")
+    if len(checkpoints) != len(rounds):
+        raise RuntimeError(
+            f"Expected {len(rounds)} checkpoints, found {len(checkpoints)}"
+        )
 
     print(f"\nRun: {run_name}")
     print(

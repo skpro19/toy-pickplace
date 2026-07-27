@@ -6,10 +6,39 @@ import tempfile
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from final_score import plot_comparison, resolve_final_eval_settings  # noqa: E402
+from final_score import (  # noqa: E402
+    plot_comparison,
+    resolve_final_eval_settings,
+    validate_complete_rounds,
+)
 
 
 def main() -> None:
+    validate_complete_rounds(
+        metrics_data={
+            "config": {"dagger_rounds": 2},
+            "rounds": [{"round": 0}, {"round": 1}, {"round": 2}],
+        }
+    )
+    validate_complete_rounds(
+        metrics_data={"config": {}, "rounds": [{"round": 0}]}
+    )
+    for invalid_rounds in (
+        [{"round": 0}, {"round": 1}],
+        [{"round": 0}, {"round": 2}, {"round": 1}],
+    ):
+        try:
+            validate_complete_rounds(
+                metrics_data={
+                    "config": {"dagger_rounds": 2},
+                    "rounds": invalid_rounds,
+                }
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"incomplete flywheel accepted: {invalid_rounds}")
+
     config = {
         "final_eval_episodes": 200,
         "final_eval_seed": 17,

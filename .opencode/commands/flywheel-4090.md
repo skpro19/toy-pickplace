@@ -33,9 +33,9 @@ architecture (`arch`) and user-selected config parameters.
 4. Clone the exact commit and verify CUDA and headless MuJoCo.
 5. Start TensorBoard, local wrappers, one durable flywheel runner, and backup.
 6. Start a durable local supervisor that monitors terminal state.
-7. After a successful fresh backup, automatically run held-out evaluation,
-   upload its JSON and plots, then destroy the instance. On failure, upload
-   diagnostics best-effort and destroy the instance.
+7. After an acknowledged post-completion backup, automatically run held-out
+   evaluation, upload finalized metrics, its JSON, and plots, then destroy the
+   instance. On failure, upload diagnostics best-effort and destroy the instance.
 
 ## Baseline and run planning
 
@@ -626,9 +626,13 @@ The positional `RUN_NAME` is mandatory. Never upload whole component roots;
 that can mix artifacts from other runs and can let old files satisfy the new
 run's initial-backup gate.
 
-Before each upload, atomically update `state/backup-cycle-started`. After a
-successful upload, atomically update `state/backup-last-succeeded`. On failure,
-atomically write `state/backup-failed` and exit non-zero.
+Before each upload, atomically update `state/backup-cycle-started` with a unique
+cycle ID and capture any `state/backup-final-requested` token. After a successful
+upload, atomically update `state/backup-last-succeeded` with the cycle ID and
+acknowledge the captured final token in `state/backup-final-succeeded`. This
+request/acknowledgement ensures an in-progress backup cannot be mistaken for a
+post-completion backup. On failure, atomically write `state/backup-failed` and
+exit non-zero.
 
 Transfer credentials to the instance by writing an env file. Resolve the AWS
 profile credentials locally first, then write the file via SSH using an
@@ -763,8 +767,8 @@ Provisioning setup is complete after hardware acceptance, TensorBoard, local
 wrappers, `flywheel-run`, initial backup, held-out wrapper, and local supervisor
 are verified. The workflow is complete only when the supervisor reaches a
 terminal state and verifies instance destruction. A successful workflow also
-requires training completion, a fresh final backup, held-out completion, and
-all three result objects verified on S3.
+requires training completion, an acknowledged post-completion backup,
+held-out completion, and all four result objects verified on S3.
 
 Print:
 
@@ -777,7 +781,7 @@ Print:
 - `CONTROL_DIR`, durable run state, log path, and remote attach command;
 - local SSH, TensorBoard, and supervisor attach commands and TensorBoard URL;
 - backup state, optional download and replay commands;
-- held-out settings, state, log, and all three exact uploaded result paths;
+- held-out settings, state, log, and all four exact uploaded result paths;
 - terminal supervisor status path and verified instance-destruction state.
 
 ## Safety notes
@@ -789,7 +793,8 @@ Print:
 - Advertised effective vCPUs never bypass the SSH physical-core gate.
 - The committed config is immutable for this workflow; there are no parameter
   sweeps, per-run experiment overrides, concurrency calculations, or batches.
-- Held-out evaluation always runs after a fresh final backup and uploads only
-  its JSON and two plots under `results/flywheel/RUN_NAME/`.
+- Held-out evaluation always runs after an acknowledged post-completion backup
+  and uploads finalized metrics, its JSON, and two plots under
+  `results/flywheel/RUN_NAME/`.
 - Every terminal state triggers destruction. Failure diagnostics are
   best-effort so an upload outage cannot keep a billed instance alive.
