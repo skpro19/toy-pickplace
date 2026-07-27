@@ -36,6 +36,11 @@
 - use keyword-only arguments for functions/methods with multiple parameters: put a bare `*` after `self` (or after positional-only args), then name every remaining parameter so callers must pass them by keyword (e.g. `def append_step(self, *, obs: ..., action: ...) -> None`)
 - keep a function's return annotation on the `def` line when it fits (e.g. `def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:`); do not place it on a separate line
 
+## Vast.ai Administration
+- API key is in `.env` as `VAST_API_KEY`
+- The `vastai show user` CLI command is unreliable (returns 400); use the REST API instead
+- Query balance via: `source .env && curl -sL -H "Authorization: Bearer $VAST_API_KEY" "https://console.vast.ai/api/v0/users/current"` — the `credit` field is the available balance
+
 ## Git Commits
 - follow `.opencode/rules/git.md` for the full git policy; the rules below are the ones most often missed
 - use conventional commits: `<type>: <short summary>` — one subject line only
