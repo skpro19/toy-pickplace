@@ -144,13 +144,13 @@ while true; do
       backup_failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no" 2>/dev/null)
       ckpt_alive=$($SSH_CMD "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no" 2>/dev/null)
 
-      if [ "$failed" != "not_found" ]; then
+      if [ -n "$failed" ] && [ "$failed" != "not_found" ]; then
         echo "Training failed: $failed"
         upload_diagnostics
         cleanup "training-failed-${failed#failed }"
         break
       fi
-      if [ "$completed" != "not_found" ]; then
+      if [ -n "$completed" ] && [ "$completed" != "not_found" ]; then
         echo "Training completed: $completed"
         STATE="completed-wait-backup"
       elif [ "$backup_failed" = "yes" ] || [ "$ckpt_alive" = "no" ]; then
@@ -160,6 +160,12 @@ while true; do
       ;;
 
     completed-wait-backup)
+      completed_exists=$($SSH_CMD "test -f '${CONTROL_DIR}/state/completed' && echo yes || echo no" 2>/dev/null)
+      if [ "$completed_exists" != "yes" ]; then
+        echo "WARNING: completed marker disappeared, falling back to running state"
+        STATE="running"
+        continue
+      fi
       completed_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/completed' 2>/dev/null || echo 0" 2>/dev/null)
       succeeded_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/backup-last-succeeded' 2>/dev/null || echo 0" 2>/dev/null)
       launch_eval=false
