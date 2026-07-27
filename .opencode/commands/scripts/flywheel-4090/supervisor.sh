@@ -202,7 +202,7 @@ while true; do
         . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
         verify_ok=true
         for key in "results/flywheel/${RUN_NAME}/final_scores.json" \
-                   "results/flywheel/${RUN_NAME}/final_scores_comparison.png" \
+                   "results/flywheel/${RUN_NAME}/final-placement-score.png" \
                    "results/flywheel/${RUN_NAME}/final-score-curve.png"; do
           uv run python -c "
 import boto3, os
