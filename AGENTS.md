@@ -12,6 +12,17 @@
 - verify the resulting S3 operations using the workload profile, not the administrative profile
 - run `aws logout --profile <admin-profile>` after verification so administrative browser credentials do not remain active
 
+### Updating an existing inline IAM policy
+1. list available profiles: `aws configure list-profiles`
+2. log in with admin: `aws login --profile <admin-profile> --region <region>`
+3. verify identity: `aws sts get-caller-identity --profile <admin-profile>`
+4. list the user's inline policies: `aws iam list-user-policies --profile <admin-profile> --user-name <user>`
+5. inspect the current policy document: `aws iam get-user-policy --profile <admin-profile> --user-name <user> --policy-name <policy>`
+6. update the policy inline (keep existing statements, add new ones): `aws iam put-user-policy --profile <admin-profile> --user-name <user> --policy-name <policy> --policy-document '{"Version":"2012-10-17","Statement":[...]}'`
+7. wait a few seconds for IAM propagation (inline policies can take ~10s)
+8. verify with the workload profile: e.g. `aws s3 ls --profile <workload-profile>`
+9. log out admin: `aws logout --profile <admin-profile>`
+
 
 ## uv commands
 - use `uv` instead of `pip`
