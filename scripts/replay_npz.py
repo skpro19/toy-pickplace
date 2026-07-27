@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 from sim import SimEnv
+from constant import DEFAULT_CAPTURE_HZ
 
 
 def restore_episode_layout(
@@ -33,8 +34,11 @@ def replay_actions(
     episodes: int = 10,
     randomised: bool = True,
     action_key: str = "actions",
+    capture_hz: float = DEFAULT_CAPTURE_HZ,
 ) -> None:
     sim = SimEnv()
+    sim_hz = 1.0 / sim.model.opt.timestep
+    steps_per_action = max(1, int(round(sim_hz / capture_hz)))
     npz_path = Path(npz)
     if npz_path.is_file():
         npz_files = [npz_path]
@@ -117,10 +121,11 @@ def replay_actions(
                         end="",
                         flush=True,
                     )
-                    sim.data.ctrl[: sim.model.nu] = action
-                    mujoco.mj_step(sim.model, sim.data)
-                    time.sleep(sim.model.opt.timestep * 1)
-                    viewer.sync()
+                    for _ in range(steps_per_action):
+                        sim.data.ctrl[: sim.model.nu] = action
+                        mujoco.mj_step(sim.model, sim.data)
+                        time.sleep(sim.model.opt.timestep)
+                        viewer.sync()
                 print()
 
 
@@ -141,6 +146,13 @@ def parse_args():
         default=True,
         help="Disable shuffling of file order (default: shuffled)",
     )
+    parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=DEFAULT_CAPTURE_HZ,
+        help=f"Rate at which actions were captured during data collection (default: {DEFAULT_CAPTURE_HZ}). "
+        "The simulation runs at 500 Hz; actions are held for sim_hz / capture_hz steps.",
+    )
     return parser.parse_args()
 
 
@@ -151,6 +163,7 @@ def main():
         episodes=args.episodes,
         randomised=args.randomised,
         action_key=args.action_key,
+        capture_hz=args.capture_hz,
     )
 
 
