@@ -192,15 +192,7 @@ Then set each value once:
 ```bash
 RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 UNIX_TIME_NS=$(date +%s%N)
-BASE_SUITE=$(uv run python -c "
-import yaml, sys
-from pathlib import Path
-exp = yaml.safe_load(Path('$EXPERIMENT_CONFIG').read_text())
-exp_path = Path('$EXPERIMENT_CONFIG')
-base_rel = exp['base_config']
-suite_dir = (exp_path.parent / base_rel).resolve().parent
-print(suite_dir.name)
-")
+BASE_SUITE=$(basename "$(dirname "$EXPERIMENT_CONFIG")")
 EXPERIMENT_NAME=$(basename "$EXPERIMENT_CONFIG" .yaml | sed 's/\.yml$//')
 RUN_NAME="${BASE_SUITE}_${EXPERIMENT_NAME}_seed${SELECTED_SEED}_${RUN_TIMESTAMP}"
 INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
