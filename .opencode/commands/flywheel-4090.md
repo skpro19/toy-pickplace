@@ -507,29 +507,29 @@ Do not seek user permission for the retry.
 ### Network quality acceptance (runs after hardware acceptance)
 
 Hardware checks measure local compute resources.  A separate network test
-measures *actual* upload speed and round-trip time to S3 (where checkpoints,
-runs, results, and dagger data will be stored).  This catches instances
+measures *actual* upload speed and complete PUT operation latency to S3 (where
+checkpoints, runs, results, and dagger data will be stored). This catches instances
 where the advertised `inet_up` in the offer is misleading due to geographic
 distance, ISP throttling, or host oversubscription.
 
 Generate presigned S3 URLs locally, then transfer and invoke the gate script:
 
 ```bash
-TEMP_NETGATE_KEY=".netgate/$(date +%s%N)"
+TEMP_NETGATE_KEY="results/flywheel/${FLYWHEEL_ARCH}/.netgate/$(date +%s%N)"
 S3_PRESIGNED_PUT=$(uv run python -c "
 import boto3, os
-s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'ap-south-1'))
+s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION') or 'ap-south-1')
 url = s3.generate_presigned_url('put_object',
     Params={'Bucket': os.environ['S3_BUCKET'], 'Key': '${TEMP_NETGATE_KEY}'},
-    ExpiresIn=300)
+    ExpiresIn=900)
 print(url)
 ")
 S3_PRESIGNED_DELETE=$(uv run python -c "
 import boto3, os
-s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'ap-south-1'))
+s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION') or 'ap-south-1')
 url = s3.generate_presigned_url('delete_object',
     Params={'Bucket': os.environ['S3_BUCKET'], 'Key': '${TEMP_NETGATE_KEY}'},
-    ExpiresIn=300)
+    ExpiresIn=900)
 print(url)
 ")
 
@@ -577,8 +577,8 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
 
 | Check | Requirement |
 |---|---|
-| S3 RTT | ≤ 500 ms to `s3.ap-south-1.amazonaws.com` |
-| S3 upload | ≥ 1000 KB/s to the bucket |
+| S3 PUT operation latency | Median of 7 successful samples ≤ 500 ms against the presigned bucket key |
+| S3 upload | Median of 3 successful 4 MiB uploads ≥ 1000 KB/s to the bucket |
 
 On network rejection, automatically destroy the provisional instance, verify
 removal, then return to Step 1 to search for and provision a replacement.  Do
