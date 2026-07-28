@@ -58,6 +58,7 @@ Examples:
 - `docs: clarify host-client branch sync workflow`
 
 ## Sections to ignore
+Do not treat these as code changes; ignore them during development and review:
 - `docs/` — manually curated documentation; not a code change
 - `ablations/` — experiment results and run tracking; not production code
 - `ISSUES.md` — personal issue tracker; not a code change
