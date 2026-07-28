@@ -56,3 +56,7 @@ Examples:
 - `feat: add viewer camera capture and recalibrate top-camera`
 - `fix: prevent calibration overwrite unless toggle was pressed`
 - `docs: clarify host-client branch sync workflow`
+
+## Sections to ignore
+- `docs/` — manually curated documentation; not a code change
+- `ablations/` — experiment results and run tracking; not production code
