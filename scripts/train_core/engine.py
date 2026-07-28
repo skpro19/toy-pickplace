@@ -89,9 +89,15 @@ def run_training(
     gripper_loss_fn = nn.BCEWithLogitsLoss()
 
     model = recipe.build_model(device=device)
-    print("model created!")
+    if config["init_checkpoint"] is not None:
+        ckpt = torch.load(config["init_checkpoint"], map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_dict"])
+        print(f"initialized model weights from {config['init_checkpoint']}")
 
     optimizer = recipe.build_optimizer(model=model)
+    if config["init_checkpoint"] is not None and not config["fresh_optimizer_state"]:
+        optimizer.load_state_dict(ckpt["optimizer_dict"])
+        print(f"restored optimizer state from {config['init_checkpoint']}")
 
     best_score = float("-inf")
     best_placement_success_rate = float("-inf")
@@ -124,6 +130,7 @@ def run_training(
                 normalize=config["normalize"],
                 action_space=config["action_space"],
                 norm_stats=norm_stats,
+                optimizer=optimizer,
             )
             should_evaluate = (
                 epoch_number % config["eval_interval"] == 0
@@ -163,6 +170,7 @@ def run_training(
                         normalize=config["normalize"],
                         action_space=config["action_space"],
                         norm_stats=norm_stats,
+                        optimizer=optimizer,
                         eval_score=mean_score,
                         eval_metric_version=eval_result["eval_metric_version"],
                         eval_selection_mode=config["eval_selection_mode"],

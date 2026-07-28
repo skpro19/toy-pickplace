@@ -1,0 +1,12 @@
+description: warm-start from previous round checkpoint and train from scratch with fresh optimizer state
+
+base_config: ../BASE.yaml
+
+overrides:
+  warm_start: true
+  fresh_optimizer_state: true
+
+global_seeds:
+  - 0
+  - 420
+  - 5693

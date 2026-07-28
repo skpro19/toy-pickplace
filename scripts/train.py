@@ -45,6 +45,8 @@ def train(
     persistent_workers: bool = False,
     early_stop_patience: int = 50,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
+    init_checkpoint: Path | None = None,
+    fresh_optimizer_state: bool = True,
 ) -> Path:
     config: TrainConfig = {
         "num_epochs": num_epochs,
@@ -67,6 +69,8 @@ def train(
         "persistent_workers": persistent_workers,
         "early_stop_patience": early_stop_patience,
         "eval_selection_mode": eval_selection_mode,
+        "init_checkpoint": init_checkpoint,
+        "fresh_optimizer_state": fresh_optimizer_state,
     }
     return run_training(config=config, recipe=get_recipe(arch=arch))
 

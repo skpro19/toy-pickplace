@@ -46,3 +46,7 @@ workers: 12 # eval + rollout workers
 
 # seeds
 global_seed: 0  # derives expert collection, training, DAgger, and in-loop evaluation seeds
+
+# warm-start
+warm_start: false  # true = initialize each DAgger round from the previous round's best.pt
+fresh_optimizer_state: true  # reset Adam state per round (recommended when warm_start is true)

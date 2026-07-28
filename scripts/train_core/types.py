@@ -42,6 +42,8 @@ class TrainConfig(TypedDict):
     persistent_workers: bool
     early_stop_patience: int
     eval_selection_mode: EvalSelectionMode
+    init_checkpoint: Path | None
+    fresh_optimizer_state: bool
 
 
 class TrainingRecipe:

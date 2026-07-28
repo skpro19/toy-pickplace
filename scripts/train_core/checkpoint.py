@@ -16,6 +16,7 @@ def save_checkpoint(
     normalize: bool,
     action_space: str,
     norm_stats: NormStats,
+    optimizer: torch.optim.Optimizer | None = None,
     eval_score: float | None = None,
     eval_metrics: dict[str, float] | None = None,
     eval_metric_version: int | None = None,
@@ -28,6 +29,8 @@ def save_checkpoint(
         "action_space": action_space,
         "epoch": epoch_number,
     }
+    if optimizer is not None:
+        checkpoint["optimizer_dict"] = optimizer.state_dict()
     if eval_score is not None:
         checkpoint["eval_score"] = eval_score
     if eval_metrics is not None:

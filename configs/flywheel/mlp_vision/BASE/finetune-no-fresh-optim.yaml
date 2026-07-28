@@ -1,0 +1,12 @@
+description: warm-start from previous round checkpoint, reusing both weights and Adam state
+
+base_config: ../BASE.yaml
+
+overrides:
+  warm_start: true
+  fresh_optimizer_state: false
+
+global_seeds:
+  - 0
+  - 420
+  - 5693

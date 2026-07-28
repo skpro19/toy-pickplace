@@ -302,6 +302,8 @@ def run_flywheel(
     dagger_seed: int,
     arch: str,
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
+    warm_start: bool = False,
+    fresh_optimizer_state: bool = True,
 ) -> None:
 
     ckpt_root = Path('checkpoints/flywheel') / arch / run_name
@@ -592,6 +594,8 @@ def run_flywheel(
                 persistent_workers=persistent_workers,
                 early_stop_patience=early_stop_patience,
                 eval_selection_mode=eval_selection_mode,
+                init_checkpoint=model_path if warm_start else None,
+                fresh_optimizer_state=fresh_optimizer_state,
             )
             metrics = append_round_metrics(
                 metrics_path=metrics_path,
@@ -726,6 +730,18 @@ def parse_args():
         choices=["mlp", "vision_mlp"],
         help="Policy architecture used for flywheel training rounds",
     )
+    parser.add_argument(
+        "--warm-start",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Initialize DAgger round weights from the previous round's best checkpoint",
+    )
+    parser.add_argument(
+        "--fresh-optimizer-state",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reset Adam state on each warm-started round (recommended)",
+    )
 
     valid_config_keys = {
         action.dest for action in parser._actions if action.dest not in {"help", "config"}
@@ -851,6 +867,8 @@ def main():
         dagger_seed=seeds["dagger_seed"],
         arch=args.arch,
         eval_selection_mode=args.mode,
+        warm_start=args.warm_start,
+        fresh_optimizer_state=args.fresh_optimizer_state,
     )
 if __name__ == "__main__":
     main()
