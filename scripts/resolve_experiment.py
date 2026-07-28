@@ -48,6 +48,8 @@ _VALID_FLYWHEEL_CONFIG_KEYS: frozenset[str] = frozenset(
         "final_eval_capture_hz",
         "workers",
         "global_seed",
+        "warm_start",
+        "fresh_optimizer_state",
     }
 )
 
