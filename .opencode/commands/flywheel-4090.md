@@ -21,13 +21,13 @@ self-contained: follow this workflow without consulting another runbook.
 The experiment is fixed by the committed YAML config. Do not collect sweep
 parameters, construct a grid, or modify the config on the instance. Do not add
 experiment CLI overrides. The only flywheel CLI arguments supplied by this
-workflow are `--config` and `--run-name`. The run name encodes the
-architecture (`arch`) and user-selected config parameters.
+workflow are `--config` and `--run-name`. The run name is derived from the
+config filename.
 
 ## Workflow at a glance
 
-1. Confirm the remote branch, commit, exact config contents, selected
-   run-name-encoded parameters, and run name (S3 keys mirror local paths).
+1. Confirm the remote branch, commit, exact config contents, and
+   config-derived run name (S3 keys mirror local paths).
 2. Load secrets, select an offer, and provision one instance.
 3. Accept or reject the instance using SSH hardware checks.
 4. Clone the exact commit and verify CUDA and headless MuJoCo.
@@ -50,7 +50,7 @@ modification timestamp when creation time is unavailable), and retain the top
 five. Resolve ties by path in ascending order. Do not read config contents or
 run any other workflow commands yet.
 
-Then make exactly one call to the built-in Question tool containing all three
+Then make exactly one call to the built-in Question tool containing both
 of these questions at the same time:
 
 1. **Branch**: select the Git branch to clone. Recommend `dev`, offer `main`,
@@ -58,20 +58,13 @@ of these questions at the same time:
 2. **Config file**: select the committed flywheel config path. Offer the five
    paths discovered above in newest-first order and allow a custom path. Mark
    the newest path as recommended.
-3. **Run-name params**: select zero or more additional top-level config
-   parameter names to encode in the run name. Explain that `arch` is always
-   included implicitly. Offer `No additional params`, `dagger_rounds`,
-   `num_expert_episodes`, `epochs`, and `batch_size`; allow multiple choices
-   and a custom comma-separated answer. Treat `No additional params` as an
-   empty selection and reject it if combined with another choice.
 
-Do not ask these three questions separately or repeat any of them later. From
+Do not ask these two questions separately or repeat any of them later. From
 the single Question-tool response, set:
 
 ```text
 GIT_BRANCH=<confirmed branch>
 FLYWHEEL_CONFIG=<confirmed committed config path>
-RUN_NAME_PARAMS=<ordered list of selected param names, excluding arch>
 ```
 
 The standard config path is
@@ -119,26 +112,13 @@ working-tree copies for planning. Then ask the user to confirm this immutable
 experiment baseline. Never dump raw YAML in the response — always use the
 grouped table format.
 
-After the user confirms the baseline, validate every previously selected
-`RUN_NAME_PARAMS` name against the parsed `REMOTE_CONFIG`. Each name must exist
-at the top level, must not be `arch`, and must have a scalar value. Preserve the
-selection order and reject duplicates. If a selection is invalid, explain why
-and stop; do not ask the three initial questions again in the same invocation.
-
 After confirmation, set each value once:
 
 ```bash
-RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 UNIX_TIME_NS=$(date +%s%N)
-ARCH=$(printf '%s\n' "$REMOTE_CONFIG" | uv run python -c \
-  'import sys, yaml; print(yaml.safe_load(sys.stdin)["arch"])')
-RUN_NAME_PARAM_SUFFIX=""
-for param in $RUN_NAME_PARAMS; do
-  val=$(printf '%s\n' "$REMOTE_CONFIG" | PARAM="$param" uv run python -c \
-    'import os, sys, yaml; print(yaml.safe_load(sys.stdin)[os.environ["PARAM"]])')
-  RUN_NAME_PARAM_SUFFIX="${RUN_NAME_PARAM_SUFFIX}${param}=${val}_"
-done
-RUN_NAME="${ARCH}-flywheel-${RUN_NAME_PARAM_SUFFIX}${RUN_TIMESTAMP}"
+CONFIG_NAME=$(basename "$FLYWHEEL_CONFIG" | sed 's/\.\(yaml\|yml\)$//')
+RUN_NAME="${CONFIG_NAME}_${RUN_TIMESTAMP}"
 INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
 CONTROL_DIR="/workspace/toy-pickplace/.flywheel/${RUN_NAME}"
 ```
@@ -157,7 +137,6 @@ another confirmation:
 | Config | Exact committed `FLYWHEEL_CONFIG` contents |
 | Experiment parameters | Every value resolved from the config; no overrides |
 | Root seed | Config-resolved `global_seed` |
-| Encoded params | Selected `RUN_NAME_PARAMS` from config |
 | Run name | `RUN_NAME` |
 | Held-out evaluation | Committed `final_eval_episodes`, `final_eval_seed`, `final_eval_workers`, and `final_eval_capture_hz` |
 | Hardware gate | One RTX 4090, 24 physical cores, 64 GB RAM |
@@ -773,7 +752,7 @@ held-out completion, and all four result objects verified on S3.
 Print:
 
 - confirmed branch, commit, config path, exact fixed parameters, and root seed;
-- run name (encoding arch and selected params), instance label, instance ID, and SSH URL command;
+- run name (config-derived), instance label, instance ID, and SSH URL command;
 - advertised effective vCPUs, verified physical cores, CPU quota, RAM, GPU,
   power, and PCIe acceptance results;
 - committed `workers`, `dataloader_workers`, `batch_size`, and all four
