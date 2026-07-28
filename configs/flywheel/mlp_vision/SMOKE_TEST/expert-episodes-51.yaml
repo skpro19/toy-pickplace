@@ -1,0 +1,10 @@
+description: measure the effect of increasing expert episodes from 50 to 51
+
+base_config: ../SMOKE_TEST.yaml
+
+overrides:
+  num_expert_episodes: 51
+
+global_seeds:
+  - 0
+  - 420
