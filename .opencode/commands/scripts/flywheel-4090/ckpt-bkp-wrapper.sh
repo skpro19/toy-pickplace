@@ -21,8 +21,8 @@ while true; do
   cd /workspace/toy-pickplace
   while [ "$attempt" -lt 3 ]; do
     /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
-      python scripts/s3_backup.py upload \
-      --components checkpoints,runs,results,dagger --arch "${_A}" "${_R}"
+      python scripts/s3_backup.py --arch "${_A}" upload \
+      --components checkpoints,runs,results,dagger "${_R}"
     exit_code=$?
     if [ "$exit_code" -eq 0 ]; then
       touch "${_C}/state/backup-last-succeeded"
