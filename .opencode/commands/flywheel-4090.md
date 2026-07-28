@@ -504,9 +504,88 @@ offer; do not claim the SSH checks measured workload, disk, or upload speed.
 On failure, automatically destroy the provisional instance, verify removal,
 then return to Step 1 automatically to search for and provision a replacement.
 Do not seek user permission for the retry.
-After acceptance, display the committed `workers`, `dataloader_workers`,
-`batch_size`, and all four `final_eval_*` values and proceed with the launch
-automatically. No instance-side config override is permitted.
+### Network quality acceptance (runs after hardware acceptance)
+
+Hardware checks measure local compute resources.  A separate network test
+measures *actual* upload speed and round-trip time to S3 (where checkpoints,
+runs, results, and dagger data will be stored).  This catches instances
+where the advertised `inet_up` in the offer is misleading due to geographic
+distance, ISP throttling, or host oversubscription.
+
+Generate presigned S3 URLs locally, then transfer and invoke the gate script:
+
+```bash
+TEMP_NETGATE_KEY=".netgate/$(date +%s%N)"
+S3_PRESIGNED_PUT=$(uv run python -c "
+import boto3, os
+s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'ap-south-1'))
+url = s3.generate_presigned_url('put_object',
+    Params={'Bucket': os.environ['S3_BUCKET'], 'Key': '${TEMP_NETGATE_KEY}'},
+    ExpiresIn=300)
+print(url)
+")
+S3_PRESIGNED_DELETE=$(uv run python -c "
+import boto3, os
+s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'ap-south-1'))
+url = s3.generate_presigned_url('delete_object',
+    Params={'Bucket': os.environ['S3_BUCKET'], 'Key': '${TEMP_NETGATE_KEY}'},
+    ExpiresIn=300)
+print(url)
+")
+
+cp .opencode/commands/scripts/flywheel-4090/network-gate.sh /tmp/network-gate.sh
+B64_NG=$(base64 -w0 /tmp/network-gate.sh)
+
+NETGATE_OUTPUT=$(S3_PRESIGNED_PUT="$S3_PRESIGNED_PUT" \
+  S3_PRESIGNED_DELETE="$S3_PRESIGNED_DELETE" \
+  ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "printf '%s' '${B64_NG}' | base64 -d > /tmp/network-gate.sh && \
+   chmod +x /tmp/network-gate.sh && \
+   S3_PRESIGNED_PUT='${S3_PRESIGNED_PUT}' \
+   S3_PRESIGNED_DELETE='${S3_PRESIGNED_DELETE}' \
+   bash /tmp/network-gate.sh" 2>/dev/null)
+
+echo "$NETGATE_OUTPUT"
+
+if ! echo "$NETGATE_OUTPUT" | grep -q "^PASSED"; then
+  echo "ERROR: Network gate rejected this instance."
+  ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+    'rm -f /tmp/network-gate.sh /tmp/.netgate-test.bin; exit 0' 2>/dev/null || true
+  vastai destroy instance -y "$INSTANCE_ID" 2>&1 || echo "destroy already done"
+  for i in $(seq 1 30); do
+    instances=$(vastai show instances --raw 2>/dev/null || echo "[]")
+    found=$(echo "$instances" | INSTANCE_ID="$INSTANCE_ID" uv run python -c "
+import json, os, sys
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, dict):
+        data = data.get('instances', [data])
+    ids = [item.get('id') for item in data if str(item.get('id')) == os.environ['INSTANCE_ID']]
+    if ids: print('found')
+except: pass
+" 2>/dev/null)
+    if [ "$found" != "found" ]; then echo "Instance $INSTANCE_ID destroyed"; break; fi
+    sleep 10
+  done
+  echo "Returning to Step 1 — searching for a new offer."
+  exit 1
+fi
+
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  'rm -f /tmp/network-gate.sh /tmp/.netgate-test.bin; exit 0' 2>/dev/null || true
+```
+
+| Check | Requirement |
+|---|---|
+| S3 RTT | ≤ 500 ms to `s3.ap-south-1.amazonaws.com` |
+| S3 upload | ≥ 1000 KB/s to the bucket |
+
+On network rejection, automatically destroy the provisional instance, verify
+removal, then return to Step 1 to search for and provision a replacement.  Do
+not seek user permission.  Once both hardware and network gates pass, display
+the committed `workers`, `dataloader_workers`, `batch_size`, and all four
+`final_eval_*` values and proceed with the launch automatically.  No
+instance-side config override is permitted.
 
 ### 5. Clone and verify the environment
 
