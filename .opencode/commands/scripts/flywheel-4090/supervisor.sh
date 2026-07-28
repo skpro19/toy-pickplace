@@ -1,13 +1,14 @@
 #!/bin/bash
 # Durable local supervisor for one flywheel run.
 # Sources ./.env for VAST_API_KEY and AWS credentials (tracing disabled).
-# Arguments: INSTANCE_ID HOST PORT RUN_NAME CONTROL_DIR LOCAL_SSH_SESSION LOCAL_TB_SESSION
+# Arguments: INSTANCE_ID HOST PORT RUN_NAME CONTROL_DIR LOCAL_SSH_SESSION LOCAL_TB_SESSION ARCH
 
 set -o pipefail
 
 INSTANCE_ID="$1"; HOST="$2"; PORT="$3"
 RUN_NAME="$4"; CONTROL_DIR="$5"
 LOCAL_SSH_SESSION="$6"; LOCAL_TB_SESSION="$7"
+ARCH="$8"
 SUPERVISOR_SESSION="flywheel-supervisor-$6"
 SUPERVISOR_SESSION="${SUPERVISOR_SESSION#vast-ssh-}"
 SUPERVISOR_SESSION="flywheel-supervisor-${SUPERVISOR_SESSION}"
@@ -201,9 +202,9 @@ while true; do
         echo "Held-out evaluation completed successfully"
         . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
         verify_ok=true
-        for key in "results/flywheel/${RUN_NAME}/final_scores.json" \
-                   "results/flywheel/${RUN_NAME}/final-placement-score.png" \
-                   "results/flywheel/${RUN_NAME}/final-score-curve.png"; do
+        for key in "results/flywheel/${ARCH}/${RUN_NAME}/final_scores.json" \
+                   "results/flywheel/${ARCH}/${RUN_NAME}/final-placement-score.png" \
+                   "results/flywheel/${ARCH}/${RUN_NAME}/final-score-curve.png"; do
           uv run python -c "
 import boto3, os
 c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')

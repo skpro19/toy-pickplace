@@ -179,6 +179,20 @@ RESOLVED_CONFIG_SHA256=$(
   uv run python scripts/resolve_experiment.py \
     --experiment "$EXPERIMENT_CONFIG" --seed "$SELECTED_SEED" --sha256
 ) || exit 1
+
+FLYWHEEL_ARCH=$(
+  uv run python -c "
+import yaml, sys
+from pathlib import Path
+import subprocess
+result = subprocess.run(
+    [sys.executable, 'scripts/resolve_experiment.py',
+     '--experiment', sys.argv[1], '--seed', sys.argv[2]],
+    capture_output=True, text=True)
+config = yaml.safe_load(result.stdout)
+print(config['arch'])
+" "$EXPERIMENT_CONFIG" "$SELECTED_SEED"
+) || exit 1
 ```
 
 Display the complete resolved config as tables grouped by section (Run,
@@ -214,6 +228,7 @@ another confirmation:
 | Base config | Committed `EXPERIMENT_BASE_CONFIG` |
 | Overrides | Exact committed override mapping |
 | Root seed | Selected from committed `global_seeds` list |
+| Arch | Resolved `arch` value (`FLYWHEEL_ARCH`) |
 | Resolved config | Complete merged config with SHA-256 `RESOLVED_CONFIG_SHA256` |
 | Run name | `RUN_NAME` (suite_experiment_seed_timestamp) |
 | Held-out evaluation | Committed `final_eval_episodes`, `final_eval_seed`, `final_eval_workers`, and `final_eval_capture_hz` |
@@ -318,8 +333,8 @@ fi
 Tell the user which required variable is missing. Never print secret values or
 enable shell tracing. Before provisioning, use `boto3` to list at most one
 object under any of these artifact prefixes:
-`checkpoints/flywheel/RUN_NAME/`, `runs/flywheel/RUN_NAME/`,
-`data/flywheel/RUN_NAME/`, or `results/flywheel/RUN_NAME/`. If any object
+`checkpoints/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/`, `runs/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/`,
+`data/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/`, or `results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/`. If any object
 exists, stop and require the user to choose a new run name. Continue only when
 recovering the matching instance and control state rather than launching a new
 run. Explain that the backup sync deletes remote keys absent locally, so
@@ -647,16 +662,16 @@ manifest capturing the exact experiment origin:
 
 ```bash
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "mkdir -p /workspace/toy-pickplace/results/flywheel/${RUN_NAME} &&
+  "mkdir -p /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME} &&
    cp '${CONTROL_DIR}/resolved-config.yaml' \
-     /workspace/toy-pickplace/results/flywheel/${RUN_NAME}/resolved-config.yaml"
+     /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/resolved-config.yaml"
 
 PROVENANCE_MANIFEST=$(
   uv run python scripts/resolve_experiment.py \
     --experiment "$EXPERIMENT_CONFIG" --seed "$SELECTED_SEED" --json-manifest
 )
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "cat > /workspace/toy-pickplace/results/flywheel/${RUN_NAME}/experiment-manifest.json << 'MANEOF'
+  "cat > /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json << 'MANEOF'
 ${PROVENANCE_MANIFEST}
 MANEOF"
 ```
@@ -666,7 +681,7 @@ base64-encode it, decode it into `CONTROL_DIR`, and start it:
 
 ```bash
 cp .opencode/commands/scripts/flywheel-4090/runner.sh /tmp/runner.sh
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__FLYWHEEL_CONFIG__|${FLYWHEEL_CONFIG}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/runner.sh
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__FLYWHEEL_CONFIG__|${FLYWHEEL_CONFIG}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g; s|__ARCH__|${FLYWHEEL_ARCH}|g" /tmp/runner.sh
 B64=$(base64 -w0 /tmp/runner.sh)
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/runner.sh' && chmod +x '${CONTROL_DIR}/runner.sh'"
@@ -693,10 +708,10 @@ Before the first launch, fail if any of these run-specific artifact paths
 already exists, even if the control directory is new:
 
 ```text
-data/flywheel/RUN_NAME
-checkpoints/flywheel/RUN_NAME
-runs/flywheel/RUN_NAME
-results/flywheel/RUN_NAME
+data/flywheel/${FLYWHEEL_ARCH}/RUN_NAME
+checkpoints/flywheel/${FLYWHEEL_ARCH}/RUN_NAME
+runs/flywheel/${FLYWHEEL_ARCH}/RUN_NAME
+results/flywheel/${FLYWHEEL_ARCH}/RUN_NAME
 ```
 
 List every collision and require a new run name for a new launch. Existing
@@ -712,13 +727,14 @@ after the agent disconnects.
 
 After the run is marked `running`, start one `ckpt-bkp` session. Its wrapper
 must wait until an artifact exists specifically under
-`checkpoints/flywheel/RUN_NAME`, `runs/flywheel/RUN_NAME`,
-`data/flywheel/RUN_NAME`, or `results/flywheel/RUN_NAME`, then run every 120
+`checkpoints/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`, `runs/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`,
+`data/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`, or `results/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`, then run every 120
 seconds:
 
 ```bash
 /root/.local/bin/uv run python scripts/s3_backup.py upload \
   --components checkpoints,runs,results,dagger \
+  --arch "$FLYWHEEL_ARCH" \
   "$RUN_NAME"
 ```
 
@@ -770,7 +786,7 @@ line or in the script itself. Instantiate, transfer, and start the backup:
 
 ```bash
 cp .opencode/commands/scripts/flywheel-4090/ckpt-bkp-wrapper.sh /tmp/ckpt-bkp-wrapper.sh
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/ckpt-bkp-wrapper.sh
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g; s|__ARCH__|${FLYWHEEL_ARCH}|g" /tmp/ckpt-bkp-wrapper.sh
 B64=$(base64 -w0 /tmp/ckpt-bkp-wrapper.sh)
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'
@@ -797,7 +813,7 @@ the instance before starting the local supervisor:
 
 ```bash
 cp .opencode/commands/scripts/flywheel-4090/heldout-eval.sh /tmp/heldout-eval.sh
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g" /tmp/heldout-eval.sh
+sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g; s|__ARCH__|${FLYWHEEL_ARCH}|g" /tmp/heldout-eval.sh
 B64=$(base64 -w0 /tmp/heldout-eval.sh)
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/heldout-eval.sh'
@@ -830,10 +846,11 @@ HOST="$HOST" PORT="$PORT" INSTANCE_ID="$INSTANCE_ID" \
 RUN_NAME="$RUN_NAME" CONTROL_DIR="$CONTROL_DIR" \
 LOCAL_SSH_SESSION="$LOCAL_SSH_SESSION" \
 LOCAL_TB_SESSION="$LOCAL_TB_SESSION" \
+FLYWHEEL_ARCH="$FLYWHEEL_ARCH" \
 tmux new-session -d -s "$LOCAL_SUPERVISOR_SESSION" \
   ".opencode/commands/scripts/flywheel-4090/supervisor.sh \
     $INSTANCE_ID $HOST $PORT $RUN_NAME $CONTROL_DIR \
-    $LOCAL_SSH_SESSION $LOCAL_TB_SESSION"
+    $LOCAL_SSH_SESSION $LOCAL_TB_SESSION $FLYWHEEL_ARCH"
 
 sleep 5
 tmux has-session -t "$LOCAL_SUPERVISOR_SESSION" || {
@@ -856,8 +873,8 @@ Print these as optional commands only; do not download automatically:
 
 ```bash
 set -a; . ./.env; set +a
-uv run python scripts/s3_backup.py download RUN_NAME
-uv run python scripts/final_score.py --run-name RUN_NAME
+uv run python scripts/s3_backup.py download --arch "$FLYWHEEL_ARCH" RUN_NAME
+uv run python scripts/final_score.py --run-name RUN_NAME --arch "$FLYWHEEL_ARCH"
 uv run python scripts/final_score.py --run-name RUN_NAME --plot-only
 ```
 
@@ -872,8 +889,8 @@ held-out completion, and all four result objects verified on S3.
 
 Print:
 
-- confirmed branch, commit, experiment path, base config path, and selected
-  seed;
+- confirmed branch, commit, experiment path, base config path, selected
+  seed, and arch;
 - experiment description and resolved config SHA-256;
 - run name (suite_experiment_seed_timestamp), instance label, instance ID,
   and SSH URL command;
@@ -901,6 +918,6 @@ Print:
   allowed.
 - Held-out evaluation always runs after an acknowledged post-completion backup
   and uploads finalized metrics, its JSON, and two plots under
-  `results/flywheel/RUN_NAME/`.
+  `results/flywheel/${FLYWHEEL_ARCH}/RUN_NAME/`.
 - Every terminal state triggers destruction. Failure diagnostics are
   best-effort so an upload outage cannot keep a billed instance alive.

@@ -40,13 +40,22 @@ from botocore.exceptions import (
 from tqdm import tqdm
 
 
-COMPONENT_MAP: dict[str, tuple[Path, str]] = {
+COMPONENT_BASE: dict[str, tuple[Path, str]] = {
     "checkpoints": (Path("checkpoints/flywheel"), "checkpoints/flywheel"),
     "runs": (Path("runs/flywheel"), "runs/flywheel"),
     "dagger": (Path("data/flywheel"), "data/flywheel"),
     "results": (Path("results/flywheel"), "results/flywheel"),
 }
-COMPONENT_DEFAULT = list(COMPONENT_MAP)
+COMPONENT_DEFAULT = list(COMPONENT_BASE)
+
+
+def _component_dirs(*, arch: str) -> dict[str, tuple[Path, str]]:
+    if not arch:
+        return dict(COMPONENT_BASE)
+    return {
+        name: (Path(f"{local}/{arch}"), f"{remote}/{arch}")
+        for name, (local, remote) in COMPONENT_BASE.items()
+    }
 
 
 def _s3_client(*, region: str | None, endpoint_url: str | None) -> Any:
@@ -55,7 +64,7 @@ def _s3_client(*, region: str | None, endpoint_url: str | None) -> Any:
 
 def _selected_components(value: str) -> list[str]:
     selected = COMPONENT_DEFAULT if value == "all" else value.split(",")
-    unknown = [name for name in selected if name not in COMPONENT_MAP]
+    unknown = [name for name in selected if name not in COMPONENT_BASE]
     if unknown:
         raise ValueError(f"Unknown component(s): {', '.join(unknown)}")
     return selected
@@ -145,13 +154,14 @@ def cmd_upload(args: argparse.Namespace) -> None:
     if not args.run:
         raise ValueError("A run name is required for upload")
     run_name = _validate_remote_path(args.run)
+    arch = getattr(args, "arch", "") or ""
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     selected = _selected_components(args.components)
     discovered = 0
     uploaded = 0
 
     for name in selected:
-        local_root, remote_dir = COMPONENT_MAP[name]
+        local_root, remote_dir = _component_dirs(arch=arch)[name]
         source = local_root / run_name
         if not source.is_dir() or not any(
             path.is_file() for path in source.rglob("*")
@@ -175,12 +185,13 @@ def cmd_upload(args: argparse.Namespace) -> None:
 def cmd_download(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     run_name = _validate_remote_path(args.path)
+    arch = getattr(args, "arch", "") or ""
     selected = _selected_components(args.components)
     output_root = Path(args.output)
     downloaded = 0
 
     for name in selected:
-        local_root, remote_dir = COMPONENT_MAP[name]
+        local_root, remote_dir = _component_dirs(arch=arch)[name]
         remote_base = _key(remote_dir)
         search_prefix = _key(remote_base, run_name) + "/"
         objects = _list_objects(
@@ -211,6 +222,7 @@ def cmd_download(args: argparse.Namespace) -> None:
 def cmd_has_files(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     run_name = _validate_remote_path(args.path)
+    arch = getattr(args, "arch", "") or ""
     selected = _selected_components(args.components)
 
     for filename in args.files:
@@ -221,7 +233,7 @@ def cmd_has_files(args: argparse.Namespace) -> None:
             raise ValueError(f"Invalid relative file path: {filename}")
 
         for name in selected:
-            _, remote_dir = COMPONENT_MAP[name]
+            _, remote_dir = _component_dirs(arch=arch)[name]
             object_key = _key(
                 remote_dir,
                 run_name,
@@ -242,11 +254,14 @@ def cmd_has_files(args: argparse.Namespace) -> None:
 def cmd_list(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     component_pattern = "|".join(
-        re.escape(remote) for _, remote in COMPONENT_MAP.values()
+        re.escape(remote) for _, remote in COMPONENT_BASE.values()
     )
-    run_pattern = re.compile(
-        rf"^(?:{component_pattern})/(?P<run>[^/]+)/"
-    )
+    arch = getattr(args, "arch", "") or ""
+    if arch:
+        run_prefix = rf"^(?:{component_pattern})/{re.escape(arch)}/(?P<run>[^/]+)/"
+    else:
+        run_prefix = rf"^(?:{component_pattern})/(?P<run>[^/]+)/"
+    run_pattern = re.compile(run_prefix)
     runs: set[str] = set()
 
     for object_key in _list_keys(client=client, bucket=args.bucket, prefix=""):
@@ -264,9 +279,10 @@ def cmd_list(args: argparse.Namespace) -> None:
 def cmd_rm(args: argparse.Namespace) -> None:
     client = _s3_client(region=args.region, endpoint_url=args.endpoint_url)
     run_name = _validate_remote_path(args.path)
+    arch = getattr(args, "arch", "") or ""
     prefixes = [
         _key(remote_dir, run_name) + "/"
-        for _, remote_dir in COMPONENT_MAP.values()
+        for _, remote_dir in _component_dirs(arch=arch).values()
     ]
 
     keys = sorted(
@@ -289,6 +305,11 @@ def cmd_rm(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Back up and restore flywheel runs in S3"
+    )
+    parser.add_argument(
+        "--arch",
+        default=os.environ.get("FLYWHEEL_ARCH", ""),
+        help="Architecture subdirectory (e.g. vision_mlp)",
     )
     parser.add_argument(
         "--bucket",

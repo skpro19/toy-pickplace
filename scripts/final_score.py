@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -135,6 +136,12 @@ def parse_args() -> argparse.Namespace:
         help="Flywheel run name (e.g. run-019). Auto-detects latest if omitted.",
     )
     parser.add_argument(
+        "--arch",
+        type=str,
+        default=os.environ.get("FLYWHEEL_ARCH", ""),
+        help="Architecture subdirectory (e.g. vision_mlp)",
+    )
+    parser.add_argument(
         "--eval-episodes",
         type=int,
         default=None,
@@ -185,7 +192,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    results_root = Path("results/flywheel")
+    results_root = Path("results/flywheel") / args.arch if args.arch else Path("results/flywheel")
 
     if args.run_name is None:
         detected = detect_latest_run(root=results_root)
@@ -245,7 +252,7 @@ def main() -> None:
         return
 
     validate_complete_rounds(metrics_data=metrics_data)
-    ckpt_root = Path("checkpoints/flywheel")
+    ckpt_root = Path("checkpoints/flywheel") / args.arch if args.arch else Path("checkpoints/flywheel")
     checkpoints: list[tuple[int, Path]] = []
     for round_data in rounds:
         round_idx = int(round_data["round"])

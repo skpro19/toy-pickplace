@@ -233,8 +233,8 @@ def append_round_metrics(
     return round_metrics
 
 
-def expert_npz_dir_for_run(*, run_name: str) -> Path:
-    return Path("data/flywheel") / run_name / "expert"
+def expert_npz_dir_for_run(*, arch: str, run_name: str) -> Path:
+    return Path("data/flywheel") / arch / run_name / "expert"
 
 
 def expert_save_images_for_arch(*, arch: str) -> bool:
@@ -304,12 +304,12 @@ def run_flywheel(
     eval_selection_mode: EvalSelectionMode = DEFAULT_EVAL_SELECTION_MODE,
 ) -> None:
 
-    ckpt_root = Path('checkpoints/flywheel') / run_name
-    runs_root = Path('runs/flywheel') / run_name
-    results_root = Path('results/flywheel') / run_name
+    ckpt_root = Path('checkpoints/flywheel') / arch / run_name
+    runs_root = Path('runs/flywheel') / arch / run_name
+    results_root = Path('results/flywheel') / arch / run_name
     results_root.mkdir(parents=True, exist_ok=True)
     metrics_path = results_root / "metrics.json"
-    expert_npz_dir = expert_npz_dir_for_run(run_name=run_name)
+    expert_npz_dir = expert_npz_dir_for_run(arch=arch, run_name=run_name)
 
     save_expert_images = expert_save_images_for_arch(arch=arch)
 
@@ -479,7 +479,7 @@ def run_flywheel(
             round_dagger_seed = dagger_round_seeds[round - 1]
 
             # generate dagger data
-            dagger_dir = Path("data/flywheel") / run_name / round_name / "dagger"
+            dagger_dir = Path("data/flywheel") / arch / run_name / round_name / "dagger"
             previous_round_name = f"round-{round - 1:03d}"
             model_path = ckpt_root / previous_round_name / "best.pt"
 
@@ -811,11 +811,11 @@ def main():
     args = parse_args()
     seeds = make_flywheel_seeds(global_seed=args.global_seed)
     run_name = args.run_name or next_flywheel_run_name(
-        root=Path("data/flywheel"),
+        root=Path("data/flywheel") / args.arch,
         occupied_roots=[
-            Path("checkpoints/flywheel"),
-            Path("runs/flywheel"),
-            Path("results/flywheel"),
+            Path("checkpoints/flywheel") / args.arch,
+            Path("runs/flywheel") / args.arch,
+            Path("results/flywheel") / args.arch,
         ],
     )
     run_flywheel(

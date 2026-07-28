@@ -2,6 +2,7 @@
 set -o pipefail
 export MUJOCO_GL=egl
 _R=__RUN_NAME__
+_A=__ARCH__
 _C=__CONTROL_DIR__
 
 fail_heldout() {
@@ -15,7 +16,7 @@ if test -f "${_C}/state/heldout-completed" || test -f "${_C}/state/heldout-faile
   echo "ERROR: held-out evaluation already ran" >&2; exit 1
 fi
 
-METRICS="/workspace/toy-pickplace/results/flywheel/${_R}/metrics.json"
+METRICS="/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/metrics.json"
 if test ! -f "$METRICS"; then
   echo "ERROR: metrics.json not found at $METRICS" >&2
   fail_heldout 1
@@ -24,7 +25,7 @@ fi
 cd /workspace/toy-pickplace
 
 /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
-  python scripts/final_score.py --run-name "${_R}" 2>&1 | \
+  python scripts/final_score.py --run-name "${_R}" --arch "${_A}" 2>&1 | \
   tee -a "${_C}/logs/heldout-eval-${_R}.log"
 exit_code=${PIPESTATUS[0]}
 
@@ -33,9 +34,9 @@ if [ "$exit_code" -ne 0 ]; then
 fi
 
 # Validate outputs
-for f in "results/flywheel/${_R}/final_scores.json" \
-         "results/flywheel/${_R}/final-placement-score.png" \
-         "results/flywheel/${_R}/final-score-curve.png"; do
+for f in "results/flywheel/${_A}/${_R}/final_scores.json" \
+         "results/flywheel/${_A}/${_R}/final-placement-score.png" \
+         "results/flywheel/${_A}/${_R}/final-score-curve.png"; do
   if test ! -f "/workspace/toy-pickplace/$f"; then
     echo "ERROR: missing output $f" >&2
     fail_heldout 1
@@ -83,19 +84,19 @@ print(f'Verified: s3://{cfg[\"S3_BUCKET\"]}/\$key ({sz} bytes)')
 
 upload_and_verify \
   "$METRICS" \
-  "results/flywheel/${_R}/metrics.json" || fail_heldout 1
+  "results/flywheel/${_A}/${_R}/metrics.json" || fail_heldout 1
 
 upload_and_verify \
-  "/workspace/toy-pickplace/results/flywheel/${_R}/final_scores.json" \
-  "results/flywheel/${_R}/final_scores.json" || fail_heldout 1
+  "/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/final_scores.json" \
+  "results/flywheel/${_A}/${_R}/final_scores.json" || fail_heldout 1
 
 upload_and_verify \
-  "/workspace/toy-pickplace/results/flywheel/${_R}/final-placement-score.png" \
-  "results/flywheel/${_R}/final-placement-score.png" || fail_heldout 1
+  "/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/final-placement-score.png" \
+  "results/flywheel/${_A}/${_R}/final-placement-score.png" || fail_heldout 1
 
 upload_and_verify \
-  "/workspace/toy-pickplace/results/flywheel/${_R}/final-score-curve.png" \
-  "results/flywheel/${_R}/final-score-curve.png" || fail_heldout 1
+  "/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/final-score-curve.png" \
+  "results/flywheel/${_A}/${_R}/final-score-curve.png" || fail_heldout 1
 
 echo "succeeded 0" > "${_C}/state/heldout-completed.tmp"
 mv "${_C}/state/heldout-completed.tmp" "${_C}/state/heldout-completed"

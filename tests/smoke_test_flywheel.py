@@ -209,8 +209,8 @@ def main() -> None:
         finally:
             sys.argv = original_argv
 
-        expert_dir = expert_npz_dir_for_run(run_name="run-test")
-        assert expert_dir == Path("data/flywheel/run-test/expert")
+        expert_dir = expert_npz_dir_for_run(arch="vision_mlp", run_name="run-test")
+        assert expert_dir == Path("data/flywheel/vision_mlp/run-test/expert")
 
         assert not expert_save_images_for_arch(arch="mlp")
         assert expert_save_images_for_arch(arch="vision_mlp")

@@ -1,12 +1,13 @@
 #!/bin/bash
 set -o pipefail
 _R=__RUN_NAME__
+_A=__ARCH__
 _C=__CONTROL_DIR__
 
 # wait for any artifact
 for i in $(seq 1 60); do
-  for d in checkpoints/flywheel/${_R} runs/flywheel/${_R} \
-           data/flywheel/${_R} results/flywheel/${_R}; do
+  for d in checkpoints/flywheel/${_A}/${_R} runs/flywheel/${_A}/${_R} \
+           data/flywheel/${_A}/${_R} results/flywheel/${_A}/${_R}; do
     if test -d "/workspace/toy-pickplace/$d" && \
        find "/workspace/toy-pickplace/$d" -type f 2>/dev/null | \
        head -1 | grep -q .; then break 2; fi
@@ -21,7 +22,7 @@ while true; do
   while [ "$attempt" -lt 3 ]; do
     /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
       python scripts/s3_backup.py upload \
-      --components checkpoints,runs,results,dagger "${_R}"
+      --components checkpoints,runs,results,dagger --arch "${_A}" "${_R}"
     exit_code=$?
     if [ "$exit_code" -eq 0 ]; then
       touch "${_C}/state/backup-last-succeeded"
