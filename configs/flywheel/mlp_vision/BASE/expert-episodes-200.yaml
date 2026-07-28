@@ -1,6 +1,6 @@
 description: measure the effect of increasing expert episodes from 100 to 200
 
-base_config: ../../BASE.yaml
+base_config: ../BASE.yaml
 
 overrides:
   num_expert_episodes: 200

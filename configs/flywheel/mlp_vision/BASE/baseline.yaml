@@ -1,6 +1,6 @@
 description: control configuration for vision MLP ablations
 
-base_config: ../../BASE.yaml
+base_config: ../BASE.yaml
 
 overrides: {}
 

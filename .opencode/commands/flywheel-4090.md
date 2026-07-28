@@ -44,13 +44,15 @@ selected seed.
 This command accepts no experiment parameter arguments. If arguments are
 provided, explain that this workflow runs the committed experiment and stop.
 
-Before asking questions, inspect only
-`configs/flywheel/mlp_vision/*/experiments/` for experiment definition files.
-Collect regular files ending in `.yaml` or `.yml`, rank them newest first by
-the later of their filesystem creation and modification timestamps (use the
-modification timestamp when creation time is unavailable), and retain the top
-five. Resolve ties by path in ascending order. Do not read file contents or
-run any other workflow commands yet.
+Before asking questions, inspect only `configs/flywheel/mlp_vision/` subdirectories
+for experiment definition files. These are regular files ending in `.yaml` or
+`.yml` inside any immediate subdirectory of `mlp_vision/` (e.g.
+`BASE/baseline.yaml`, `SMOKE_TEST/baseline.yaml`). Exclude files directly under
+`mlp_vision/` itself. Rank them newest first by the later of their filesystem
+creation and modification timestamps (use the modification timestamp when
+creation time is unavailable), and retain the top five. Resolve ties by path in
+ascending order. Do not read file contents or run any other workflow commands
+yet.
 
 Then make exactly one call to the built-in Question tool containing both
 of these questions at the same time:
