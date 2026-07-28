@@ -60,3 +60,5 @@ Examples:
 ## Sections to ignore
 - `docs/` — manually curated documentation; not a code change
 - `ablations/` — experiment results and run tracking; not production code
+- `ISSUES.md` — personal issue tracker; not a code change
+- `IDEAS.md` — personal idea log; not a code change
