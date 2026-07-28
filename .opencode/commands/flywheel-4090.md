@@ -208,7 +208,7 @@ RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 UNIX_TIME_NS=$(date +%s%N)
 BASE_SUITE=$(basename "$(dirname "$EXPERIMENT_CONFIG")")
 EXPERIMENT_NAME=$(basename "$EXPERIMENT_CONFIG" .yaml | sed 's/\.yml$//')
-RUN_NAME="${RUN_TIMESTAMP}_mlp_vision_${BASE_SUITE}_${EXPERIMENT_NAME}_seed${SELECTED_SEED}"
+RUN_NAME="${RUN_TIMESTAMP}_${BASE_SUITE}_${EXPERIMENT_NAME}_seed${SELECTED_SEED}"
 INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
 CONTROL_DIR="/workspace/toy-pickplace/.flywheel/${RUN_NAME}"
 ```
