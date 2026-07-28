@@ -70,7 +70,7 @@ FLYWHEEL_CONFIG=<confirmed committed config path>
 The standard config path is
 `configs/flywheel/mlp_vision/default_mlp_vision_instance.yaml`. A smoke test may use a
 dedicated committed smoke config, but it remains immutable and follows every
-normal workflow gate. Display and confirm its complete contents before
+normal workflow gate. Display its complete contents before
 provisioning.
 
 Validate and load the remote files without changing the local checkout:
@@ -108,11 +108,10 @@ parameter. Display the exact branch, commit, config path, and the entire config
 as tables grouped by section (Run, Flywheel loop, Expert data collection,
 Training, Dataset mixing, DAgger rollout, In-loop evaluation, Held-out
 evaluation, Parallelism, Seeds). Resolve and list every value; do not use local
-working-tree copies for planning. Then ask the user to confirm this immutable
-experiment baseline. Never dump raw YAML in the response — always use the
-grouped table format.
+working-tree copies for planning. Proceed automatically without asking for user confirmation at this point.
+Never dump raw YAML in the response — always use the grouped table format.
 
-After confirmation, set each value once:
+Then set each value once:
 
 ```bash
 RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
