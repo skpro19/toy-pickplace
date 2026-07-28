@@ -18,16 +18,18 @@ checkpoint backup, automatic held-out evaluation, result upload, and instance
 destruction. It is
 self-contained: follow this workflow without consulting another runbook.
 
-The experiment is fixed by the committed YAML config. Do not collect sweep
-parameters, construct a grid, or modify the config on the instance. Do not add
-experiment CLI overrides. The only flywheel CLI arguments supplied by this
-workflow are `--config` and `--run-name`. The run name is derived from the
-config filename.
+The experiment is fixed by a committed experiment definition and its referenced
+committed base config. One seed is selected interactively from the definition's
+committed `global_seeds` list. Do not collect sweep parameters, construct a grid,
+or modify the config on the instance. Do not add experiment CLI overrides. The
+only flywheel CLI arguments supplied by this workflow are `--config` and
+`--run-name`. The run name is derived from the suite, experiment name, and
+selected seed.
 
 ## Workflow at a glance
 
-1. Confirm the remote branch, commit, exact config contents, and
-   config-derived run name (S3 keys mirror local paths).
+1. Confirm the remote branch, commit, experiment definition, base config, and
+   selected seed. Resolve and display the complete merged config.
 2. Load secrets, select an offer, and provision one instance.
 3. Accept or reject the instance using SSH hardware checks.
 4. Clone the exact commit and verify CUDA and headless MuJoCo.
@@ -40,14 +42,14 @@ config filename.
 ## Baseline and run planning
 
 This command accepts no experiment parameter arguments. If arguments are
-provided, explain that this workflow runs the committed config unchanged and
-stop.
+provided, explain that this workflow runs the committed experiment and stop.
 
-Before asking questions, inspect only the local `configs/flywheel/mlp_vision/` directory.
+Before asking questions, inspect only
+`configs/flywheel/mlp_vision/*/experiments/` for experiment definition files.
 Collect regular files ending in `.yaml` or `.yml`, rank them newest first by
 the later of their filesystem creation and modification timestamps (use the
 modification timestamp when creation time is unavailable), and retain the top
-five. Resolve ties by path in ascending order. Do not read config contents or
+five. Resolve ties by path in ascending order. Do not read file contents or
 run any other workflow commands yet.
 
 Then make exactly one call to the built-in Question tool containing both
@@ -55,25 +57,22 @@ of these questions at the same time:
 
 1. **Branch**: select the Git branch to clone. Recommend `dev`, offer `main`,
    and allow a custom branch.
-2. **Config file**: select the committed flywheel config path. Offer the five
-   paths discovered above in newest-first order and allow a custom path. Mark
-   the newest path as recommended.
+2. **Experiment definition**: select the committed experiment config path. Offer
+   the five paths discovered above in newest-first order and allow a custom
+   path. Mark the newest path as recommended. A custom path must be under
+   `configs/flywheel/mlp_vision/` and end in `.yaml` or `.yml`.
 
 Do not ask these two questions separately or repeat any of them later. From
 the single Question-tool response, set:
 
 ```text
 GIT_BRANCH=<confirmed branch>
-FLYWHEEL_CONFIG=<confirmed committed config path>
+EXPERIMENT_CONFIG=<confirmed committed experiment config path>
 ```
 
-The standard config path is
-`configs/flywheel/mlp_vision/default_mlp_vision_instance.yaml`. A smoke test may use a
-dedicated committed smoke config, but it remains immutable and follows every
-normal workflow gate. Display its complete contents before
-provisioning.
-
-Validate and load the remote files without changing the local checkout:
+Validate and load the remote files without changing the local checkout.
+Fetch the experiment definition and its referenced base config. Resolve
+`base_config` relative to the experiment file's parent directory.
 
 ```bash
 case "$GIT_BRANCH" in
@@ -88,9 +87,9 @@ git fetch origin "$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH" || {
   exit 1
 }
 GIT_COMMIT=$(git rev-parse "origin/$GIT_BRANCH^{commit}") || exit 1
-REMOTE_CONFIG=$(git show "$GIT_COMMIT:$FLYWHEEL_CONFIG") || {
+REMOTE_EXPERIMENT=$(git show "$GIT_COMMIT:$EXPERIMENT_CONFIG") || {
   printf 'ERROR: %s does not exist on origin/%s\n' \
-    "$FLYWHEEL_CONFIG" "$GIT_BRANCH" >&2
+    "$EXPERIMENT_CONFIG" "$GIT_BRANCH" >&2
   exit 1
 }
 REMOTE_FLYWHEEL=$(git show "$GIT_COMMIT:scripts/flywheel.py") || {
@@ -98,17 +97,92 @@ REMOTE_FLYWHEEL=$(git show "$GIT_COMMIT:scripts/flywheel.py") || {
     "$GIT_COMMIT" >&2
   exit 1
 }
-printf 'Branch: %s\nCommit: %s\nConfig: %s\n\n%s\n' \
-  "$GIT_BRANCH" "$GIT_COMMIT" "$FLYWHEEL_CONFIG" "$REMOTE_CONFIG"
+REMOTE_RESOLVER=$(git show "$GIT_COMMIT:scripts/resolve_experiment.py") || {
+  printf 'ERROR: scripts/resolve_experiment.py does not exist at %s\n' \
+    "$GIT_COMMIT" >&2
+  exit 1
+}
+printf 'Branch: %s\nCommit: %s\nExperiment: %s\n\n%s\n' \
+  "$GIT_BRANCH" "$GIT_COMMIT" "$EXPERIMENT_CONFIG" "$REMOTE_EXPERIMENT"
 ```
 
 Confirm from `REMOTE_FLYWHEEL` that `--config` and `--run-name` are supported.
-Parse the complete top-level config with `yaml.safe_load` and resolve every
-parameter. Display the exact branch, commit, config path, and the entire config
-as tables grouped by section (Run, Flywheel loop, Expert data collection,
-Training, Dataset mixing, DAgger rollout, In-loop evaluation, Held-out
-evaluation, Parallelism, Seeds). Resolve and list every value; do not use local
-working-tree copies for planning. Proceed automatically without asking for user confirmation at this point.
+Confirm from `REMOTE_RESOLVER` that it supports `--experiment`, `--seed`,
+`--sha256`, and `--json-manifest` flags. Ensure the resolver is present in
+the local working tree at `scripts/resolve_experiment.py` so planning
+resolution uses the exact commit's logic.
+
+Write the experiment definition to a temporary file and resolve the base
+config path from its `base_config` field (relative to the experiment's parent
+directory). Verify the base config exists in the same remote commit:
+
+```bash
+EXPERIMENT_BASE_CONFIG=$(
+  uv run python -c "
+import sys, yaml
+from pathlib import Path
+exp = yaml.safe_load(sys.stdin.read())
+base_rel = exp['base_config']
+resolved = str((Path('$EXPERIMENT_CONFIG').parent / base_rel).resolve().relative_to(Path.cwd()))
+sys.stdout.write(resolved)
+" <<< "$REMOTE_EXPERIMENT"
+) || exit 1
+git show "$GIT_COMMIT:$EXPERIMENT_BASE_CONFIG" > /dev/null || {
+  printf 'ERROR: base config %s does not exist on origin/%s\n' \
+    "$EXPERIMENT_BASE_CONFIG" "$GIT_BRANCH" >&2
+  exit 1
+}
+```
+
+Parse `REMOTE_EXPERIMENT` with `yaml.safe_load`. Validate the experiment schema:
+
+- Only `description`, `base_config`, `overrides`, and `global_seeds` are
+  permitted.
+- `description` is a non-empty string.
+- `base_config` is a non-empty string resolving inside
+  `configs/flywheel/mlp_vision/`.
+- `overrides` is a mapping (may be empty); `global_seed` and `run_name` are
+  forbidden inside overrides.
+- `global_seeds` is a non-empty list of distinct, non-negative integers.
+- Every override key is a valid `scripts/flywheel.py` parameter.
+
+Reject the experiment before provisioning if any validation fails.
+
+Display the experiment as a table:
+
+| Field | Value |
+|---|---|
+| Experiment path | `EXPERIMENT_CONFIG` |
+| Description | The experiment description |
+| Base config | Resolved `EXPERIMENT_BASE_CONFIG` |
+| Available seeds | Committed `global_seeds` list |
+
+Then make exactly one more call to the built-in Question tool asking:
+
+**Seed**: select one seed from the experiment's `global_seeds` list. Offer each
+seed as a choice and allow a custom integer. Reject values not in the committed
+list.
+
+Set:
+
+```text
+SELECTED_SEED=<confirmed integer>
+```
+
+Resolve the complete config deterministically using the local resolver
+(which must match the remote commit's logic):
+
+```bash
+RESOLVED_CONFIG_SHA256=$(
+  uv run python scripts/resolve_experiment.py \
+    --experiment "$EXPERIMENT_CONFIG" --seed "$SELECTED_SEED" --sha256
+) || exit 1
+```
+
+Display the complete resolved config as tables grouped by section (Run,
+Flywheel loop, Expert data collection, Training, Dataset mixing, DAgger
+rollout, In-loop evaluation, Held-out evaluation, Parallelism, Seeds).
+Resolve and list every value. Include the resolved config SHA-256 line.
 Never dump raw YAML in the response — always use the grouped table format.
 
 Then set each value once:
@@ -116,8 +190,17 @@ Then set each value once:
 ```bash
 RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 UNIX_TIME_NS=$(date +%s%N)
-CONFIG_NAME=$(basename "$FLYWHEEL_CONFIG" | sed 's/\.\(yaml\|yml\)$//')
-RUN_NAME="${CONFIG_NAME}_${RUN_TIMESTAMP}"
+BASE_SUITE=$(uv run python -c "
+import yaml, sys
+from pathlib import Path
+exp = yaml.safe_load(Path('$EXPERIMENT_CONFIG').read_text())
+exp_path = Path('$EXPERIMENT_CONFIG')
+base_rel = exp['base_config']
+suite_dir = (exp_path.parent / base_rel).resolve().parent
+print(suite_dir.name)
+")
+EXPERIMENT_NAME=$(basename "$EXPERIMENT_CONFIG" .yaml | sed 's/\.yml$//')
+RUN_NAME="${BASE_SUITE}_${EXPERIMENT_NAME}_seed${SELECTED_SEED}_${RUN_TIMESTAMP}"
 INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
 CONTROL_DIR="/workspace/toy-pickplace/.flywheel/${RUN_NAME}"
 ```
@@ -133,13 +216,15 @@ another confirmation:
 | Item | Required value |
 |---|---|
 | Branch and commit | Confirmed `GIT_BRANCH` and immutable `GIT_COMMIT` |
-| Config | Exact committed `FLYWHEEL_CONFIG` contents |
-| Experiment parameters | Every value resolved from the config; no overrides |
-| Root seed | Config-resolved `global_seed` |
-| Run name | `RUN_NAME` |
+| Experiment | Committed `EXPERIMENT_CONFIG` path and description |
+| Base config | Committed `EXPERIMENT_BASE_CONFIG` |
+| Overrides | Exact committed override mapping |
+| Root seed | Selected from committed `global_seeds` list |
+| Resolved config | Complete merged config with SHA-256 `RESOLVED_CONFIG_SHA256` |
+| Run name | `RUN_NAME` (suite_experiment_seed_timestamp) |
 | Held-out evaluation | Committed `final_eval_episodes`, `final_eval_seed`, `final_eval_workers`, and `final_eval_capture_hz` |
 | Hardware gate | One RTX 4090, 24 physical cores, 64 GB RAM |
-| Launch command | `scripts/flywheel.py --config FLYWHEEL_CONFIG --run-name RUN_NAME` |
+| Launch command | `scripts/flywheel.py --config CONTROL_DIR/resolved-config.yaml --run-name RUN_NAME` |
 
 After a unique numeric `INSTANCE_ID` has been established, every unrecoverable
 terminal failure must trigger best-effort diagnostics followed by automatic
@@ -425,7 +510,8 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
    cd /workspace/toy-pickplace && \
    test \"\$(git branch --show-current)\" = 'GIT_BRANCH' && \
    test \"\$(git rev-parse HEAD)\" = 'GIT_COMMIT' && \
-   test -f 'FLYWHEEL_CONFIG' && \
+   test -f 'EXPERIMENT_CONFIG' && \
+   test -f 'EXPERIMENT_BASE_CONFIG' && \
    apt-get update -qq && apt-get install -y -qq \
      libgl1-mesa-glx libglib2.0-0 libegl1-mesa libgles2-mesa libglfw3 && \
    curl -LsSf https://astral.sh/uv/install.sh | sh && \
@@ -537,6 +623,48 @@ CONTROL_DIR/
 CONTROL_DIR/logs/
 CONTROL_DIR/state/
 CONTROL_DIR/state/history/
+```
+
+Resolve the config on the remote instance using the checked-out files and
+verify it matches the locally-planned SHA-256. Stop and destroy the instance
+on mismatch:
+
+```bash
+REMOTE_SHA256=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "cd /workspace/toy-pickplace && /root/.local/bin/uv run python scripts/resolve_experiment.py \
+   --experiment '$EXPERIMENT_CONFIG' --seed '$SELECTED_SEED' --sha256" 2>/dev/null | tail -1)
+test "$REMOTE_SHA256" = "$RESOLVED_CONFIG_SHA256" || {
+  printf 'ERROR: Remote resolved config SHA-256 mismatch\n  Local:  %s\n  Remote: %s\n' \
+    "$RESOLVED_CONFIG_SHA256" "$REMOTE_SHA256" >&2
+  exit 1
+}
+
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "cd /workspace/toy-pickplace && /root/.local/bin/uv run python scripts/resolve_experiment.py \
+   --experiment '$EXPERIMENT_CONFIG' --seed '$SELECTED_SEED' \
+   > '${CONTROL_DIR}/resolved-config.yaml'"
+```
+
+Set `FLYWHEEL_CONFIG=${CONTROL_DIR}/resolved-config.yaml` for the runner.
+
+Before launching, preserver provenance artifacts under the results directory
+so the normal backup uploads them. Write the resolved config and a JSON
+manifest capturing the exact experiment origin:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "mkdir -p /workspace/toy-pickplace/results/flywheel/${RUN_NAME} &&
+   cp '${CONTROL_DIR}/resolved-config.yaml' \
+     /workspace/toy-pickplace/results/flywheel/${RUN_NAME}/resolved-config.yaml"
+
+PROVENANCE_MANIFEST=$(
+  uv run python scripts/resolve_experiment.py \
+    --experiment "$EXPERIMENT_CONFIG" --seed "$SELECTED_SEED" --json-manifest
+)
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "cat > /workspace/toy-pickplace/results/flywheel/${RUN_NAME}/experiment-manifest.json << 'MANEOF'
+${PROVENANCE_MANIFEST}
+MANEOF"
 ```
 
 Instantiate the runner template from `.opencode/commands/scripts/flywheel-4090/runner.sh`,
@@ -750,8 +878,11 @@ held-out completion, and all four result objects verified on S3.
 
 Print:
 
-- confirmed branch, commit, config path, exact fixed parameters, and root seed;
-- run name (config-derived), instance label, instance ID, and SSH URL command;
+- confirmed branch, commit, experiment path, base config path, and selected
+  seed;
+- experiment description and resolved config SHA-256;
+- run name (suite_experiment_seed_timestamp), instance label, instance ID,
+  and SSH URL command;
 - advertised effective vCPUs, verified physical cores, CPU quota, RAM, GPU,
   power, and PCIe acceptance results;
 - committed `workers`, `dataloader_workers`, `batch_size`, and all four
@@ -769,8 +900,11 @@ Print:
 - RTX 4090 offers are volatile. Use the confirmed shortlist directly with
   `--cancel-unavail` and stop after the first successful create.
 - Advertised effective vCPUs never bypass the SSH physical-core gate.
-- The committed config is immutable for this workflow; there are no parameter
-  sweeps, per-run experiment overrides, concurrency calculations, or batches.
+- The committed experiment definition and base config are immutable for this
+  workflow. The resolved config is deterministically materialized from those
+  committed files and the selected committed seed. No parameter sweeps,
+  uncommitted experiment overrides, concurrency calculations, or batches are
+  allowed.
 - Held-out evaluation always runs after an acknowledged post-completion backup
   and uploads finalized metrics, its JSON, and two plots under
   `results/flywheel/RUN_NAME/`.

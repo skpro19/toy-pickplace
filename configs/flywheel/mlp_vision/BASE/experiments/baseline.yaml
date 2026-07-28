@@ -1,0 +1,10 @@
+description: control configuration for vision MLP ablations
+
+base_config: ../../BASE.yaml
+
+overrides: {}
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
