@@ -5,24 +5,63 @@ _R=__RUN_NAME__
 _A=__ARCH__
 _C=__CONTROL_DIR__
 
+write_marker() {
+  local path="$1"
+  local value="$2"
+  printf '%s\n' "$value" > "${path}.tmp"
+  mv "${path}.tmp" "$path"
+}
+
+terminal_marker_written=false
+
 fail_heldout() {
   local exit_code="${1:-1}"
-  echo "failed ${exit_code}" > "${_C}/state/heldout-failed.tmp"
-  mv "${_C}/state/heldout-failed.tmp" "${_C}/state/heldout-failed"
+  if [ -f "${_C}/state/heldout-completed" ]; then
+    terminal_marker_written=true
+    exit "$exit_code"
+  fi
+  if [ "$terminal_marker_written" != true ]; then
+    write_marker "${_C}/state/heldout-failed" "failed ${exit_code}"
+    terminal_marker_written=true
+  fi
   exit "$exit_code"
 }
 
-if test -f "${_C}/state/heldout-completed" || test -f "${_C}/state/heldout-failed"; then
-  echo "ERROR: held-out evaluation already ran" >&2; exit 1
+on_exit() {
+  local exit_code=$?
+  if [ -f "${_C}/state/heldout-completed" ]; then
+    terminal_marker_written=true
+    return
+  fi
+  if [ "$terminal_marker_written" != true ]; then
+    test "$exit_code" -ne 0 || exit_code=1
+    write_marker "${_C}/state/heldout-failed" "failed ${exit_code}"
+  fi
+}
+
+trap on_exit EXIT
+trap 'fail_heldout 129' HUP
+trap 'fail_heldout 130' INT
+trap 'fail_heldout 143' TERM
+
+if test -f "${_C}/state/heldout-completed" || \
+   test -f "${_C}/state/heldout-failed" || \
+   test -f "${_C}/state/heldout-running"; then
+  echo "ERROR: held-out evaluation already started" >&2
+  terminal_marker_written=true
+  exit 1
 fi
 
 METRICS="/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/metrics.json"
+test -d "${_C}/logs" || { echo "ERROR: missing log directory" >&2; exit 1; }
+test -f "${_C}/s3-env.env" || { echo "ERROR: missing S3 environment file" >&2; exit 1; }
 if test ! -f "$METRICS"; then
   echo "ERROR: metrics.json not found at $METRICS" >&2
   fail_heldout 1
 fi
 
-cd /workspace/toy-pickplace
+cd /workspace/toy-pickplace || fail_heldout 1
+write_marker "${_C}/state/heldout-running" "$(date +%s%N)"
 
 /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
   python scripts/final_score.py --run-name "${_R}" --arch "${_A}" 2>&1 | \
@@ -33,7 +72,6 @@ if [ "$exit_code" -ne 0 ]; then
   fail_heldout "$exit_code"
 fi
 
-# Validate outputs
 for f in "results/flywheel/${_A}/${_R}/final_scores.json" \
          "results/flywheel/${_A}/${_R}/final-placement-score.png" \
          "results/flywheel/${_A}/${_R}/final-score-curve.png"; do
@@ -43,7 +81,6 @@ for f in "results/flywheel/${_A}/${_R}/final_scores.json" \
   fi
 done
 
-# Upload finalized metrics and held-out outputs with content hashes.
 upload_and_verify() {
   local src="$1" key="$2"
   /root/.local/bin/uv run --env-file "${_C}/s3-env.env" python -c "
@@ -66,8 +103,9 @@ c.upload_file(
 )
 r = c.head_object(Bucket=cfg['S3_BUCKET'], Key='$key')
 sz = r['ContentLength']
-if sz != os.path.getsize('$src'):
-    print(f'size mismatch: sz vs {os.path.getsize(\"$src\")}', file=sys.stderr)
+local_size = os.path.getsize('$src')
+if sz != local_size:
+    print(f'size mismatch: {sz} vs {local_size}', file=sys.stderr)
     sys.exit(1)
 if r.get('Metadata', {}).get('sha256') != digest:
     print('sha256 metadata mismatch', file=sys.stderr)
@@ -76,28 +114,24 @@ remote = c.get_object(Bucket=cfg['S3_BUCKET'], Key='$key')['Body'].read()
 if hashlib.sha256(remote).hexdigest() != digest:
     print('remote sha256 mismatch', file=sys.stderr)
     sys.exit(1)
-print(f'Verified: s3://{cfg[\"S3_BUCKET\"]}/\$key ({sz} bytes)')
+bucket = cfg['S3_BUCKET']
+print(f'Verified: s3://{bucket}/$key ({sz} bytes)')
 " || { echo "upload failed for $2" >&2; return 1; }
 }
-
-. "${_C}/s3-env.env"
 
 upload_and_verify \
   "$METRICS" \
   "results/flywheel/${_A}/${_R}/metrics.json" || fail_heldout 1
-
 upload_and_verify \
   "/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/final_scores.json" \
   "results/flywheel/${_A}/${_R}/final_scores.json" || fail_heldout 1
-
 upload_and_verify \
   "/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/final-placement-score.png" \
   "results/flywheel/${_A}/${_R}/final-placement-score.png" || fail_heldout 1
-
 upload_and_verify \
   "/workspace/toy-pickplace/results/flywheel/${_A}/${_R}/final-score-curve.png" \
   "results/flywheel/${_A}/${_R}/final-score-curve.png" || fail_heldout 1
 
-echo "succeeded 0" > "${_C}/state/heldout-completed.tmp"
-mv "${_C}/state/heldout-completed.tmp" "${_C}/state/heldout-completed"
+write_marker "${_C}/state/heldout-completed" "succeeded 0"
+terminal_marker_written=true
 exit 0

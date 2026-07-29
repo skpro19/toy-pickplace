@@ -242,6 +242,17 @@ agent performs this policy directly. After it starts, the supervisor owns the
 policy. Never apply automatic destruction while duplicate-instance identity is
 ambiguous; list duplicates and resolve the target with the user first.
 
+For direct pre-supervisor cleanup, always run the idempotent helper below. It
+does not return until Vast positively confirms removal; a failed status query is
+never treated as absence:
+
+```bash
+.opencode/commands/scripts/flywheel-4090/destroy-instance.sh "$INSTANCE_ID"
+```
+
+Every failure branch after establishing one numeric `INSTANCE_ID` and before
+`supervisor-running` must invoke this helper before stopping or retrying.
+
 ## Fixed hardware profile
 
 Use one fixed profile. There are no tiers, concurrency calculations, or
@@ -684,7 +695,9 @@ Start one remote TensorBoard session:
 
 ```bash
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "tmux new-session -d -s tensorboard \
+  "! tmux has-session -t tensorboard 2>/dev/null && \
+   ! ss -ltn 'sport = :6006' | grep -q LISTEN && \
+   tmux new-session -d -s tensorboard \
      'cd /workspace/toy-pickplace && exec /root/.local/bin/uv run python -m tensorboard.main \
       --logdir /workspace/toy-pickplace/runs/flywheel --host 127.0.0.1 --port 6006'"
 ```
@@ -713,7 +726,9 @@ LOCAL_SSH_SESSION=vast-ssh-LOCAL_WORKFLOW_INDEX
 LOCAL_TB_SESSION=tb-flywheel-LOCAL_WORKFLOW_INDEX
 ```
 
-An index is occupied if either tmux session exists or its port is listening.
+An index is occupied if either wrapper, its supervisor, or its port exists, or
+if an ownership file remains. The ownership file prevents an older supervisor
+from later killing wrappers that reused its index.
 Select and create the wrappers while holding the lock:
 
 ```bash
@@ -724,9 +739,12 @@ LOCAL_WORKFLOW_INDEX=""
 for index in $(seq 0 999); do
   candidate_ssh_session="vast-ssh-$index"
   candidate_tb_session="tb-flywheel-$index"
+  candidate_supervisor_session="flywheel-supervisor-$index"
   candidate_tb_port=$((6006 + index))
   if tmux has-session -t "$candidate_ssh_session" 2>/dev/null ||
     tmux has-session -t "$candidate_tb_session" 2>/dev/null ||
+    tmux has-session -t "$candidate_supervisor_session" 2>/dev/null ||
+    test -e "/tmp/toy-pickplace-flywheel-$index.owner" ||
     ss -ltn "sport = :$candidate_tb_port" | grep -q LISTEN; then
     continue
   fi
@@ -739,13 +757,19 @@ done
 test -n "$LOCAL_WORKFLOW_INDEX"
 tmux new-session -d -s "$LOCAL_SSH_SESSION" \
   "ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
-    -o ServerAliveInterval=30 -p $PORT root@$HOST"
+    -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -p $PORT root@$HOST"
 tmux new-session -d -s "$LOCAL_TB_SESSION" \
   "ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
-    -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -N \
+    -o ConnectTimeout=15 -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N \
     -L $LOCAL_TB_PORT:127.0.0.1:6006 -p $PORT root@$HOST"
 tmux has-session -t "$LOCAL_SSH_SESSION"
 tmux has-session -t "$LOCAL_TB_SESSION"
+LOCAL_SSH_READY=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+  -o ConnectTimeout=15 -p "$PORT" "root@$HOST" \
+  "printf '%s\n' SSH_WRAPPER_OK" 2>/dev/null | tail -1)
+test "$LOCAL_SSH_READY" = "SSH_WRAPPER_OK"
 LOCAL_TB_READY=false
 for i in $(seq 1 12); do
   if tmux has-session -t "$LOCAL_TB_SESSION" 2>/dev/null &&
@@ -775,6 +799,48 @@ CONTROL_DIR/state/
 CONTROL_DIR/state/history/
 ```
 
+Before creating control state or writing provenance, reject every run-specific
+artifact collision. Require a success sentinel so an SSH failure cannot be
+misread as an empty collision list. After that check, create the control paths
+exactly once and persist a launch authorization marker:
+
+```bash
+RUN_COLLISION_OUTPUT=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+  -p "$PORT" "root@$HOST" \
+  "collisions=''
+   for path in \
+     data/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME} \
+     checkpoints/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME} \
+     runs/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME} \
+     results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}; do
+       test ! -e \"/workspace/toy-pickplace/\$path\" || \
+         collisions=\"\${collisions}\${path} \"
+   done
+   printf 'COLLISIONS_OK:%s\\n' \"\$collisions\"" 2>/dev/null | tail -1)
+case "$RUN_COLLISION_OUTPUT" in
+  COLLISIONS_OK:*) ;;
+  *)
+    echo "ERROR: run collision probe failed" >&2
+    .opencode/commands/scripts/flywheel-4090/destroy-instance.sh "$INSTANCE_ID"
+    exit 1
+    ;;
+esac
+RUN_COLLISIONS=${RUN_COLLISION_OUTPUT#COLLISIONS_OK:}
+test -z "$RUN_COLLISIONS" || {
+  printf 'ERROR: run artifact collisions:\n%s\n' "$RUN_COLLISIONS" >&2
+  .opencode/commands/scripts/flywheel-4090/destroy-instance.sh "$INSTANCE_ID"
+  exit 1
+}
+
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "test ! -e '${CONTROL_DIR}' && \
+   mkdir -p '${CONTROL_DIR}/logs' '${CONTROL_DIR}/state/history'"
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "printf '%s\n' authorized > '${CONTROL_DIR}/state/launch-authorized.tmp' && \
+   mv '${CONTROL_DIR}/state/launch-authorized.tmp' \
+      '${CONTROL_DIR}/state/launch-authorized'"
+```
+
 Resolve the config on the remote instance using the checked-out files and
 verify it matches the locally-planned SHA-256. Stop and destroy the instance
 on mismatch:
@@ -786,6 +852,7 @@ REMOTE_SHA256=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "ro
 test "$REMOTE_SHA256" = "$RESOLVED_CONFIG_SHA256" || {
   printf 'ERROR: Remote resolved config SHA-256 mismatch\n  Local:  %s\n  Remote: %s\n' \
     "$RESOLVED_CONFIG_SHA256" "$REMOTE_SHA256" >&2
+  .opencode/commands/scripts/flywheel-4090/destroy-instance.sh "$INSTANCE_ID"
   exit 1
 }
 
@@ -869,15 +936,19 @@ fi
 The executable runner must:
 
 1. use `set -o pipefail` and export `MUJOCO_GL=egl`;
-2. atomically write `running` to `state/run-status`;
-3. run exactly `/root/.local/bin/uv run python scripts/flywheel.py --config
+2. validate its config, control paths, and log before spawning the process;
+3. persist the process-group PID, verify it survives initialization, then
+   atomically write `running` to `state/run-status`;
+4. run exactly `/root/.local/bin/uv run python scripts/flywheel.py --config
    FLYWHEEL_CONFIG --run-name RUN_NAME` from `/workspace/toy-pickplace`;
-4. stream stdout and stderr to both the pane and `logs/RUN_NAME.log` with
+5. stream stdout and stderr to both the pane and `logs/RUN_NAME.log` with
    `tee -a`;
-5. preserve the flywheel exit code using `${PIPESTATUS[0]}`;
-6. atomically write `succeeded 0` and `state/completed` on success, or
+6. preserve the flywheel process's exit code;
+7. atomically write `succeeded 0` and `state/completed` on success, or
    `failed EXIT_CODE` and `state/failed` on failure;
-7. exit with the flywheel process's exit code.
+8. trap abnormal shell termination and write `state/failed` unless a terminal
+   marker already exists;
+9. exit with the flywheel process's exit code.
 
 Every state update must use a temporary file followed by `mv`. A missing tmux
 session is never a success signal. The persisted log and state files are
@@ -899,16 +970,55 @@ artifacts may be inspected during recovery, but this workflow never relaunches
 target. Start the runner once in remote session `flywheel-run`. Refuse to launch
 if the session or any run/control artifact already exists. Poll until
 `state/run-status` says `running`, verify `flywheel-run` and `tensorboard` exist,
-and stop if the runner exits before the marker appears. The runner may continue
-after the agent disconnects.
+then require both to survive an additional five-second initialization window.
+Stop if the runner exits or writes `state/failed`. The runner may continue after
+the agent disconnects.
+
+```bash
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "! tmux has-session -t flywheel-run 2>/dev/null && \
+   test \"\$(cat '${CONTROL_DIR}/state/launch-authorized')\" = authorized && \
+   test ! -e '${CONTROL_DIR}/state/run-status' && \
+   test ! -e '${CONTROL_DIR}/state/completed' && \
+   test ! -e '${CONTROL_DIR}/state/failed' && \
+   tmux new-session -d -s flywheel-run \
+     'cd /workspace/toy-pickplace && exec bash ${CONTROL_DIR}/runner.sh'"
+
+RUNNER_READY=false
+for i in $(seq 1 30); do
+  runner_state=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+    -p "$PORT" "root@$HOST" \
+    "test -f '${CONTROL_DIR}/state/failed' && cat '${CONTROL_DIR}/state/failed' || \
+     { test -f '${CONTROL_DIR}/state/run-status' && cat '${CONTROL_DIR}/state/run-status' || echo starting; }" \
+    2>/dev/null | tail -1)
+  test "$runner_state" != "starting" || {
+    ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+      "tmux has-session -t flywheel-run 2>/dev/null" || break
+    sleep 1
+    continue
+  }
+  test "$runner_state" = "running" || break
+  RUNNER_READY=true
+  break
+done
+test "$RUNNER_READY" = true
+sleep 5
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "tmux has-session -t flywheel-run 2>/dev/null && \
+   tmux has-session -t tensorboard 2>/dev/null && \
+   test \"\$(cat '${CONTROL_DIR}/state/run-status')\" = running && \
+   test ! -e '${CONTROL_DIR}/state/failed'"
+```
 
 ### 8. Start checkpoint backup
 
 After the run is marked `running`, start one `ckpt-bkp` session. Its wrapper
-must wait until an artifact exists specifically under
+must atomically publish `state/backup-running`, then wait until a
+training-produced artifact exists specifically under
 `checkpoints/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`, `runs/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`,
-`data/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`, or `results/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`, then run every 120
-seconds:
+or `data/flywheel/${FLYWHEEL_ARCH}/RUN_NAME`. Provenance-only result files do
+not satisfy this gate. Fail if no artifact appears within ten minutes. After
+the gate, run every 120 seconds:
 
 ```bash
 /root/.local/bin/uv run python scripts/s3_backup.py upload \
@@ -922,7 +1032,9 @@ that can mix artifacts from other runs and can let old files satisfy the new
 run's initial-backup gate.
 
 Before each upload, atomically update `state/backup-cycle-started` with a unique
-cycle ID and capture any `state/backup-final-requested` token. After a successful
+cycle ID and `state/backup-heartbeat`, and capture any
+`state/backup-final-requested` token. Bound each upload attempt to 30 minutes.
+After a successful
 upload, atomically update `state/backup-last-succeeded` with the cycle ID and
 acknowledge the captured final token in `state/backup-final-succeeded`. This
 request/acknowledgement ensures an in-progress backup cannot be mistaken for a
@@ -1001,7 +1113,8 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
 
 Refuse to start if `ckpt-bkp` already exists on the remote host.
 
-Poll for up to ten minutes for `state/backup-last-succeeded`. Fail immediately
+Poll for up to ten minutes for `state/backup-running`,
+`state/backup-artifact-ready`, and `state/backup-last-succeeded`. Fail immediately
 if `state/backup-failed` appears or `ckpt-bkp` exits. After success, inspect the
 last ten pane lines without exposing credentials and verify the session remains
 active. Verify that both provenance files exist on S3:
@@ -1074,7 +1187,9 @@ It implements the full state machine, diagnostic upload, endpoint refresh, and
 cleanup lifecycle. Read it before proceeding if unfamiliar.
 
 Allocate `LOCAL_SUPERVISOR_SESSION` under the same local wrapper lock and start
-it:
+it. Pass all eight values as quoted positional arguments; do not rely on
+environment-prefix assignments because shell expansion occurs before those
+assignments apply. Persist pane output before checking readiness:
 
 ```bash
 set -e
@@ -1082,6 +1197,10 @@ exec 9>/tmp/toy-pickplace-flywheel-local-wrapper.lock
 flock 9
 
 LOCAL_SUPERVISOR_SESSION="flywheel-supervisor-$LOCAL_WORKFLOW_INDEX"
+LOCAL_SUPERVISOR_LOG="/tmp/toy-pickplace-flywheel-${RUN_NAME}.supervisor.log"
+LOCAL_SUPERVISOR_STATUS="/tmp/toy-pickplace-flywheel-${RUN_NAME}.status"
+LOCAL_OWNER_FILE="/tmp/toy-pickplace-flywheel-$LOCAL_WORKFLOW_INDEX.owner"
+PROJECT_ROOT=$(pwd -P)
 
 tmux has-session -t "$LOCAL_SSH_SESSION" || {
   echo "ERROR: SSH wrapper session $LOCAL_SSH_SESSION died before supervisor start" >&2
@@ -1092,28 +1211,74 @@ tmux has-session -t "$LOCAL_TB_SESSION" || {
   exit 1
 }
 
-HOST="$HOST" PORT="$PORT" INSTANCE_ID="$INSTANCE_ID" \
-RUN_NAME="$RUN_NAME" CONTROL_DIR="$CONTROL_DIR" \
-LOCAL_SSH_SESSION="$LOCAL_SSH_SESSION" \
-LOCAL_TB_SESSION="$LOCAL_TB_SESSION" \
-FLYWHEEL_ARCH="$FLYWHEEL_ARCH" \
-tmux new-session -d -s "$LOCAL_SUPERVISOR_SESSION" \
-  ".opencode/commands/scripts/flywheel-4090/supervisor.sh \
-    $INSTANCE_ID $HOST $PORT $RUN_NAME $CONTROL_DIR \
-    $LOCAL_SSH_SESSION $LOCAL_TB_SESSION $FLYWHEEL_ARCH"
+test ! -e "$LOCAL_OWNER_FILE"
+printf '%s\n' "$RUN_NAME" > "${LOCAL_OWNER_FILE}.tmp"
+mv "${LOCAL_OWNER_FILE}.tmp" "$LOCAL_OWNER_FILE"
+rm -f "$LOCAL_SUPERVISOR_STATUS" "$LOCAL_SUPERVISOR_LOG"
 
-sleep 5
-tmux has-session -t "$LOCAL_SUPERVISOR_SESSION" || {
-  echo "ERROR: supervisor failed to start"
-  tmux capture-pane -t "$LOCAL_SUPERVISOR_SESSION" -p -S -10
-  exit 1
-}
+printf -v SUPERVISOR_COMMAND '%q ' \
+  "$PROJECT_ROOT/.opencode/commands/scripts/flywheel-4090/supervisor.sh" \
+  "$INSTANCE_ID" "$HOST" "$PORT" "$RUN_NAME" "$CONTROL_DIR" \
+  "$LOCAL_SSH_SESSION" "$LOCAL_TB_SESSION" "$FLYWHEEL_ARCH"
+printf -v SUPERVISOR_LOG_QUOTED '%q' "$LOCAL_SUPERVISOR_LOG"
+tmux new-session -d -s "$LOCAL_SUPERVISOR_SESSION" -c "$PROJECT_ROOT" \
+  "set -o pipefail; ${SUPERVISOR_COMMAND} 2>&1 | tee -a ${SUPERVISOR_LOG_QUOTED}"
+
+SUPERVISOR_READY=false
+for i in $(seq 1 90); do
+  if ! tmux has-session -t "$LOCAL_SUPERVISOR_SESSION" 2>/dev/null; then
+    echo "ERROR: supervisor exited during startup" >&2
+    test ! -f "$LOCAL_SUPERVISOR_LOG" || tail -30 "$LOCAL_SUPERVISOR_LOG"
+    tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
+    tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
+    rm -f "$LOCAL_OWNER_FILE"
+    .opencode/commands/scripts/flywheel-4090/destroy-instance.sh "$INSTANCE_ID"
+    exit 1
+  fi
+  supervisor_outcome=$(uv run python -c '
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not path.exists():
+    print("not_found")
+else:
+    try:
+        print(json.loads(path.read_text())["outcome"])
+    except (json.JSONDecodeError, KeyError):
+        print("invalid")
+' "$LOCAL_SUPERVISOR_STATUS")
+  case "$supervisor_outcome" in
+    supervisor-ready|supervisor-running)
+      SUPERVISOR_READY=true
+      break
+      ;;
+    supervisor-starting|not_found) ;;
+    *)
+      echo "ERROR: supervisor startup state: $supervisor_outcome" >&2
+      test ! -f "$LOCAL_SUPERVISOR_LOG" || tail -30 "$LOCAL_SUPERVISOR_LOG"
+      exit 1
+      ;;
+  esac
+  sleep 1
+done
+test "$SUPERVISOR_READY" = true
+
+# Require one complete 30-second monitor cycle, not merely a spawned process.
+sleep 35
+tmux has-session -t "$LOCAL_SUPERVISOR_SESSION"
+supervisor_outcome=$(uv run python -c '
+import json, sys
+print(json.load(open(sys.argv[1]))["outcome"])
+' "$LOCAL_SUPERVISOR_STATUS")
+test "$supervisor_outcome" = "supervisor-running"
 
 flock -u 9
 exec 9>&-
 ```
 
-Verify the supervisor is alive and print its attach command. Never transfer
+Verify the supervisor is alive, has completed one monitor cycle, and print its
+attach command. On startup failure, inspect the persistent supervisor log and
+retry only after correcting the cause. Never transfer
 `VAST_API_KEY` to the instance. The local machine and tmux server must remain
 running; a terminal or OpenCode disconnect is safe, but a local reboot is not.
 
