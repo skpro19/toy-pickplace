@@ -1,113 +1,92 @@
 #!/bin/bash
 # Durable local supervisor for one flywheel run.
-# Sources ./.env for VAST_API_KEY and AWS credentials (tracing disabled).
 # Arguments: INSTANCE_ID HOST PORT RUN_NAME CONTROL_DIR LOCAL_SSH_SESSION LOCAL_TB_SESSION ARCH
 
 set -o pipefail
 
-INSTANCE_ID="$1"; HOST="$2"; PORT="$3"
-RUN_NAME="$4"; CONTROL_DIR="$5"
-LOCAL_SSH_SESSION="$6"; LOCAL_TB_SESSION="$7"
+if [ "$#" -ne 8 ]; then
+  echo "ERROR: supervisor requires exactly 8 arguments, received $#" >&2
+  exit 2
+fi
+
+INSTANCE_ID="$1"
+HOST="$2"
+PORT="$3"
+RUN_NAME="$4"
+CONTROL_DIR="$5"
+LOCAL_SSH_SESSION="$6"
+LOCAL_TB_SESSION="$7"
 ARCH="$8"
-SUPERVISOR_SESSION="flywheel-supervisor-$6"
-SUPERVISOR_SESSION="${SUPERVISOR_SESSION#vast-ssh-}"
-SUPERVISOR_SESSION="flywheel-supervisor-${SUPERVISOR_SESSION}"
+
+case "$INSTANCE_ID" in
+  ""|*[!0-9]*) echo "ERROR: INSTANCE_ID must be numeric" >&2; exit 2 ;;
+esac
+
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+PROJECT_ROOT=$(readlink -f "${SCRIPT_DIR}/../../../..")
+EMERGENCY_CLEANUP_ARMED=true
+
+emergency_validation_cleanup() {
+  local exit_code=$?
+  if [ "$EMERGENCY_CLEANUP_ARMED" = true ] && [ "$exit_code" -ne 0 ]; then
+    echo "ERROR: supervisor validation failed; destroying instance $INSTANCE_ID" >&2
+    "${SCRIPT_DIR}/destroy-instance.sh" "$INSTANCE_ID"
+  fi
+}
+trap emergency_validation_cleanup EXIT
+
+case "$PORT" in
+  ""|*[!0-9]*) echo "ERROR: PORT must be numeric" >&2; exit 2 ;;
+esac
+case "$RUN_NAME" in
+  ""|*[!A-Za-z0-9._-]*) echo "ERROR: invalid RUN_NAME" >&2; exit 2 ;;
+esac
+case "$ARCH" in
+  ""|*[!A-Za-z0-9._-]*) echo "ERROR: invalid ARCH" >&2; exit 2 ;;
+esac
+test "$CONTROL_DIR" = "/workspace/toy-pickplace/.flywheel/${RUN_NAME}" || {
+  echo "ERROR: CONTROL_DIR does not match RUN_NAME" >&2
+  exit 2
+}
+case "$LOCAL_SSH_SESSION" in
+  vast-ssh-[0-9]*) ;;
+  *) echo "ERROR: invalid local SSH session name" >&2; exit 2 ;;
+esac
+case "$LOCAL_TB_SESSION" in
+  tb-flywheel-[0-9]*) ;;
+  *) echo "ERROR: invalid local TensorBoard session name" >&2; exit 2 ;;
+esac
 
 STATUS_FILE="/tmp/toy-pickplace-flywheel-${RUN_NAME}.status"
+WORKFLOW_INDEX=${LOCAL_SSH_SESSION#vast-ssh-}
+OWNER_FILE="/tmp/toy-pickplace-flywheel-${WORKFLOW_INDEX}.owner"
+SSH_CMD=(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+  -o ConnectTimeout=15 -p "$PORT" "root@$HOST")
+
+STATE="starting"
+SSH_FAILURES=0
+FINAL_BACKUP_TOKEN=""
+FINAL_BACKUP_DEADLINE=0
+EVALUATION_DEADLINE=0
+CLEANUP_STARTED=false
+SUPERVISOR_TERMINAL=false
 
 write_status() {
   local outcome="$1"
-  local now state_val
+  local now
   now=$(date -Iseconds)
-  state_val="${STATE:-starting}"
-  cat > "$STATUS_FILE" << EOF
-{"outcome":"${outcome}","timestamp":"${now}","run_name":"${RUN_NAME}","instance_id":"${INSTANCE_ID}","last_state":"${state_val}"}
-EOF
+  printf '{"outcome":"%s","timestamp":"%s","run_name":"%s","instance_id":"%s","last_state":"%s"}\n' \
+    "$outcome" "$now" "$RUN_NAME" "$INSTANCE_ID" "$STATE" \
+    > "${STATUS_FILE}.tmp"
+  mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
 }
 
-write_status "supervisor-starting"
-
-set -a; . ./.env; set +a
-
-SSH_CMD="ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -p $PORT root@$HOST"
-
-cleanup() {
-  local outcome="$1"
-  echo "=== Cleanup: $outcome ==="
-  capture_local_diagnostics || true
-  echo "Instance destruction in 60s — SSH: ssh -p $PORT root@$HOST"
-  $SSH_CMD "printf '%s\n' 'pending-destruction at $(date -Iseconds)' > '${CONTROL_DIR}/state/pending-destruction'" 2>/dev/null || true
-  sleep 60
-  test -n "$INSTANCE_ID" || {
-    echo "ERROR: INSTANCE_ID is empty — cannot destroy"
-    write_status "cleanup-aborted-empty-id"
-    return 1
-  }
-  vastai destroy instance -y "$INSTANCE_ID" 2>&1 || echo "destroy may have already completed"
-  for i in $(seq 1 30); do
-    instances=$(vastai show instances --raw 2>/dev/null || echo "[]")
-    count=""
-    count=$(echo "$instances" | INSTANCE_ID="$INSTANCE_ID" uv run python -c '
-import json, os, sys
-data = json.load(sys.stdin)
-if isinstance(data, dict):
-    data = data.get("instances", [data])
-target = os.environ.get("INSTANCE_ID", "")
-if not target:
-    raise SystemExit(2)
-ids = [item.get("id") for item in data if str(item.get("id")) == target]
-print(len(ids))
-' 2>/dev/null) || { echo "ERROR: verification poll failed for $INSTANCE_ID"; count=; }
-    if [ "$count" = "0" ]; then
-      echo "Instance $INSTANCE_ID destroyed and removed"
-      break
-    fi
-    if [ -z "$count" ]; then
-      echo "Skipping one verification poll due to transient error; will retry"
-    fi
-    sleep 10
-  done
-  if [ "$count" != "0" ]; then
-    echo "WARNING: Instance $INSTANCE_ID still present after 30 polls, retrying destroy"
-    vastai destroy instance -y "$INSTANCE_ID" 2>&1 || true
-  fi
-  tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
-  tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
-  write_status "$outcome"
-  echo "Cleanup complete: $outcome"
+remote_value() {
+  "${SSH_CMD[@]}" "$1" 2>/dev/null | tail -1
 }
 
-upload_diagnostics() {
-  local deadline=$(( $(date +%s) + 300 ))
-
-  . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || {
-    mapfile -t AWS < <(uv run python -c "
-import os, boto3
-s = boto3.Session(profile_name=os.environ.get('AWS_PROFILE', ''))
-c = s.get_credentials().get_frozen_credentials()
-print(c.access_key); print(c.secret_key); print(c.token or ''); print(s.region_name or '')
-" 2>/dev/null) || return 1
-    AWS_ACCESS_KEY_ID="${AWS[0]}"; AWS_SECRET_ACCESS_KEY="${AWS[1]}"
-    AWS_SESSION_TOKEN="${AWS[2]}"; AWS_REGION="${AWS[3]}"
-  }
-
-  prefix=".flywheel/${RUN_NAME}"
-
-  for dir in logs state; do
-    local_dir="${CONTROL_DIR}/${dir}"
-    if [ -d "$local_dir" ]; then
-      find "$local_dir" -type f | while read f; do
-        [ $(date +%s) -gt $deadline ] && break
-        rel="${f#${CONTROL_DIR}/${dir}/}"
-        key="${prefix}/${dir}/${rel}"
-        uv run python -c "
-import boto3, os
-c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')
-c.upload_file('$f', os.environ['S3_BUCKET'], '$key')
-" 2>/dev/null || true
-      done
-    fi
-  done
+remote_probe() {
+  test "$(remote_value "printf '%s\\n' SSH_OK")" = "SSH_OK"
 }
 
 capture_local_diagnostics() {
@@ -122,108 +101,309 @@ capture_local_diagnostics() {
     echo ""
   } > "$local_dir/meta.txt"
 
-  $SSH_CMD "cat '${CONTROL_DIR}/state/'* 2>/dev/null; echo '---'; ls -la '${CONTROL_DIR}/state/'" \
+  "${SSH_CMD[@]}" \
+    "cat '${CONTROL_DIR}/state/'* 2>/dev/null; echo '---'; ls -la '${CONTROL_DIR}/state/'" \
     > "$local_dir/state.txt" 2>/dev/null || true
 
-  for session in flywheel-run ckpt-bkp tensorboard; do
-    $SSH_CMD "tmux capture-pane -t '$session' -p -S -300 2>/dev/null" \
+  for session in flywheel-run ckpt-bkp tensorboard heldout-eval; do
+    "${SSH_CMD[@]}" "tmux capture-pane -t '$session' -p -S -300 2>/dev/null" \
       > "$local_dir/${session}.log" 2>/dev/null || true
   done
 
-  $SSH_CMD "tail -500 '${CONTROL_DIR}/logs/${RUN_NAME}.log' 2>/dev/null" \
+  "${SSH_CMD[@]}" "tail -500 '${CONTROL_DIR}/logs/${RUN_NAME}.log' 2>/dev/null" \
     > "$local_dir/training-tail.log" 2>/dev/null || true
-
+  "${SSH_CMD[@]}" "tail -500 '${CONTROL_DIR}/logs/backup-${RUN_NAME}.log' 2>/dev/null" \
+    > "$local_dir/backup-tail.log" 2>/dev/null || true
   echo "Local diagnostics saved to $local_dir"
 }
 
-echo "Supervisor started: instance=$INSTANCE_ID host=$HOST port=$PORT run=$RUN_NAME"
+upload_diagnostics() {
+  local local_dir="/tmp/toy-pickplace-flywheel-${RUN_NAME}"
+  local deadline=$(( $(date +%s) + 300 ))
+  capture_local_diagnostics || true
 
-$SSH_CMD "echo connected" >/dev/null 2>&1 || {
-  echo "ERROR: Cannot connect to instance on startup"
-  cleanup "supervisor-startup-failed"; exit 1
+  set -a
+  . "${PROJECT_ROOT}/.env" 2>/dev/null || return 1
+  set +a
+  test -n "${S3_BUCKET:-}" || return 1
+
+  for file in "$local_dir"/*; do
+    test -f "$file" || continue
+    [ "$(date +%s)" -gt "$deadline" ] && break
+    key=".flywheel/${RUN_NAME}/diagnostics/$(basename "$file")"
+    uv run python -c "
+import boto3, os
+s = boto3.Session(profile_name=os.environ.get('AWS_PROFILE') or None)
+c = s.client('s3', region_name=os.environ.get('AWS_REGION') or 'ap-south-1')
+c.upload_file('$file', os.environ['S3_BUCKET'], '$key')
+" 2>/dev/null || true
+  done
+}
+
+cleanup() {
+  local outcome="$1"
+  if [ "$CLEANUP_STARTED" = true ]; then
+    return
+  fi
+  CLEANUP_STARTED=true
+  echo "=== Cleanup: $outcome ==="
+  capture_local_diagnostics || true
+  write_status "cleanup-pending-${outcome}"
+  echo "Instance destruction in 60s. SSH: ssh -p $PORT root@$HOST"
+  "${SSH_CMD[@]}" \
+    "printf '%s\n' 'pending-destruction at $(date -Iseconds)' > '${CONTROL_DIR}/state/pending-destruction'" \
+    2>/dev/null || true
+  sleep 60
+
+  until "${SCRIPT_DIR}/destroy-instance.sh" "$INSTANCE_ID"; do
+    echo "WARNING: destruction helper exited; retrying in 30 seconds"
+    sleep 30
+  done
+  write_status "$outcome"
+
+  if [ -f "$OWNER_FILE" ] && [ "$(cat "$OWNER_FILE" 2>/dev/null)" = "$RUN_NAME" ]; then
+    tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
+    tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
+    rm -f "$OWNER_FILE"
+  else
+    echo "WARNING: wrapper ownership changed; local sessions were not killed"
+  fi
+  SUPERVISOR_TERMINAL=true
+  echo "Cleanup complete: $outcome"
+}
+
+on_supervisor_exit() {
+  local exit_code=$?
+  if [ "$SUPERVISOR_TERMINAL" != true ] && [ "$CLEANUP_STARTED" != true ]; then
+    echo "ERROR: supervisor exited unexpectedly with status $exit_code"
+    upload_diagnostics || true
+    cleanup "supervisor-exited-${exit_code}"
+  fi
+}
+
+handle_supervisor_signal() {
+  local exit_code="$1"
+  if [ "$CLEANUP_STARTED" = true ]; then
+    echo "Cleanup already in progress; deferring signal $exit_code"
+    return
+  fi
+  exit "$exit_code"
+}
+
+refresh_endpoint() {
+  local new_url new_host new_port probe
+  new_url=$(vastai ssh-url "$INSTANCE_ID" 2>/dev/null | tail -1)
+  test -n "$new_url" || return 1
+  new_host=$(printf '%s\n' "$new_url" | sed 's|ssh://root@||;s|:.*||')
+  new_port=$(printf '%s\n' "$new_url" | sed 's|.*:||')
+  test -n "$new_host" && test -n "$new_port" || return 1
+  if [ "$new_host" = "$HOST" ] && [ "$new_port" = "$PORT" ]; then
+    return 1
+  fi
+
+  echo "Endpoint changed: $HOST:$PORT -> $new_host:$new_port"
+  probe=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+    -o ConnectTimeout=15 -p "$new_port" "root@$new_host" \
+    "printf '%s\n' SSH_OK" 2>/dev/null | tail -1)
+  test "$probe" = "SSH_OK" || return 1
+  probe=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+    -o ConnectTimeout=15 -p "$new_port" "root@$new_host" \
+    "printf '%s\n' SSH_OK" 2>/dev/null | tail -1)
+  test "$probe" = "SSH_OK" || return 1
+
+  HOST=$new_host
+  PORT=$new_port
+  SSH_CMD=(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+    -o ConnectTimeout=15 -p "$PORT" "root@$HOST")
+  return 0
+}
+
+launch_heldout() {
+  local backup_alive heldout_state heldout_alive
+
+  "${SSH_CMD[@]}" "tmux kill-session -t ckpt-bkp 2>/dev/null || true" 2>/dev/null || true
+  for i in $(seq 1 15); do
+    backup_alive=$(remote_value "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no")
+    [ "$backup_alive" = "no" ] && break
+    sleep 1
+  done
+  test "$backup_alive" = "no" || return 1
+
+  heldout_alive=$(remote_value "tmux has-session -t heldout-eval 2>/dev/null && echo yes || echo no")
+  test "$heldout_alive" = "no" || return 1
+  heldout_state=$(remote_value \
+    "test ! -e '${CONTROL_DIR}/state/heldout-running' && test ! -e '${CONTROL_DIR}/state/heldout-completed' && test ! -e '${CONTROL_DIR}/state/heldout-failed' && echo clean || echo collision")
+  test "$heldout_state" = "clean" || return 1
+
+  "${SSH_CMD[@]}" \
+    "tmux new-session -d -s heldout-eval 'cd /workspace/toy-pickplace && exec bash ${CONTROL_DIR}/heldout-eval.sh'" \
+    2>/dev/null || return 1
+
+  for i in $(seq 1 30); do
+    heldout_state=$(remote_value \
+      "test -f '${CONTROL_DIR}/state/heldout-running' && echo running || { test -f '${CONTROL_DIR}/state/heldout-failed' && cat '${CONTROL_DIR}/state/heldout-failed' || echo starting; }")
+    [ "$heldout_state" = "running" ] && return 0
+    case "$heldout_state" in failed*) return 1 ;; esac
+    heldout_alive=$(remote_value "tmux has-session -t heldout-eval 2>/dev/null && echo yes || echo no")
+    [ "$heldout_alive" = "yes" ] || return 1
+    sleep 1
+  done
+  return 1
+}
+
+EMERGENCY_CLEANUP_ARMED=false
+trap on_supervisor_exit EXIT
+trap 'handle_supervisor_signal 129' HUP
+trap 'handle_supervisor_signal 130' INT
+trap 'handle_supervisor_signal 143' TERM
+
+write_status "supervisor-starting"
+set -a
+. "${PROJECT_ROOT}/.env" || { echo "ERROR: could not load ${PROJECT_ROOT}/.env" >&2; exit 1; }
+set +a
+
+echo "Supervisor started: instance=$INSTANCE_ID host=$HOST port=$PORT run=$RUN_NAME"
+remote_probe || {
+  echo "ERROR: cannot connect to instance on startup"
+  upload_diagnostics || true
+  cleanup "supervisor-startup-failed"
+  exit 1
+}
+
+initial_state=$(remote_value \
+  "test -d '${CONTROL_DIR}/state' && { test -f '${CONTROL_DIR}/state/run-status' || test -f '${CONTROL_DIR}/state/completed'; } && tmux has-session -t ckpt-bkp 2>/dev/null && echo SUPERVISOR_REMOTE_OK || echo INVALID")
+test "$initial_state" = "SUPERVISOR_REMOTE_OK" || {
+  echo "ERROR: remote workflow state is not ready for supervision"
+  upload_diagnostics || true
+  cleanup "supervisor-remote-state-invalid"
+  exit 1
 }
 
 STATE="running"
-HELDOUT_LAUNCHED=false
-SSH_FAILURES=0
+write_status "supervisor-ready"
 
 while true; do
-  case "$STATE" in
-    running)
-      completed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/completed' && cat '${CONTROL_DIR}/state/completed' || echo not_found" 2>/dev/null)
-      failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/failed' && cat '${CONTROL_DIR}/state/failed' || echo not_found" 2>/dev/null)
-      backup_failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no" 2>/dev/null)
-      ckpt_alive=$($SSH_CMD "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no" 2>/dev/null)
-
-      if [ -n "$failed" ] && [ "$failed" != "not_found" ]; then
-        echo "Training failed: $failed"
-        upload_diagnostics
-        cleanup "training-failed-${failed#failed }"
+  if ! remote_probe; then
+    SSH_FAILURES=$((SSH_FAILURES + 1))
+    echo "SSH probe failed ($SSH_FAILURES consecutive)"
+    if [ "$SSH_FAILURES" -ge 3 ] && refresh_endpoint; then
+      SSH_FAILURES=0
+    elif [ "$SSH_FAILURES" -ge 3 ]; then
+      instance_status=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | \
+        uv run python -c "import json,sys; print(json.load(sys.stdin).get('actual_status','unknown'))" \
+        2>/dev/null | tail -1)
+      echo "Vast status: $instance_status"
+      if echo "$instance_status" | grep -qE 'offline|stopped|error|terminated'; then
+        upload_diagnostics || true
+        cleanup "instance-terminated-${instance_status}"
         break
       fi
-      if [ -n "$completed" ] && [ "$completed" != "not_found" ]; then
+    fi
+    write_status "supervisor-degraded-ssh"
+    sleep 30
+    continue
+  fi
+  SSH_FAILURES=0
+
+  case "$STATE" in
+    running)
+      completed=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/completed' && cat '${CONTROL_DIR}/state/completed' || echo not_found")
+      failed=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/failed' && cat '${CONTROL_DIR}/state/failed' || echo not_found")
+      backup_failed=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no")
+      backup_alive=$(remote_value \
+        "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no")
+      runner_alive=$(remote_value \
+        "tmux has-session -t flywheel-run 2>/dev/null && echo yes || echo no")
+
+      case "$failed" in
+        failed*)
+          echo "Training failed: $failed"
+          upload_diagnostics || true
+          cleanup "training-failed-${failed#failed }"
+          break
+          ;;
+      esac
+      if [ "$completed" = "succeeded 0" ]; then
         echo "Training completed: $completed"
-        REQUEST_TOKEN=$(date +%s%N)
-        $SSH_CMD "echo '$REQUEST_TOKEN' > '${CONTROL_DIR}/state/backup-final-requested.tmp' && mv '${CONTROL_DIR}/state/backup-final-requested.tmp' '${CONTROL_DIR}/state/backup-final-requested'" 2>/dev/null || true
-        echo "Backup final token requested: $REQUEST_TOKEN"
+        FINAL_BACKUP_TOKEN=$(date +%s%N)
+        FINAL_BACKUP_DEADLINE=$(( $(date +%s) + 10800 ))
+        "${SSH_CMD[@]}" \
+          "printf '%s\n' '$FINAL_BACKUP_TOKEN' > '${CONTROL_DIR}/state/backup-final-requested.tmp' && mv '${CONTROL_DIR}/state/backup-final-requested.tmp' '${CONTROL_DIR}/state/backup-final-requested'" \
+          2>/dev/null || {
+            upload_diagnostics || true
+            cleanup "final-backup-request-failed"
+            break
+          }
         STATE="completed-wait-backup"
-      elif [ "$backup_failed" = "yes" ] || [ "$ckpt_alive" = "no" ]; then
-        echo "WARNING: backup unhealthy, continuing to monitor training"
-        BACKUP_HEALTHY=false
+      elif [ "$backup_failed" = "yes" ] || [ "$backup_alive" != "yes" ]; then
+        echo "ERROR: checkpoint backup became unhealthy"
+        upload_diagnostics || true
+        cleanup "backup-failed"
+        break
+      elif [ "$runner_alive" != "yes" ]; then
+        echo "ERROR: flywheel-run disappeared without a terminal marker"
+        upload_diagnostics || true
+        cleanup "runner-disappeared"
+        break
       fi
       ;;
 
     completed-wait-backup)
-      completed_exists=$($SSH_CMD "test -f '${CONTROL_DIR}/state/completed' && echo yes || echo no" 2>/dev/null)
-      if [ "$completed_exists" != "yes" ]; then
-        echo "WARNING: completed marker disappeared, falling back to running state"
-        STATE="running"
-        continue
-      fi
-      final_succeeded=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-final-succeeded' && cat '${CONTROL_DIR}/state/backup-final-succeeded' || echo not_found" 2>/dev/null)
-      launch_eval=false
+      final_backup_succeeded=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/backup-final-succeeded' && cat '${CONTROL_DIR}/state/backup-final-succeeded' || echo not_found")
+      backup_failed=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no")
+      backup_alive=$(remote_value \
+        "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no")
 
-      if [ -n "$final_succeeded" ] && [ "$final_succeeded" != "not_found" ] && [ "$final_succeeded" = "$REQUEST_TOKEN" ]; then
-        echo "Post-completion backup acknowledged (token ${final_succeeded:0:10}...). Launching held-out eval."
-        launch_eval=true
-      else
-        ckpt_alive=$($SSH_CMD "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no" 2>/dev/null)
-        backup_failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no" 2>/dev/null)
-        if [ "$ckpt_alive" = "no" ] || [ "$backup_failed" = "yes" ]; then
-          echo "WARNING: backup is dead, launching held-out eval from local data"
-          upload_diagnostics
-          launch_eval=true
+      if [ "$final_backup_succeeded" = "$FINAL_BACKUP_TOKEN" ]; then
+        echo "Post-completion backup acknowledged. Launching held-out evaluation."
+        if launch_heldout; then
+          STATE="evaluation-running"
+          EVALUATION_DEADLINE=$(( $(date +%s) + 43200 ))
+        else
+          upload_diagnostics || true
+          cleanup "heldout-startup-failed"
+          break
         fi
-      fi
-
-      if [ "$launch_eval" = true ]; then
-        $SSH_CMD "tmux kill-session -t ckpt-bkp 2>/dev/null; echo ckpt-bkp-stopped" >/dev/null 2>&1
-        . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
-        $SSH_CMD "tmux new-session -d -s heldout-eval 'cd /workspace/toy-pickplace && export MUJOCO_GL=egl && exec bash ${CONTROL_DIR}/heldout-eval.sh'" 2>&1
-        HELDOUT_LAUNCHED=true
-        STATE="evaluation-running"
-        echo "Held-out evaluation launched"
+      elif [ "$backup_failed" = "yes" ] || [ "$backup_alive" != "yes" ] || \
+           [ "$(date +%s)" -ge "$FINAL_BACKUP_DEADLINE" ]; then
+        echo "ERROR: final backup was not acknowledged"
+        upload_diagnostics || true
+        cleanup "final-backup-failed"
+        break
       fi
       ;;
 
     evaluation-running)
-      heldout_completed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/heldout-completed' && echo yes || echo no" 2>/dev/null)
-      heldout_failed=$($SSH_CMD "test -f '${CONTROL_DIR}/state/heldout-failed' && cat '${CONTROL_DIR}/state/heldout-failed' || echo not_found" 2>/dev/null)
+      heldout_completed=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/heldout-completed' && cat '${CONTROL_DIR}/state/heldout-completed' || echo not_found")
+      heldout_failed=$(remote_value \
+        "test -f '${CONTROL_DIR}/state/heldout-failed' && cat '${CONTROL_DIR}/state/heldout-failed' || echo not_found")
+      heldout_alive=$(remote_value \
+        "tmux has-session -t heldout-eval 2>/dev/null && echo yes || echo no")
 
-      if [ "$heldout_completed" = "yes" ]; then
+      if [ "$heldout_completed" = "succeeded 0" ]; then
         echo "Held-out evaluation completed successfully"
-        . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
+        set -a
+        . "${PROJECT_ROOT}/.env"
+        set +a
         verify_ok=true
         for key in "results/flywheel/${ARCH}/${RUN_NAME}/resolved-config.yaml" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/experiment-manifest.json" \
+                   "results/flywheel/${ARCH}/${RUN_NAME}/metrics.json" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final_scores.json" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final-placement-score.png" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final-score-curve.png"; do
           uv run python -c "
 import boto3, os
-c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')
-r = c.head_object(Bucket='${S3_BUCKET}', Key='$key')
-print(f'Verified: s3://${S3_BUCKET}/\$key ({r[\"ContentLength\"]} bytes)')
+s = boto3.Session(profile_name=os.environ.get('AWS_PROFILE') or None)
+c = s.client('s3', region_name=os.environ.get('AWS_REGION') or 'ap-south-1')
+r = c.head_object(Bucket=os.environ['S3_BUCKET'], Key='$key')
+print(f'Verified: s3://{os.environ[\"S3_BUCKET\"]}/$key ({r[\"ContentLength\"]} bytes)')
 " 2>/dev/null || { verify_ok=false; echo "FAILED to verify: $key"; }
         done
         if [ "$verify_ok" = true ]; then
@@ -233,58 +413,34 @@ print(f'Verified: s3://${S3_BUCKET}/\$key ({r[\"ContentLength\"]} bytes)')
         fi
         break
       fi
-      if [ "$heldout_failed" != "not_found" ]; then
-        echo "Held-out evaluation failed: $heldout_failed"
-        upload_diagnostics
-        cleanup "heldout-failed"
+
+      case "$heldout_failed" in
+        failed*)
+          echo "Held-out evaluation failed: $heldout_failed"
+          upload_diagnostics || true
+          cleanup "heldout-failed"
+          break
+          ;;
+      esac
+      if [ "$heldout_alive" != "yes" ]; then
+        echo "ERROR: heldout-eval disappeared without a terminal marker"
+        upload_diagnostics || true
+        cleanup "heldout-disappeared"
+        break
+      fi
+      if [ "$(date +%s)" -ge "$EVALUATION_DEADLINE" ]; then
+        echo "ERROR: held-out evaluation exceeded its 12-hour deadline"
+        upload_diagnostics || true
+        cleanup "heldout-timeout"
         break
       fi
       ;;
   esac
 
-  ssh_ok=false
-  if $SSH_CMD "echo health" >/dev/null 2>&1; then
-    ssh_ok=true
-    SSH_FAILURES=0
-  else
-    SSH_FAILURES=$((SSH_FAILURES + 1))
-    echo "SSH probe failed ($SSH_FAILURES consecutive)"
-
-    if [ $SSH_FAILURES -ge 3 ]; then
-      status=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | \
-        uv run python -c "import json,sys; d=json.load(sys.stdin); print(d.get('actual_status','unknown'))" 2>/dev/null)
-      echo "Vast status: $status"
-      if [ "$status" = "running" ]; then
-        new_url=$(vastai ssh-url "$INSTANCE_ID" 2>/dev/null)
-        if [ -n "$new_url" ]; then
-          NEW_HOST=$(echo "$new_url" | sed 's|ssh://root@||;s|:.*||')
-          NEW_PORT=$(echo "$new_url" | sed 's|.*:||')
-          if [ -n "$NEW_HOST" ] && [ -n "$NEW_PORT" ] && [ "$NEW_HOST" != "$HOST" ]; then
-            echo "Endpoint changed: $HOST:$PORT -> $NEW_HOST:$NEW_PORT"
-            ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -p "$NEW_PORT" "root@$NEW_HOST" "echo pinning" >/dev/null 2>&1
-            HOST=$NEW_HOST; PORT=$NEW_PORT
-            SSH_CMD="ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -p $PORT root@$HOST"
-            SSH_FAILURES=0
-            ssh_ok=true
-          fi
-        fi
-      elif echo "$status" | grep -qE "offline|stopped|error|terminated"; then
-        echo "Instance terminal: $status"
-        upload_diagnostics
-        cleanup "instance-terminated-$status"
-        break
-      fi
-    fi
-
-    if [ $SSH_FAILURES -ge 120 ]; then
-      echo "ALERT: 120 consecutive SSH failures, continuing at 5-minute interval"
-      sleep 270
-    fi
-  fi
-
-  if [ $((SECONDS % 120)) -lt 30 ]; then
-    echo "[$(date +%H:%M:%S)] STATE=$STATE SSH_FAILURES=$SSH_FAILURES"
-  fi
-
+  for local_session in "$LOCAL_SSH_SESSION" "$LOCAL_TB_SESSION"; do
+    tmux has-session -t "$local_session" 2>/dev/null || \
+      echo "WARNING: local wrapper $local_session is not running"
+  done
+  write_status "supervisor-running"
   sleep 30
 done
