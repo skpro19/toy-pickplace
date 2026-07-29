@@ -163,6 +163,9 @@ while true; do
       fi
       if [ -n "$completed" ] && [ "$completed" != "not_found" ]; then
         echo "Training completed: $completed"
+        REQUEST_TOKEN=$(date +%s%N)
+        $SSH_CMD "echo '$REQUEST_TOKEN' > '${CONTROL_DIR}/state/backup-final-requested.tmp' && mv '${CONTROL_DIR}/state/backup-final-requested.tmp' '${CONTROL_DIR}/state/backup-final-requested'" 2>/dev/null || true
+        echo "Backup final token requested: $REQUEST_TOKEN"
         STATE="completed-wait-backup"
       elif [ "$backup_failed" = "yes" ] || [ "$ckpt_alive" = "no" ]; then
         echo "WARNING: backup unhealthy, continuing to monitor training"
@@ -177,12 +180,11 @@ while true; do
         STATE="running"
         continue
       fi
-      completed_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/completed' 2>/dev/null || echo 0" 2>/dev/null)
-      succeeded_stamp=$($SSH_CMD "stat -c %Y '${CONTROL_DIR}/state/backup-last-succeeded' 2>/dev/null || echo 0" 2>/dev/null)
+      final_succeeded=$($SSH_CMD "test -f '${CONTROL_DIR}/state/backup-final-succeeded' && cat '${CONTROL_DIR}/state/backup-final-succeeded' || echo not_found" 2>/dev/null)
       launch_eval=false
 
-      if [ "$succeeded_stamp" -gt "$completed_stamp" ] 2>/dev/null; then
-        echo "Fresh backup confirmed after completion. Launching held-out eval."
+      if [ -n "$final_succeeded" ] && [ "$final_succeeded" != "not_found" ] && [ "$final_succeeded" = "$REQUEST_TOKEN" ]; then
+        echo "Post-completion backup acknowledged (token ${final_succeeded:0:10}...). Launching held-out eval."
         launch_eval=true
       else
         ckpt_alive=$($SSH_CMD "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no" 2>/dev/null)
@@ -212,7 +214,9 @@ while true; do
         echo "Held-out evaluation completed successfully"
         . "${CONTROL_DIR}/s3-env.env" 2>/dev/null || true
         verify_ok=true
-        for key in "results/flywheel/${ARCH}/${RUN_NAME}/final_scores.json" \
+        for key in "results/flywheel/${ARCH}/${RUN_NAME}/resolved-config.yaml" \
+                   "results/flywheel/${ARCH}/${RUN_NAME}/experiment-manifest.json" \
+                   "results/flywheel/${ARCH}/${RUN_NAME}/final_scores.json" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final-placement-score.png" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final-score-curve.png"; do
           uv run python -c "

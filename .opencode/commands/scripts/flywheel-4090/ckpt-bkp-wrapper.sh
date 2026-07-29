@@ -15,9 +15,18 @@ for i in $(seq 1 60); do
 done
 
 while true; do
+  cycle_id=$(date +%s%N)
+
+  echo "$cycle_id" > "${_C}/state/backup-cycle-started.tmp"
+  mv "${_C}/state/backup-cycle-started.tmp" "${_C}/state/backup-cycle-started"
+
+  final_token=""
+  if [ -f "${_C}/state/backup-final-requested" ]; then
+    final_token=$(cat "${_C}/state/backup-final-requested" 2>/dev/null || true)
+  fi
+
   retry_delay=30
   attempt=0
-  touch "${_C}/state/backup-cycle-started"
   cd /workspace/toy-pickplace
   while [ "$attempt" -lt 3 ]; do
     /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
@@ -25,7 +34,12 @@ while true; do
       --components checkpoints,runs,results,dagger "${_R}"
     exit_code=$?
     if [ "$exit_code" -eq 0 ]; then
-      touch "${_C}/state/backup-last-succeeded"
+      echo "$cycle_id" > "${_C}/state/backup-last-succeeded.tmp"
+      mv "${_C}/state/backup-last-succeeded.tmp" "${_C}/state/backup-last-succeeded"
+      if [ -n "$final_token" ]; then
+        echo "$final_token" > "${_C}/state/backup-final-succeeded.tmp"
+        mv "${_C}/state/backup-final-succeeded.tmp" "${_C}/state/backup-final-succeeded"
+      fi
       break
     fi
     attempt=$((attempt + 1))

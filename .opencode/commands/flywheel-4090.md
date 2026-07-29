@@ -208,7 +208,7 @@ RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 UNIX_TIME_NS=$(date +%s%N)
 BASE_SUITE=$(basename "$(dirname "$EXPERIMENT_CONFIG")")
 EXPERIMENT_NAME=$(basename "$EXPERIMENT_CONFIG" .yaml | sed 's/\.yml$//')
-RUN_NAME="${RUN_TIMESTAMP}_${BASE_SUITE}_${EXPERIMENT_NAME}_seed${SELECTED_SEED}"
+RUN_NAME="${RUN_TIMESTAMP}_${UNIX_TIME_NS}_${BASE_SUITE}_${EXPERIMENT_NAME}_seed${SELECTED_SEED}"
 INSTANCE_LABEL="toy-pickplace-${RUN_NAME}-${UNIX_TIME_NS}"
 CONTROL_DIR="/workspace/toy-pickplace/.flywheel/${RUN_NAME}"
 ```
@@ -551,7 +551,7 @@ distance, ISP throttling, or host oversubscription.
 Generate presigned S3 URLs locally, then transfer and invoke the gate script:
 
 ```bash
-TEMP_NETGATE_KEY="results/flywheel/${FLYWHEEL_ARCH}/.netgate/$(date +%s%N)"
+TEMP_NETGATE_KEY="results/flywheel/${FLYWHEEL_ARCH}/.netgate/${UNIX_TIME_NS}"
 S3_PRESIGNED_PUT=$(uv run python -c "
 import boto3, os
 s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION') or 'ap-south-1')
@@ -569,8 +569,7 @@ url = s3.generate_presigned_url('delete_object',
 print(url)
 ")
 
-cp .opencode/commands/scripts/flywheel-4090/network-gate.sh /tmp/network-gate.sh
-B64_NG=$(base64 -w0 /tmp/network-gate.sh)
+B64_NG=$(base64 -w0 .opencode/commands/scripts/flywheel-4090/network-gate.sh)
 
 NETGATE_OUTPUT=$(S3_PRESIGNED_PUT="$S3_PRESIGNED_PUT" \
   S3_PRESIGNED_DELETE="$S3_PRESIGNED_DELETE" \
@@ -808,25 +807,63 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
    cp '${CONTROL_DIR}/resolved-config.yaml' \
      /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/resolved-config.yaml"
 
-PROVENANCE_MANIFEST=$(
+MANIFEST_JSON=$(
   uv run python scripts/resolve_experiment.py \
     --experiment "$EXPERIMENT_CONFIG" --seed "$SELECTED_SEED" --json-manifest
 )
+MANIFEST_SHA256=$(printf '%s' "$MANIFEST_JSON" | sha256sum | cut -d ' ' -f1)
+MANIFEST_B64=$(printf '%s' "$MANIFEST_JSON" | base64 -w0)
+test -n "$MANIFEST_B64" || { echo 'ERROR: empty manifest base64' >&2; exit 1; }
+
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "cat > /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json << 'MANEOF'
-${PROVENANCE_MANIFEST}
-MANEOF"
+  "printf '%s' '${MANIFEST_B64}' | base64 -d > /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json.tmp && \
+   mv /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json.tmp /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json" || {
+     echo 'ERROR: manifest transfer failed' >&2; exit 1
+   }
+
+REMOTE_MANIFEST_SHA256=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "sha256sum /workspace/toy-pickplace/results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json | cut -d ' ' -f1" 2>/dev/null | tail -1)
+test "$REMOTE_MANIFEST_SHA256" = "$MANIFEST_SHA256" || {
+  printf 'ERROR: manifest SHA-256 mismatch\n  Local:  %s\n  Remote: %s\n' "$MANIFEST_SHA256" "$REMOTE_MANIFEST_SHA256" >&2
+  exit 1
+}
 ```
 
 Instantiate the runner template from `.opencode/commands/scripts/flywheel-4090/runner.sh`,
 base64-encode it, decode it into `CONTROL_DIR`, and start it:
 
 ```bash
-cp .opencode/commands/scripts/flywheel-4090/runner.sh /tmp/runner.sh
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__FLYWHEEL_CONFIG__|${FLYWHEEL_CONFIG}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g; s|__ARCH__|${FLYWHEEL_ARCH}|g" /tmp/runner.sh
-B64=$(base64 -w0 /tmp/runner.sh)
+set -o pipefail
+RUNNER_RENDERED=$(
+  sed \
+    -e "s|__RUN_NAME__|${RUN_NAME}|g" \
+    -e "s|__FLYWHEEL_CONFIG__|${FLYWHEEL_CONFIG}|g" \
+    -e "s|__CONTROL_DIR__|${CONTROL_DIR}|g" \
+    -e "s|__ARCH__|${FLYWHEEL_ARCH}|g" \
+    .opencode/commands/scripts/flywheel-4090/runner.sh
+)
+RUNNER_SHA256=$(printf '%s' "$RUNNER_RENDERED" | sha256sum | cut -d ' ' -f1)
+RUNNER_B64=$(printf '%s' "$RUNNER_RENDERED" | base64 -w0)
+test -n "$RUNNER_B64" || { echo 'ERROR: empty runner base64' >&2; exit 1; }
+
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/runner.sh' && chmod +x '${CONTROL_DIR}/runner.sh'"
+  "printf '%s' '${RUNNER_B64}' | base64 -d > '${CONTROL_DIR}/runner.sh.tmp' && \
+   chmod +x '${CONTROL_DIR}/runner.sh.tmp' && \
+   mv '${CONTROL_DIR}/runner.sh.tmp' '${CONTROL_DIR}/runner.sh'" || {
+     echo 'ERROR: runner transfer failed' >&2; exit 1
+   }
+
+REMOTE_RUNNER_SHA256=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "sha256sum '${CONTROL_DIR}/runner.sh' | cut -d ' ' -f1" 2>/dev/null | tail -1)
+test "$REMOTE_RUNNER_SHA256" = "$RUNNER_SHA256" || {
+  printf 'ERROR: runner SHA-256 mismatch\n  Local:  %s\n  Remote: %s\n' "$RUNNER_SHA256" "$REMOTE_RUNNER_SHA256" >&2
+  exit 1
+}
+
+if ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "grep -q '__FLYWHEEL_CONFIG__\|__RUN_NAME__\|__CONTROL_DIR__\|__ARCH__' '${CONTROL_DIR}/runner.sh'" 2>/dev/null; then
+  echo 'ERROR: unresolved placeholder in runner.sh' >&2; exit 1
+fi
 ```
 
 The executable runner must:
@@ -927,12 +964,36 @@ The wrapper uses `uv run --env-file` so credentials never appear on the command
 line or in the script itself. Instantiate, transfer, and start the backup:
 
 ```bash
-cp .opencode/commands/scripts/flywheel-4090/ckpt-bkp-wrapper.sh /tmp/ckpt-bkp-wrapper.sh
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g; s|__ARCH__|${FLYWHEEL_ARCH}|g" /tmp/ckpt-bkp-wrapper.sh
-B64=$(base64 -w0 /tmp/ckpt-bkp-wrapper.sh)
+set -o pipefail
+BACKUP_RENDERED=$(
+  sed \
+    -e "s|__RUN_NAME__|${RUN_NAME}|g" \
+    -e "s|__CONTROL_DIR__|${CONTROL_DIR}|g" \
+    -e "s|__ARCH__|${FLYWHEEL_ARCH}|g" \
+    .opencode/commands/scripts/flywheel-4090/ckpt-bkp-wrapper.sh
+)
+BACKUP_SHA256=$(printf '%s' "$BACKUP_RENDERED" | sha256sum | cut -d ' ' -f1)
+BACKUP_B64=$(printf '%s' "$BACKUP_RENDERED" | base64 -w0)
+test -n "$BACKUP_B64" || { echo 'ERROR: empty backup base64' >&2; exit 1; }
+
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'
-   chmod +x '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'"
+  "printf '%s' '${BACKUP_B64}' | base64 -d > '${CONTROL_DIR}/ckpt-bkp-wrapper.sh.tmp' && \
+   chmod +x '${CONTROL_DIR}/ckpt-bkp-wrapper.sh.tmp' && \
+   mv '${CONTROL_DIR}/ckpt-bkp-wrapper.sh.tmp' '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'" || {
+     echo 'ERROR: backup wrapper transfer failed' >&2; exit 1
+   }
+
+REMOTE_BACKUP_SHA256=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "sha256sum '${CONTROL_DIR}/ckpt-bkp-wrapper.sh' | cut -d ' ' -f1" 2>/dev/null | tail -1)
+test "$REMOTE_BACKUP_SHA256" = "$BACKUP_SHA256" || {
+  printf 'ERROR: backup wrapper SHA-256 mismatch\n  Local:  %s\n  Remote: %s\n' "$BACKUP_SHA256" "$REMOTE_BACKUP_SHA256" >&2
+  exit 1
+}
+
+if ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "grep -q '__RUN_NAME__\|__CONTROL_DIR__\|__ARCH__' '${CONTROL_DIR}/ckpt-bkp-wrapper.sh'" 2>/dev/null; then
+  echo 'ERROR: unresolved placeholder in ckpt-bkp-wrapper.sh' >&2; exit 1
+fi
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
   "tmux new-session -d -s ckpt-bkp \
      'cd /workspace/toy-pickplace && exec bash ${CONTROL_DIR}/ckpt-bkp-wrapper.sh'"
@@ -943,7 +1004,21 @@ Refuse to start if `ckpt-bkp` already exists on the remote host.
 Poll for up to ten minutes for `state/backup-last-succeeded`. Fail immediately
 if `state/backup-failed` appears or `ckpt-bkp` exits. After success, inspect the
 last ten pane lines without exposing credentials and verify the session remains
-active. A later `backup-failed` marker or unexpected stopped session is a
+active. Verify that both provenance files exist on S3:
+
+```bash
+for key in "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/resolved-config.yaml" \
+           "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json"; do
+  uv run python -c "
+import boto3, os
+c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')
+r = c.head_object(Bucket='${S3_BUCKET}', Key='$key')
+print(f'Provenance OK: s3://${S3_BUCKET}/\$key ({r[\"ContentLength\"]} bytes)')
+" || { echo "ERROR: Provenance file missing on S3: $key" >&2; exit 1; }
+done
+```
+
+A later `backup-failed` marker or unexpected stopped session is a
 workflow failure even if an earlier upload succeeded. If the initial backup
 fails before the local supervisor starts, upload diagnostics best-effort,
 destroy the instance, and verify removal directly.
@@ -954,12 +1029,36 @@ Instantiate `CONTROL_DIR/heldout-eval.sh` from the template and transfer it to
 the instance before starting the local supervisor:
 
 ```bash
-cp .opencode/commands/scripts/flywheel-4090/heldout-eval.sh /tmp/heldout-eval.sh
-sed -i "s|__RUN_NAME__|${RUN_NAME}|g; s|__CONTROL_DIR__|${CONTROL_DIR}|g; s|__ARCH__|${FLYWHEEL_ARCH}|g" /tmp/heldout-eval.sh
-B64=$(base64 -w0 /tmp/heldout-eval.sh)
+set -o pipefail
+HELDOUT_RENDERED=$(
+  sed \
+    -e "s|__RUN_NAME__|${RUN_NAME}|g" \
+    -e "s|__CONTROL_DIR__|${CONTROL_DIR}|g" \
+    -e "s|__ARCH__|${FLYWHEEL_ARCH}|g" \
+    .opencode/commands/scripts/flywheel-4090/heldout-eval.sh
+)
+HELDOUT_SHA256=$(printf '%s' "$HELDOUT_RENDERED" | sha256sum | cut -d ' ' -f1)
+HELDOUT_B64=$(printf '%s' "$HELDOUT_RENDERED" | base64 -w0)
+test -n "$HELDOUT_B64" || { echo 'ERROR: empty heldout base64' >&2; exit 1; }
+
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
-  "printf '%s' '${B64}' | base64 -d > '${CONTROL_DIR}/heldout-eval.sh'
-   chmod +x '${CONTROL_DIR}/heldout-eval.sh'"
+  "printf '%s' '${HELDOUT_B64}' | base64 -d > '${CONTROL_DIR}/heldout-eval.sh.tmp' && \
+   chmod +x '${CONTROL_DIR}/heldout-eval.sh.tmp' && \
+   mv '${CONTROL_DIR}/heldout-eval.sh.tmp' '${CONTROL_DIR}/heldout-eval.sh'" || {
+     echo 'ERROR: heldout eval transfer failed' >&2; exit 1
+   }
+
+REMOTE_HELDOUT_SHA256=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "sha256sum '${CONTROL_DIR}/heldout-eval.sh' | cut -d ' ' -f1" 2>/dev/null | tail -1)
+test "$REMOTE_HELDOUT_SHA256" = "$HELDOUT_SHA256" || {
+  printf 'ERROR: heldout eval SHA-256 mismatch\n  Local:  %s\n  Remote: %s\n' "$HELDOUT_SHA256" "$REMOTE_HELDOUT_SHA256" >&2
+  exit 1
+}
+
+if ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "grep -q '__RUN_NAME__\|__CONTROL_DIR__\|__ARCH__' '${CONTROL_DIR}/heldout-eval.sh'" 2>/dev/null; then
+  echo 'ERROR: unresolved placeholder in heldout-eval.sh' >&2; exit 1
+fi
 ```
 
 The template at `.opencode/commands/scripts/flywheel-4090/heldout-eval.sh`
@@ -983,6 +1082,15 @@ exec 9>/tmp/toy-pickplace-flywheel-local-wrapper.lock
 flock 9
 
 LOCAL_SUPERVISOR_SESSION="flywheel-supervisor-$LOCAL_WORKFLOW_INDEX"
+
+tmux has-session -t "$LOCAL_SSH_SESSION" || {
+  echo "ERROR: SSH wrapper session $LOCAL_SSH_SESSION died before supervisor start" >&2
+  exit 1
+}
+tmux has-session -t "$LOCAL_TB_SESSION" || {
+  echo "ERROR: TB wrapper session $LOCAL_TB_SESSION died before supervisor start" >&2
+  exit 1
+}
 
 HOST="$HOST" PORT="$PORT" INSTANCE_ID="$INSTANCE_ID" \
 RUN_NAME="$RUN_NAME" CONTROL_DIR="$CONTROL_DIR" \
