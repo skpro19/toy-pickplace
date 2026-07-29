@@ -64,8 +64,8 @@ while true; do
       "cycle=${cycle_id} attempt=${attempt} timestamp=$(date -Iseconds)"
     timeout --signal=TERM --kill-after=30s 30m \
       /root/.local/bin/uv run --env-file "${_C}/s3-env.env" \
-      python scripts/s3_backup.py upload \
-      --components checkpoints,runs,results,dagger --arch "${_A}" "${_R}" \
+      python scripts/s3_backup.py --arch "${_A}" upload \
+      --components checkpoints,runs,results,dagger "${_R}" \
       2>&1 | tee -a "$BACKUP_LOG"
     exit_code=${PIPESTATUS[0]}
     if [ "$exit_code" -eq 0 ]; then
