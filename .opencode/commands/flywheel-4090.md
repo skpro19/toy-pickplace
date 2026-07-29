@@ -374,6 +374,42 @@ availability check.
 Try the selected offers in order:
 
 ```bash
+PRIOR_ID=$(vastai show instances --raw 2>/dev/null | \
+  INSTANCE_LABEL="$INSTANCE_LABEL" uv run python -c '
+import json, os, sys
+data = json.load(sys.stdin)
+if isinstance(data, dict):
+    data = data.get("instances", [data])
+for item in data:
+    if item.get("label") == os.environ["INSTANCE_LABEL"]:
+        print(item["id"])
+        break
+')
+if test -n "$PRIOR_ID"; then
+  echo "Found existing instance with label $INSTANCE_LABEL: $PRIOR_ID"
+  echo "Destroying prior instance before provisioning a new one..."
+  vastai destroy instance -y "$PRIOR_ID" 2>&1 || true
+  for i in $(seq 1 30); do
+    instances=$(vastai show instances --raw 2>/dev/null || echo "[]")
+    count=$(echo "$instances" | PRIOR_ID="$PRIOR_ID" uv run python -c '
+import json, os, sys
+data = json.load(sys.stdin)
+if isinstance(data, dict):
+    data = data.get("instances", [data])
+target = os.environ.get("PRIOR_ID", "")
+if not target:
+    raise SystemExit(2)
+ids = [item.get("id") for item in data if str(item.get("id")) == target]
+print(len(ids))
+' 2>/dev/null) || count="error"
+    if [ "$count" = "0" ]; then
+      echo "Prior instance $PRIOR_ID destroyed"
+      break
+    fi
+    sleep 10
+  done
+fi
+
 CREATED=false
 OFFER_IDS=(OFFER_1 OFFER_2 OFFER_3)
 for id in "${OFFER_IDS[@]}"; do
@@ -551,20 +587,47 @@ if ! echo "$NETGATE_OUTPUT" | grep -q "^PASSED"; then
   echo "ERROR: Network gate rejected this instance."
   ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
     'rm -f /tmp/network-gate.sh /tmp/.netgate-test.bin; exit 0' 2>/dev/null || true
-  vastai destroy instance -y "$INSTANCE_ID" 2>&1 || echo "destroy already done"
+  INSTANCE_ID=$(vastai show instances --raw 2>/dev/null | \
+    INSTANCE_LABEL="$INSTANCE_LABEL" uv run python -c '
+import json, os, sys
+data = json.load(sys.stdin)
+if isinstance(data, dict):
+    data = data.get("instances", [data])
+for item in data:
+    if item.get("label") == os.environ["INSTANCE_LABEL"]:
+        print(item["id"])
+        break
+')
+  test -n "$INSTANCE_ID" || {
+    echo "ERROR: could not find instance with label $INSTANCE_LABEL"
+    exit 1
+  }
+  vastai destroy instance -y "$INSTANCE_ID" 2>&1 || {
+    echo "ERROR: vastai destroy failed for $INSTANCE_ID"
+    exit 1
+  }
   for i in $(seq 1 30); do
     instances=$(vastai show instances --raw 2>/dev/null || echo "[]")
-    found=$(echo "$instances" | INSTANCE_ID="$INSTANCE_ID" uv run python -c "
+    found=""
+    count=$(echo "$instances" | INSTANCE_ID="$INSTANCE_ID" uv run python -c '
 import json, os, sys
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):
-        data = data.get('instances', [data])
-    ids = [item.get('id') for item in data if str(item.get('id')) == os.environ['INSTANCE_ID']]
-    if ids: print('found')
-except: pass
-" 2>/dev/null)
-    if [ "$found" != "found" ]; then echo "Instance $INSTANCE_ID destroyed"; break; fi
+data = json.load(sys.stdin)
+if isinstance(data, dict):
+    data = data.get("instances", [data])
+target = os.environ.get("INSTANCE_ID", "")
+if not target:
+    raise SystemExit(2)
+ids = [item.get("id") for item in data if str(item.get("id")) == target]
+print(len(ids))
+' 2>/dev/null) || found="error"
+    if [ "$count" = "0" ]; then
+      echo "Instance $INSTANCE_ID destroyed and removed"
+      break
+    fi
+    if [ "$found" = "error" ] || [ -z "$count" ]; then
+      echo "ERROR: verification poll failed for $INSTANCE_ID"
+      exit 1
+    fi
     sleep 10
   done
   echo "Returning to Step 1 — searching for a new offer."

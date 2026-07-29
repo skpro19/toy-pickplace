@@ -38,26 +38,36 @@ cleanup() {
   echo "Instance destruction in 60s — SSH: ssh -p $PORT root@$HOST"
   $SSH_CMD "printf '%s\n' 'pending-destruction at $(date -Iseconds)' > '${CONTROL_DIR}/state/pending-destruction'" 2>/dev/null || true
   sleep 60
-  vastai destroy instance -y "$INSTANCE_ID" 2>&1 || echo "destroy already done"
+  test -n "$INSTANCE_ID" || {
+    echo "ERROR: INSTANCE_ID is empty — cannot destroy"
+    write_status "cleanup-aborted-empty-id"
+    return 1
+  }
+  vastai destroy instance -y "$INSTANCE_ID" 2>&1 || echo "destroy may have already completed"
   for i in $(seq 1 30); do
     instances=$(vastai show instances --raw 2>/dev/null || echo "[]")
-    found=$(echo "$instances" | INSTANCE_ID="$INSTANCE_ID" uv run python -c "
+    count=""
+    count=$(echo "$instances" | INSTANCE_ID="$INSTANCE_ID" uv run python -c '
 import json, os, sys
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):
-        data = data.get('instances', [data])
-    ids = [item.get('id') for item in data if str(item.get('id')) == os.environ['INSTANCE_ID']]
-    if ids: print('found')
-except: pass
-" 2>/dev/null)
-    if [ "$found" != "found" ]; then
+data = json.load(sys.stdin)
+if isinstance(data, dict):
+    data = data.get("instances", [data])
+target = os.environ.get("INSTANCE_ID", "")
+if not target:
+    raise SystemExit(2)
+ids = [item.get("id") for item in data if str(item.get("id")) == target]
+print(len(ids))
+' 2>/dev/null) || { echo "ERROR: verification poll failed for $INSTANCE_ID"; count=; }
+    if [ "$count" = "0" ]; then
       echo "Instance $INSTANCE_ID destroyed and removed"
       break
     fi
+    if [ -z "$count" ]; then
+      echo "Skipping one verification poll due to transient error; will retry"
+    fi
     sleep 10
   done
-  if [ "$found" = "found" ]; then
+  if [ "$count" != "0" ]; then
     echo "WARNING: Instance $INSTANCE_ID still present after 30 polls, retrying destroy"
     vastai destroy instance -y "$INSTANCE_ID" 2>&1 || true
   fi
