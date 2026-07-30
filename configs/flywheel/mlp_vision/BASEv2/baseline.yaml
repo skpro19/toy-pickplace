@@ -1,0 +1,10 @@
+description: same as `BASE/finetune-no-fresh-optim.yaml` with the `capture_hz` bug-fix (#78ff748)
+
+base_config: ../BASEv2.yaml
+
+overrides: {}
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
