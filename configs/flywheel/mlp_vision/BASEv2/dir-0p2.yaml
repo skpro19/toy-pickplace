@@ -1,0 +1,11 @@
+description: ablating over dagger intervention ratio [0.8 -> 0.2]
+
+base_config: ../BASEv2.yaml
+
+overrides:
+  dagger_intervention_ratio: 0.2
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
