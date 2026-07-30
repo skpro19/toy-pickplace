@@ -1,0 +1,11 @@
+description: ablating over eval episodes [25 -> 50]
+
+base_config: ../BASEv2.yaml
+
+overrides:
+  eval_episodes: 50
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
