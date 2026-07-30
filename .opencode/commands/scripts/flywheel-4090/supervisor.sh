@@ -89,6 +89,23 @@ remote_probe() {
   test "$(remote_value "printf '%s\\n' SSH_OK")" = "SSH_OK"
 }
 
+remote_lifecycle_state() {
+  local session_name="$1"
+  local completed_marker="$2"
+  local failed_marker="$3"
+
+  remote_value \
+    "if tmux has-session -t '${session_name}' 2>/dev/null; then
+       printf '%s\\n' running
+     elif test -f '${completed_marker}'; then
+       cat '${completed_marker}'
+     elif test -f '${failed_marker}'; then
+       cat '${failed_marker}'
+     else
+       printf '%s\\n' disappeared
+     fi"
+}
+
 capture_local_diagnostics() {
   local local_dir="/tmp/toy-pickplace-flywheel-${RUN_NAME}"
   mkdir -p "$local_dir"
@@ -307,27 +324,25 @@ while true; do
 
   case "$STATE" in
     running)
-      completed=$(remote_value \
-        "test -f '${CONTROL_DIR}/state/completed' && cat '${CONTROL_DIR}/state/completed' || echo not_found")
-      failed=$(remote_value \
-        "test -f '${CONTROL_DIR}/state/failed' && cat '${CONTROL_DIR}/state/failed' || echo not_found")
+      run_state=$(remote_lifecycle_state \
+        "flywheel-run" \
+        "${CONTROL_DIR}/state/completed" \
+        "${CONTROL_DIR}/state/failed")
       backup_failed=$(remote_value \
         "test -f '${CONTROL_DIR}/state/backup-failed' && echo yes || echo no")
       backup_alive=$(remote_value \
         "tmux has-session -t ckpt-bkp 2>/dev/null && echo yes || echo no")
-      runner_alive=$(remote_value \
-        "tmux has-session -t flywheel-run 2>/dev/null && echo yes || echo no")
 
-      case "$failed" in
+      case "$run_state" in
         failed*)
-          echo "Training failed: $failed"
+          echo "Training failed: $run_state"
           upload_diagnostics || true
-          cleanup "training-failed-${failed#failed }"
+          cleanup "training-failed-${run_state#failed }"
           break
           ;;
       esac
-      if [ "$completed" = "succeeded 0" ]; then
-        echo "Training completed: $completed"
+      if [ "$run_state" = "succeeded 0" ]; then
+        echo "Training completed: $run_state"
         FINAL_BACKUP_TOKEN=$(date +%s%N)
         FINAL_BACKUP_DEADLINE=$(( $(date +%s) + 10800 ))
         "${SSH_CMD[@]}" \
@@ -343,7 +358,7 @@ while true; do
         upload_diagnostics || true
         cleanup "backup-failed"
         break
-      elif [ "$runner_alive" != "yes" ]; then
+      elif [ "$run_state" = "disappeared" ]; then
         echo "ERROR: flywheel-run disappeared without a terminal marker"
         upload_diagnostics || true
         cleanup "runner-disappeared"
@@ -379,14 +394,12 @@ while true; do
       ;;
 
     evaluation-running)
-      heldout_completed=$(remote_value \
-        "test -f '${CONTROL_DIR}/state/heldout-completed' && cat '${CONTROL_DIR}/state/heldout-completed' || echo not_found")
-      heldout_failed=$(remote_value \
-        "test -f '${CONTROL_DIR}/state/heldout-failed' && cat '${CONTROL_DIR}/state/heldout-failed' || echo not_found")
-      heldout_alive=$(remote_value \
-        "tmux has-session -t heldout-eval 2>/dev/null && echo yes || echo no")
+      heldout_state=$(remote_lifecycle_state \
+        "heldout-eval" \
+        "${CONTROL_DIR}/state/heldout-completed" \
+        "${CONTROL_DIR}/state/heldout-failed")
 
-      if [ "$heldout_completed" = "succeeded 0" ]; then
+      if [ "$heldout_state" = "succeeded 0" ]; then
         echo "Held-out evaluation completed successfully"
         set -a
         . "${PROJECT_ROOT}/.env"
@@ -414,15 +427,15 @@ print(f'Verified: s3://{os.environ[\"S3_BUCKET\"]}/$key ({r[\"ContentLength\"]} 
         break
       fi
 
-      case "$heldout_failed" in
+      case "$heldout_state" in
         failed*)
-          echo "Held-out evaluation failed: $heldout_failed"
+          echo "Held-out evaluation failed: $heldout_state"
           upload_diagnostics || true
           cleanup "heldout-failed"
           break
           ;;
       esac
-      if [ "$heldout_alive" != "yes" ]; then
+      if [ "$heldout_state" = "disappeared" ]; then
         echo "ERROR: heldout-eval disappeared without a terminal marker"
         upload_diagnostics || true
         cleanup "heldout-disappeared"

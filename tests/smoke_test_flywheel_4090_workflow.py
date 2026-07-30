@@ -14,7 +14,7 @@ def main() -> None:
     destroy = (SCRIPT_ROOT / "destroy-instance.sh").read_text()
 
     request_read = 'cat "${_C}/state/backup-final-requested"'
-    backup_command = "python scripts/s3_backup.py upload"
+    backup_command = "python scripts/s3_backup.py --arch"
     acknowledgement = 'write_marker "${_C}/state/backup-final-succeeded"'
     assert request_read in backup
     assert acknowledgement in backup
@@ -29,12 +29,25 @@ def main() -> None:
     assert 'if [ "$#" -ne 8 ]' in supervisor
     assert 'write_status "supervisor-ready"' in supervisor
     assert 'write_status "supervisor-running"' in supervisor
-    assert 'tmux has-session -t flywheel-run' in supervisor
+    assert '"flywheel-run"' in supervisor
     assert 'cleanup "runner-disappeared"' in supervisor
     assert 'tmux has-session -t heldout-eval' in supervisor
     assert 'cleanup "heldout-disappeared"' in supervisor
     assert 'cleanup "heldout-startup-failed"' in supervisor
     assert "FINAL_BACKUP_DEADLINE=$(( $(date +%s) + 10800 ))" in supervisor
+    assert "remote_lifecycle_state()" in supervisor
+    lifecycle_state = supervisor[supervisor.index("remote_lifecycle_state()") :]
+    lifecycle_state = lifecycle_state[: lifecycle_state.index("\n}")]
+    session_check = lifecycle_state.index("tmux has-session")
+    completed_check = lifecycle_state.index("elif test -f '${completed_marker}'")
+    failed_check = lifecycle_state.index("elif test -f '${failed_marker}'")
+    assert session_check < completed_check < failed_check
+    assert 'run_state=$(remote_lifecycle_state' in supervisor
+    assert 'heldout_state=$(remote_lifecycle_state' in supervisor
+    assert "runner_alive=$(remote_value" not in supervisor
+    evaluation_state = supervisor[supervisor.index("    evaluation-running)") :]
+    evaluation_state = evaluation_state[: evaluation_state.index("  esac")]
+    assert "heldout_alive=$(remote_value" not in evaluation_state
     assert "on_supervisor_exit" in supervisor
     assert "emergency_validation_cleanup" in supervisor
     assert '"${SCRIPT_DIR}/destroy-instance.sh" "$INSTANCE_ID"' in supervisor
