@@ -182,6 +182,29 @@ def main() -> None:
             assert data["intervention_threshold"].item() == 0.0
             assert data["intervention_steps"].item() == 2
 
+        full_rate_expert_dir = root / "full-rate-expert"
+        rollout(
+            model_path=str(checkpoint_path),
+            randomize_scene=True,
+            seed=42,
+            episodes=1,
+            max_steps=70,
+            log_root=None,
+            train_npz_dir=None,
+            log_rollout=False,
+            dagger=True,
+            dagger_root=full_rate_expert_dir,
+            beta=1.0,
+            intervention_mode="beta",
+            create_dagger_subdir=False,
+            headless=True,
+            workers=1,
+            capture_hz=60.0,
+        )
+        with np.load(full_rate_expert_dir / "pick_place_000000.npz") as data:
+            assert len(data["execute_expert"]) >= 8
+            assert np.all(data["execute_expert"])
+
     print("Parallel evaluation and DAgger smoke test passed.")
 
 

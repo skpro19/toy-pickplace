@@ -126,13 +126,8 @@ def run_policy_episode(
         )
         execute_expert_action = False
 
-        if use_full_rate_expert:
-            expert_action = controller.compute_actions()
-            action_to_execute = expert_action
-            execute_expert_action = True
-            if in_expert_burst:
-                intervention_steps_remaining -= 1
-        elif capture_due:
+        # Capture on schedule even while the expert controls a recovery burst.
+        if capture_due:
             obs = runtime.observe(sim=sim)
             if dagger:
                 observations.append(obs.copy())
@@ -196,6 +191,12 @@ def run_policy_episode(
                 )
 
             next_capture_time += capture_period
+        elif use_full_rate_expert:
+            expert_action = controller.compute_actions()
+            action_to_execute = expert_action
+            execute_expert_action = True
+            if in_expert_burst:
+                intervention_steps_remaining -= 1
         else:
             if held_policy_action is None:
                 raise RuntimeError("Policy action missing before first capture tick")
