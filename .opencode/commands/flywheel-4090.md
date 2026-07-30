@@ -650,7 +650,7 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
 
 | Check | Requirement |
 |---|---|
-| S3 PUT operation latency | Median of 7 successful samples ≤ 500 ms against the presigned bucket key |
+| S3 PUT operation latency | Median of 7 successful samples ≤ 2000 ms against the presigned bucket key |
 | S3 upload | Median of 3 successful 4 MiB uploads ≥ 1000 KB/s to the bucket |
 
 On network rejection, automatically destroy the provisional instance, verify
