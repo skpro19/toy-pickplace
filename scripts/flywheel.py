@@ -126,6 +126,34 @@ def make_flywheel_seeds(*, global_seed: int) -> dict[str, int]:
     }
 
 
+def make_sample_ratios(
+    *,
+    expert_ratio: float,
+    dagger_source_count: int,
+    dagger_recency_decay: float,
+) -> list[float]:
+    if dagger_source_count < 1:
+        raise ValueError("dagger_source_count must be at least 1")
+    if not 0.0 < expert_ratio < 1.0:
+        raise ValueError("expert_ratio must be between 0 and 1")
+    if not 0.0 < dagger_recency_decay <= 1.0:
+        raise ValueError("dagger_recency_decay must be greater than 0 and at most 1")
+
+    recency_weights = [
+        dagger_recency_decay ** (dagger_source_count - source_index - 1)
+        for source_index in range(dagger_source_count)
+    ]
+    dagger_ratio = 1.0 - expert_ratio
+    recency_total = sum(recency_weights)
+    return [
+        expert_ratio,
+        *[
+            dagger_ratio * recency_weight / recency_total
+            for recency_weight in recency_weights
+        ],
+    ]
+
+
 def round_selection_key(
     *,
     item: dict[str, object],
@@ -296,6 +324,7 @@ def run_flywheel(
     early_stop_patience: int,
     expert_ratio: float,
     dagger_intervention_ratio: float,
+    dagger_recency_decay: float,
     global_seed: int,
     expert_seed: int,
     train_seed: int,
@@ -380,6 +409,7 @@ def run_flywheel(
         "early_stop_patience": early_stop_patience,
         "expert_ratio": expert_ratio,
         "dagger_intervention_ratio": dagger_intervention_ratio,
+        "dagger_recency_decay": dagger_recency_decay,
         "global_seed": global_seed,
         "expert_seed": expert_seed,
         "train_seed": train_seed,
@@ -402,6 +432,7 @@ def run_flywheel(
     print(
         f"Expert ratio: {expert_ratio:.2f} | "
         f"DAgger intervention ratio: {dagger_intervention_ratio:.2f} | "
+        f"DAgger recency decay: {dagger_recency_decay:.2f} | "
         f"Threshold: {intervention_threshold:.3f} | "
         f"Intervention steps: {intervention_steps}"
     )
@@ -560,11 +591,11 @@ def run_flywheel(
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             runs_dir.mkdir(parents=True, exist_ok=True)
 
-            dagger_ratio = (1.0 - expert_ratio) / len(dagger_dirs)
-            sample_ratios = [
-                expert_ratio,
-                *[dagger_ratio] * len(dagger_dirs),
-            ]
+            sample_ratios = make_sample_ratios(
+                expert_ratio=expert_ratio,
+                dagger_source_count=len(dagger_dirs),
+                dagger_recency_decay=dagger_recency_decay,
+            )
 
             print_section(
                 title=f"Round {round:03d}/{num_rounds - 1:03d}: retraining"
@@ -719,6 +750,12 @@ def parse_args():
         help="Sampling share for execute_expert frames within DAgger data",
     )
     parser.add_argument(
+        "--dagger-recency-decay",
+        type=float,
+        default=1.0,
+        help="Per-round weight decay from newer to older DAgger sources",
+    )
+    parser.add_argument(
         "--global-seed",
         type=int,
         default=0,
@@ -815,6 +852,8 @@ def parse_args():
         parser.error("--expert-ratio must be between 0 and 1")
     if not 0.0 <= args.dagger_intervention_ratio <= 1.0:
         parser.error("--dagger-intervention-ratio must be between 0 and 1")
+    if not 0.0 < args.dagger_recency_decay <= 1.0:
+        parser.error("--dagger-recency-decay must be greater than 0 and at most 1")
     if args.global_seed < 0:
         parser.error("--global-seed must be non-negative")
     if args.mode not in EVAL_SELECTION_MODES:
@@ -861,6 +900,7 @@ def main():
         early_stop_patience=args.early_stop_patience,
         expert_ratio=args.expert_ratio,
         dagger_intervention_ratio=args.dagger_intervention_ratio,
+        dagger_recency_decay=args.dagger_recency_decay,
         global_seed=args.global_seed,
         expert_seed=seeds["expert_seed"],
         train_seed=seeds["train_seed"],

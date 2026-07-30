@@ -18,6 +18,7 @@ from flywheel import (  # noqa: E402
     expert_save_images_for_arch,
     make_dagger_round_seeds,
     make_flywheel_seeds,
+    make_sample_ratios,
     next_flywheel_run_name,
     parse_args,
     select_best_round,
@@ -43,6 +44,36 @@ def main() -> None:
     assert len(flywheel_seeds) == 4
     assert len(set(flywheel_seeds.values())) == 4
     assert flywheel_seeds != make_flywheel_seeds(global_seed=1)
+
+    assert np.allclose(
+        make_sample_ratios(
+            expert_ratio=0.5,
+            dagger_source_count=4,
+            dagger_recency_decay=1.0,
+        ),
+        [0.5, 0.125, 0.125, 0.125, 0.125],
+    )
+    recency_ratios = make_sample_ratios(
+        expert_ratio=0.5,
+        dagger_source_count=2,
+        dagger_recency_decay=0.8,
+    )
+    assert np.allclose(recency_ratios, [0.5, 2.0 / 9.0, 2.5 / 9.0])
+    assert np.isclose(sum(recency_ratios), 1.0)
+    assert recency_ratios[-1] > recency_ratios[-2]
+    for invalid_decay in (0.0, -0.1, 1.1):
+        try:
+            make_sample_ratios(
+                expert_ratio=0.5,
+                dagger_source_count=2,
+                dagger_recency_decay=invalid_decay,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"invalid DAgger recency decay was accepted: {invalid_decay}"
+            )
 
     assert eval_selection_key(
         selection_mode="mode-a",
@@ -133,6 +164,7 @@ def main() -> None:
             "max_steps: 5000\n"
             "epochs: 7\n"
             "dagger_intervention_ratio: 0.7\n"
+            "dagger_recency_decay: 0.8\n"
             "dataloader_workers: 4\n"
             "persistent_workers: true\n"
             "arch: mlp\n"
@@ -159,6 +191,7 @@ def main() -> None:
         assert args.max_steps == 5000
         assert args.epochs == 9
         assert args.dagger_intervention_ratio == 0.7
+        assert args.dagger_recency_decay == 0.8
         assert args.dataloader_workers == 4
         assert args.persistent_workers
         assert args.global_seed == 0
@@ -185,6 +218,7 @@ def main() -> None:
             sys.argv = original_argv
         assert args.global_seed == 11
         assert args.arch == "vision_mlp"
+        assert args.dagger_recency_decay == 1.0
         assert not args.persistent_workers
 
         config_path.write_text(

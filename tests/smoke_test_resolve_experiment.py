@@ -77,6 +77,7 @@ def main() -> None:
         persistent_workers: true
         expert_ratio: 0.5
         dagger_intervention_ratio: 0.8
+        dagger_recency_decay: 1.0
         intervention_threshold: 0.1
         intervention_steps: 50
         dagger_episodes: 25
@@ -119,6 +120,7 @@ def main() -> None:
         overrides:
           num_expert_episodes: 200
           batch_size: 512
+          dagger_recency_decay: 0.8
         global_seeds:
           - 0
           - 42
@@ -147,6 +149,7 @@ def main() -> None:
     config = yaml.safe_load(result.stdout)
     assert config["num_expert_episodes"] == 200
     assert config["batch_size"] == 512
+    assert config["dagger_recency_decay"] == 0.8
     assert config["global_seed"] == 0
     assert config["dagger_rounds"] == 10  # unchanged from base
     print("  PASS")

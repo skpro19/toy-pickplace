@@ -33,6 +33,7 @@ _VALID_FLYWHEEL_CONFIG_KEYS: frozenset[str] = frozenset(
         "persistent_workers",
         "expert_ratio",
         "dagger_intervention_ratio",
+        "dagger_recency_decay",
         "intervention_threshold",
         "intervention_steps",
         "dagger_episodes",
