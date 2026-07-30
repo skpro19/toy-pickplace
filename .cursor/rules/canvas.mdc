@@ -1,9 +1,7 @@
 ---
 description: Canvas chart rules for toggleable legend series
-globs: **/*.canvas.tsx
 alwaysApply: false
 ---
-
 # Canvas rules
 
 Also read the canvas skill at `~/.cursor/skills-cursor/canvas/SKILL.md`.
