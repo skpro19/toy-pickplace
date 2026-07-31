@@ -1,0 +1,12 @@
+description: weight recent DAgger rounds using geometric decay 0.8
+
+base_config: ../BASEv2.yaml
+
+overrides:
+  dagger_recency_decay: 0.8
+  fresh_optimizer_state: true
+
+global_seeds:
+  - 0
+  - 420
+  - 5693

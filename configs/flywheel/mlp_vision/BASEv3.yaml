@@ -33,7 +33,7 @@ rollout_max_steps: 1400
 
 #  evaluation / checkpoint selection 
 eval_interval: 20
-eval_episodes: 25
+eval_episodes: 50
 eval_max_steps: 1400
 eval_capture_hz: 60  # policy inference rate during in-loop checkpoint evaluation
 mode: mode-b  # mode-a = score first; mode-b = placement rate first
