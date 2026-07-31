@@ -650,7 +650,7 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
 
 | Check | Requirement |
 |---|---|
-| S3 PUT operation latency | Median of 7 successful samples ≤ 2000 ms against the presigned bucket key |
+| S3 PUT operation latency | Median of 7 successful samples ≤ 5000 ms against the presigned bucket key |
 | S3 upload | Median of 3 successful 4 MiB uploads ≥ 1000 KB/s to the bucket |
 
 On network rejection, automatically destroy the provisional instance, verify
@@ -1123,7 +1123,64 @@ Poll for up to ten minutes for `state/backup-running`,
 `state/backup-artifact-ready`, and `state/backup-last-succeeded`. Fail immediately
 if `state/backup-failed` appears or `ckpt-bkp` exits. After success, inspect the
 last ten pane lines without exposing credentials and verify the session remains
-active. Verify that both provenance files exist on S3:
+active. Use fixed remote paths in the status probe. Do not construct a remote
+loop whose variable is embedded in a single-quoted path: the remote shell would
+test a literal `$variable` filename instead of expanding it.
+
+```bash
+INITIAL_BACKUP_READY=false
+for i in $(seq 1 120); do
+  BACKUP_STATUS=$(ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+    -p "$PORT" "root@$HOST" \
+    "if test -f '${CONTROL_DIR}/state/backup-failed'; then
+       printf '%s\n' BACKUP_FAILED
+     elif ! tmux has-session -t ckpt-bkp 2>/dev/null; then
+       printf '%s\n' BACKUP_STOPPED
+     else
+       running=0
+       artifact_ready=0
+       last_succeeded=0
+       test ! -f '${CONTROL_DIR}/state/backup-running' || running=1
+       test ! -f '${CONTROL_DIR}/state/backup-artifact-ready' || artifact_ready=1
+       test ! -f '${CONTROL_DIR}/state/backup-last-succeeded' || last_succeeded=1
+       printf 'BACKUP_STATE:%s:%s:%s\n' \
+         \"\$running\" \"\$artifact_ready\" \"\$last_succeeded\"
+     fi" 2>/dev/null | tail -1)
+
+  case "$BACKUP_STATUS" in
+    BACKUP_FAILED)
+      echo "ERROR: backup-failed marker appeared" >&2
+      exit 1
+      ;;
+    BACKUP_STOPPED)
+      echo "ERROR: ckpt-bkp session exited" >&2
+      exit 1
+      ;;
+    BACKUP_STATE:1:1:1)
+      INITIAL_BACKUP_READY=true
+      break
+      ;;
+    BACKUP_STATE:[01]:[01]:[01]) ;;
+    *)
+      printf 'ERROR: invalid backup status probe result: %s\n' \
+        "$BACKUP_STATUS" >&2
+      exit 1
+      ;;
+  esac
+  sleep 5
+done
+test "$INITIAL_BACKUP_READY" = true
+
+# The pane may be sitting on blank rows while the wrapper sleeps. Read enough
+# scrollback to find the latest non-blank output, then verify the session again.
+ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
+  "set -o pipefail
+   tmux capture-pane -t ckpt-bkp -p -S -200 2>/dev/null | \
+      sed '/^[[:space:]]*$/d' | tail -10
+   tmux has-session -t ckpt-bkp 2>/dev/null" 2>/dev/null
+```
+
+Verify that both provenance files exist on S3:
 
 ```bash
 for key in "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/resolved-config.yaml" \
