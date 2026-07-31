@@ -178,13 +178,20 @@ cleanup() {
   done
   write_status "$outcome"
 
-  if [ -f "$OWNER_FILE" ] && [ "$(cat "$OWNER_FILE" 2>/dev/null)" = "$RUN_NAME" ]; then
-    tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
-    tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
-    rm -f "$OWNER_FILE"
+  exec 8>/tmp/toy-pickplace-flywheel-local-wrapper.lock
+  if flock 8; then
+    if [ -f "$OWNER_FILE" ] && [ "$(cat "$OWNER_FILE" 2>/dev/null)" = "$RUN_NAME" ]; then
+      tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
+      tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
+      rm -f "$OWNER_FILE"
+    else
+      echo "WARNING: wrapper ownership changed; local sessions were not killed"
+    fi
+    flock -u 8
   else
-    echo "WARNING: wrapper ownership changed; local sessions were not killed"
+    echo "WARNING: wrapper lock unavailable; local sessions were not killed"
   fi
+  exec 8>&-
   SUPERVISOR_TERMINAL=true
   echo "Cleanup complete: $outcome"
 }

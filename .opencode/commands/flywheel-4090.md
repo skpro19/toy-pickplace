@@ -717,8 +717,10 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
    exit 1"
 ```
 
-Immediately allocate the lowest unused non-negative `LOCAL_WORKFLOW_INDEX`
-under `flock` on `/tmp/toy-pickplace-flywheel-local-wrapper.lock`. Set:
+Immediately claim the lowest unused non-negative `LOCAL_WORKFLOW_INDEX` with
+`local-wrapper-lease.sh`. The helper holds
+`/tmp/toy-pickplace-flywheel-local-wrapper.lock` and atomically writes the
+ownership file before returning the index. Set:
 
 ```text
 LOCAL_TB_PORT=6006 + LOCAL_WORKFLOW_INDEX
@@ -727,34 +729,39 @@ LOCAL_TB_SESSION=tb-flywheel-LOCAL_WORKFLOW_INDEX
 ```
 
 An index is occupied if either wrapper, its supervisor, or its port exists, or
-if an ownership file remains. The ownership file prevents an older supervisor
-from later killing wrappers that reused its index.
-Select and create the wrappers while holding the lock:
+if an ownership file remains. The ownership file prevents another workflow
+from killing or reusing active wrappers.
+
+Never pre-clean a fixed index, kill another index's sessions, or delete an
+ownership file to make an index available. This prohibition applies even when
+sessions appear stale and during retries or recovery. Always claim a different
+free index. Before the supervisor starts, a failed claim may only be cleaned up
+with `local-wrapper-lease.sh release-unstarted`, which verifies ownership and
+refuses to act if a supervisor exists.
+
+Claim the lease, then create the wrappers:
 
 ```bash
 set -e
-exec 9>/tmp/toy-pickplace-flywheel-local-wrapper.lock
-flock 9
-LOCAL_WORKFLOW_INDEX=""
-for index in $(seq 0 999); do
-  candidate_ssh_session="vast-ssh-$index"
-  candidate_tb_session="tb-flywheel-$index"
-  candidate_supervisor_session="flywheel-supervisor-$index"
-  candidate_tb_port=$((6006 + index))
-  if tmux has-session -t "$candidate_ssh_session" 2>/dev/null ||
-    tmux has-session -t "$candidate_tb_session" 2>/dev/null ||
-    tmux has-session -t "$candidate_supervisor_session" 2>/dev/null ||
-    test -e "/tmp/toy-pickplace-flywheel-$index.owner" ||
-    ss -ltn "sport = :$candidate_tb_port" | grep -q LISTEN; then
-    continue
+mapfile -t LOCAL_WRAPPER_LEASE < <(
+  .opencode/commands/scripts/flywheel-4090/local-wrapper-lease.sh \
+    allocate "$RUN_NAME"
+)
+test "${#LOCAL_WRAPPER_LEASE[@]}" -eq 4
+LOCAL_WORKFLOW_INDEX=${LOCAL_WRAPPER_LEASE[0]}
+LOCAL_SSH_SESSION=${LOCAL_WRAPPER_LEASE[1]}
+LOCAL_TB_SESSION=${LOCAL_WRAPPER_LEASE[2]}
+LOCAL_TB_PORT=${LOCAL_WRAPPER_LEASE[3]}
+unset LOCAL_WRAPPER_LEASE
+release_local_wrapper_lease_on_error() {
+  exit_code=$?
+  if test "$exit_code" -ne 0; then
+    .opencode/commands/scripts/flywheel-4090/local-wrapper-lease.sh \
+      release-unstarted "$RUN_NAME" "$LOCAL_WORKFLOW_INDEX" || true
   fi
-  LOCAL_WORKFLOW_INDEX=$index
-  LOCAL_SSH_SESSION=$candidate_ssh_session
-  LOCAL_TB_SESSION=$candidate_tb_session
-  LOCAL_TB_PORT=$candidate_tb_port
-  break
-done
-test -n "$LOCAL_WORKFLOW_INDEX"
+  exit "$exit_code"
+}
+trap release_local_wrapper_lease_on_error EXIT
 tmux new-session -d -s "$LOCAL_SSH_SESSION" \
   "ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
     -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -780,8 +787,7 @@ for i in $(seq 1 12); do
   sleep 1
 done
 test "$LOCAL_TB_READY" = true
-flock -u 9
-exec 9>&-
+trap - EXIT
 ```
 
 Print `http://localhost:$LOCAL_TB_PORT`. Stop before launch and report the
@@ -1186,10 +1192,10 @@ The supervisor lives at `.opencode/commands/scripts/flywheel-4090/supervisor.sh`
 It implements the full state machine, diagnostic upload, endpoint refresh, and
 cleanup lifecycle. Read it before proceeding if unfamiliar.
 
-Allocate `LOCAL_SUPERVISOR_SESSION` under the same local wrapper lock and start
-it. Pass all eight values as quoted positional arguments; do not rely on
-environment-prefix assignments because shell expansion occurs before those
-assignments apply. Persist pane output before checking readiness:
+Start `LOCAL_SUPERVISOR_SESSION` only while the atomic lease still belongs to
+this `RUN_NAME`. Pass all eight values as quoted positional arguments; do not
+rely on environment-prefix assignments because shell expansion occurs before
+those assignments apply. Persist pane output before checking readiness:
 
 ```bash
 set -e
@@ -1211,9 +1217,8 @@ tmux has-session -t "$LOCAL_TB_SESSION" || {
   exit 1
 }
 
-test ! -e "$LOCAL_OWNER_FILE"
-printf '%s\n' "$RUN_NAME" > "${LOCAL_OWNER_FILE}.tmp"
-mv "${LOCAL_OWNER_FILE}.tmp" "$LOCAL_OWNER_FILE"
+test -f "$LOCAL_OWNER_FILE"
+test "$(<"$LOCAL_OWNER_FILE")" = "$RUN_NAME"
 rm -f "$LOCAL_SUPERVISOR_STATUS" "$LOCAL_SUPERVISOR_LOG"
 
 printf -v SUPERVISOR_COMMAND '%q ' \
@@ -1229,9 +1234,10 @@ for i in $(seq 1 90); do
   if ! tmux has-session -t "$LOCAL_SUPERVISOR_SESSION" 2>/dev/null; then
     echo "ERROR: supervisor exited during startup" >&2
     test ! -f "$LOCAL_SUPERVISOR_LOG" || tail -30 "$LOCAL_SUPERVISOR_LOG"
-    tmux kill-session -t "$LOCAL_SSH_SESSION" 2>/dev/null || true
-    tmux kill-session -t "$LOCAL_TB_SESSION" 2>/dev/null || true
-    rm -f "$LOCAL_OWNER_FILE"
+    flock -u 9
+    exec 9>&-
+    .opencode/commands/scripts/flywheel-4090/local-wrapper-lease.sh \
+      release-unstarted "$RUN_NAME" "$LOCAL_WORKFLOW_INDEX" || true
     .opencode/commands/scripts/flywheel-4090/destroy-instance.sh "$INSTANCE_ID"
     exit 1
   fi
