@@ -100,6 +100,8 @@ def main() -> None:
                 result = Path("results/flywheel/run-001/metrics.json")
                 result.parent.mkdir(parents=True)
                 result.write_text("{}")
+                environment_manifest = result.parent / "environment-manifest.json"
+                environment_manifest.write_bytes(b'{"schema_version": 1}\n')
                 stale_key = "checkpoints/flywheel/run-001/stale.pt"
                 client.objects[stale_key] = b"stale"
                 client.modified[stale_key] = datetime.now(timezone.utc)
@@ -112,16 +114,22 @@ def main() -> None:
                 )
                 checkpoint_key = "checkpoints/flywheel/run-001/round-000/best.pt"
                 result_key = "results/flywheel/run-001/metrics.json"
+                environment_manifest_key = (
+                    "results/flywheel/run-001/environment-manifest.json"
+                )
                 assert client.objects[checkpoint_key] == b"checkpoint-v1"
                 assert client.objects[result_key] == b"{}"
+                assert client.objects[environment_manifest_key] == (
+                    b'{"schema_version": 1}\n'
+                )
                 assert stale_key not in client.objects
                 assert client.objects[other_run_key] == b"other-run"
-                assert client.upload_count == 2
+                assert client.upload_count == 3
 
                 s3_backup.cmd_upload(
                     args(components="checkpoints,results", run="run-001")
                 )
-                assert client.upload_count == 2
+                assert client.upload_count == 3
 
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
@@ -131,6 +139,7 @@ def main() -> None:
 
                 checkpoint.unlink()
                 result.unlink()
+                environment_manifest.unlink()
                 restore_root = Path("restore")
                 s3_backup.cmd_download(
                     args(
@@ -144,10 +153,16 @@ def main() -> None:
                     / "checkpoints/flywheel/run-001/round-000/best.pt"
                 )
                 assert restored_checkpoint.read_bytes() == b"checkpoint-v1"
+                restored_manifest = (
+                    restore_root
+                    / "results/flywheel/run-001/environment-manifest.json"
+                )
+                assert restored_manifest.read_bytes() == b'{"schema_version": 1}\n'
 
                 s3_backup.cmd_rm(args(path="run-001"))
                 assert checkpoint_key not in client.objects
                 assert result_key not in client.objects
+                assert environment_manifest_key not in client.objects
                 assert client.objects[other_run_key] == b"other-run"
             finally:
                 os.chdir(original_directory)

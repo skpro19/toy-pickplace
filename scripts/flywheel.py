@@ -25,6 +25,11 @@ from eval import (
 from train import train
 from rollout import rollout
 from data import collect_expert_episodes
+from reproducibility import (
+    build_environment_manifest,
+    configure_reproducibility,
+    write_environment_manifest,
+)
 
 
 SECTION_WIDTH = 72
@@ -335,16 +340,28 @@ def run_flywheel(
     fresh_optimizer_state: bool = True,
 ) -> None:
 
+    configure_reproducibility(seed=global_seed)
+
     ckpt_root = Path('checkpoints/flywheel') / arch / run_name
     runs_root = Path('runs/flywheel') / arch / run_name
     results_root = Path('results/flywheel') / arch / run_name
     results_root.mkdir(parents=True, exist_ok=True)
     metrics_path = results_root / "metrics.json"
+    environment_manifest_path = results_root / "environment-manifest.json"
+    write_environment_manifest(
+        path=environment_manifest_path,
+        manifest=build_environment_manifest(
+            run_name=run_name,
+            arch=arch,
+            project_root=Path(__file__).resolve().parents[1],
+        ),
+    )
     expert_npz_dir = expert_npz_dir_for_run(arch=arch, run_name=run_name)
 
     save_expert_images = expert_save_images_for_arch(arch=arch)
 
     print_section(title=f"Flywheel {run_name}: expert collection")
+    print(f"Environment manifest: {environment_manifest_path}")
     print(
         f"Episodes: {num_expert_episodes} | Max steps: {max_steps} | "
         f"Seed: {expert_seed}"

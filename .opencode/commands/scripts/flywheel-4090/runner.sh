@@ -1,6 +1,7 @@
 #!/bin/bash
 set -o pipefail
 export MUJOCO_GL=egl
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 _R=__RUN_NAME__
 _F=__FLYWHEEL_CONFIG__

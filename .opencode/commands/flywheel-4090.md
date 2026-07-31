@@ -676,13 +676,17 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
    apt-get update -qq && apt-get install -y -qq \
      libgl1-mesa-glx libglib2.0-0 libegl1-mesa libgles2-mesa libglfw3 && \
    curl -LsSf https://astral.sh/uv/install.sh | sh && \
-   /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
-   MUJOCO_GL=egl /root/.local/bin/uv run python -c \
-     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0)); import mujoco, glfw; print(mujoco.__version__, glfw.__version__)'"
+    /root/.local/bin/uv sync --locked --directory /workspace/toy-pickplace && \
+    MUJOCO_GL=egl /root/.local/bin/uv run python -c \
+      'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0)); import mujoco, glfw; print(mujoco.__version__, glfw.__version__)' && \
+    MUJOCO_GL=egl CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+      /root/.local/bin/uv run python tests/smoke_test_reproducibility.py"
 ```
 
 If the checked-out commit differs, stop before setup and restart baseline
-confirmation. Configure tmux only; do not edit YAML:
+confirmation. The reproducibility smoke test must pass before launch; it compares
+same-seed expert arrays and rendered images, then compares duplicate deterministic
+training checkpoints. Configure tmux only; do not edit YAML:
 
 ```bash
 ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
@@ -941,7 +945,8 @@ fi
 
 The executable runner must:
 
-1. use `set -o pipefail` and export `MUJOCO_GL=egl`;
+1. use `set -o pipefail` and export `MUJOCO_GL=egl` and
+   `CUBLAS_WORKSPACE_CONFIG=:4096:8` before Python starts;
 2. validate its config, control paths, and log before spawning the process;
 3. persist the process-group PID, verify it survives initialization, then
    atomically write `running` to `state/run-status`;
@@ -1180,11 +1185,12 @@ ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$PORT" "root@$HOST" \
    tmux has-session -t ckpt-bkp 2>/dev/null" 2>/dev/null
 ```
 
-Verify that both provenance files exist on S3:
+Verify that all provenance files exist on S3:
 
 ```bash
 for key in "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/resolved-config.yaml" \
-           "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json"; do
+           "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/experiment-manifest.json" \
+           "results/flywheel/${FLYWHEEL_ARCH}/${RUN_NAME}/environment-manifest.json"; do
   uv run python -c "
 import boto3, os
 c = boto3.client('s3', region_name='${AWS_REGION:-ap-south-1}')

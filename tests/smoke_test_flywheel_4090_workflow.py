@@ -57,6 +57,7 @@ def main() -> None:
         'write_marker "${_C}/state/run-status" "running"'
     )
     assert 'trap on_exit EXIT' in runner
+    assert "export CUBLAS_WORKSPACE_CONFIG=:4096:8" in runner
 
     assert 'write_marker "${_C}/state/backup-running"' in backup
     assert 'write_marker "${_C}/state/backup-artifact-ready"' in backup
@@ -80,8 +81,14 @@ def main() -> None:
     assert "vastai show instances --raw" in destroy
     assert 'if [ "$count" = "0" ]' in destroy
     assert 'echo "[]"' not in destroy
-    assert 'candidate_supervisor_session="flywheel-supervisor-$index"' in workflow
-    assert 'test -e "/tmp/toy-pickplace-flywheel-$index.owner"' in workflow
+    assert (
+        'LOCAL_SUPERVISOR_SESSION="flywheel-supervisor-$LOCAL_WORKFLOW_INDEX"'
+        in workflow
+    )
+    assert (
+        'LOCAL_OWNER_FILE="/tmp/toy-pickplace-flywheel-$LOCAL_WORKFLOW_INDEX.owner"'
+        in workflow
+    )
 
     expected_objects = (
         "metrics.json",
@@ -95,6 +102,10 @@ def main() -> None:
     assert "final_scores_comparison.png" not in heldout
     assert "final_scores_comparison.png" not in supervisor
     assert "remote sha256 mismatch" in heldout
+    assert "environment-manifest.json" in workflow
+    assert "environment-manifest.json" in supervisor
+    assert "environment-manifest.json" not in heldout
+    assert "uv run python tests/smoke_test_reproducibility.py" in workflow
 
     print("Flywheel 4090 workflow smoke test passed.")
 

@@ -414,6 +414,7 @@ while true; do
         verify_ok=true
         for key in "results/flywheel/${ARCH}/${RUN_NAME}/resolved-config.yaml" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/experiment-manifest.json" \
+                   "results/flywheel/${ARCH}/${RUN_NAME}/environment-manifest.json" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/metrics.json" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final_scores.json" \
                    "results/flywheel/${ARCH}/${RUN_NAME}/final-placement-score.png" \
