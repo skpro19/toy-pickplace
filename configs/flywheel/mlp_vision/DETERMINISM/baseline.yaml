@@ -1,6 +1,6 @@
 description: control configuration for smoke test (single DAgger round)
 
-base_config: ../SMOKE_TEST.yaml
+base_config: ../DETERMINISM.yaml
 
 overrides: {}
 
