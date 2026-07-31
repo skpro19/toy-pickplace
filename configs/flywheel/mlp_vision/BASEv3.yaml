@@ -1,7 +1,5 @@
-# same as BASE.yaml with following changes -> 
-# introduced `dagger_recency_decay` param  
-# warm_start: true  
-# fresh_optimizer_state: false  
+# same as BASEv2.yaml with following changes -> 
+# eval_episodes: 50
 
 # run 
 run_name: null

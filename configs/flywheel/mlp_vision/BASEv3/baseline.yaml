@@ -1,0 +1,10 @@
+description: same as `BASEv2.yaml` with the `eval_episodes=50` as baseline now
+
+base_config: ../BASEv3.yaml
+
+overrides: {}
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
