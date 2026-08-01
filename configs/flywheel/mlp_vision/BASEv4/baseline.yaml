@@ -1,4 +1,4 @@
-description: same as `BASEv3.yaml` with `dropout=0` as the baseline for the parametrized backbone dropout
+description: same as `BASEv3.yaml` with `dropout=0.1` as the baseline for the parametrized backbone dropout
 
 base_config: ../BASEv4.yaml
 

@@ -1,0 +1,11 @@
+description: same as `BASEv4.yaml` with `dropout=0.2`
+
+base_config: ../BASEv4.yaml
+
+overrides:
+  dropout: 0.2
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
