@@ -1,0 +1,10 @@
+description: same as `BASEv3.yaml` with `dropout=0` as the baseline for the parametrized backbone dropout
+
+base_config: ../BASEv4.yaml
+
+overrides: {}
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
