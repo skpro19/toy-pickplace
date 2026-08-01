@@ -163,6 +163,7 @@ def main() -> None:
             "num_expert_episodes: 42\n"
             "max_steps: 5000\n"
             "epochs: 7\n"
+            "dropout: 0.2\n"
             "dagger_intervention_ratio: 0.7\n"
             "dagger_recency_decay: 0.8\n"
             "dataloader_workers: 4\n"
@@ -190,6 +191,7 @@ def main() -> None:
         assert args.num_expert_episodes == 42
         assert args.max_steps == 5000
         assert args.epochs == 9
+        assert args.dropout == 0.2
         assert args.dagger_intervention_ratio == 0.7
         assert args.dagger_recency_decay == 0.8
         assert args.dataloader_workers == 4
@@ -204,6 +206,7 @@ def main() -> None:
         config_path.write_text(
             "global_seed: 11\n"
             "arch: vision_mlp\n"
+            "dropout: 0.1\n"
             "train_capture_hz: 60\n"
             "eval_capture_hz: 60\n"
         )
@@ -218,11 +221,13 @@ def main() -> None:
             sys.argv = original_argv
         assert args.global_seed == 11
         assert args.arch == "vision_mlp"
+        assert args.dropout == 0.1
         assert args.dagger_recency_decay == 1.0
         assert not args.persistent_workers
 
         config_path.write_text(
             "arch: vision_mlp\n"
+            "dropout: 0.1\n"
             "train_capture_hz: 60\n"
             "eval_capture_hz: 60\n"
             "dataloader_workers: 0\n"

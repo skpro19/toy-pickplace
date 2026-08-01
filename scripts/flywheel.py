@@ -311,6 +311,7 @@ def run_flywheel(
     max_steps: int,
     num_epochs: int,
     batch_size: int,
+    dropout: float,
     dagger_episodes: int,
     rollout_max_steps: int,
     train_capture_hz: float,
@@ -403,6 +404,7 @@ def run_flywheel(
         "expert_dir": str(expert_npz_dir),
         "epochs": num_epochs,
         "batch_size": batch_size,
+        "dropout": dropout,
         "dagger_rounds": num_dagger_rounds,
         "dagger_mode": "threshold",
         "intervention_threshold": intervention_threshold,
@@ -486,6 +488,7 @@ def run_flywheel(
                 arch=arch,
                 num_epochs=num_epochs,
                 batch_size=batch_size,
+                dropout=dropout,
                 npz_folders=[expert_npz_dir],
                 checkpoint_dir=ckpt_dir,
                 log_dir=runs_dir,
@@ -626,6 +629,7 @@ def run_flywheel(
                 arch=arch,
                 num_epochs=num_epochs,
                 batch_size=batch_size,
+                dropout=dropout,
                 npz_folders=[expert_npz_dir, *dagger_dirs],
                 checkpoint_dir=ckpt_dir,
                 log_dir=runs_dir,
@@ -710,6 +714,12 @@ def parse_args():
     )
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=200)
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=None,
+        help="Backbone dropout probability for the policy model (required)",
+    )
     parser.add_argument("--dagger-rounds", type=int, default=10)
     parser.add_argument(
         "--intervention-threshold",
@@ -810,6 +820,12 @@ def parse_args():
 
     if args.arch is None:
         parser.error("arch is required (set arch in --config or pass --arch)")
+    if args.dropout is None:
+        parser.error(
+            "dropout is required (set dropout in --config or pass --dropout)"
+        )
+    if not 0.0 <= args.dropout < 1.0:
+        parser.error("--dropout must be between 0 and 1")
     if args.train_capture_hz is None:
         parser.error(
             "train_capture_hz is required (set in --config or pass --train-capture-hz)"
@@ -899,6 +915,7 @@ def main():
         max_steps=args.max_steps,
         num_epochs=args.epochs,
         batch_size=args.batch_size,
+        dropout=args.dropout,
         dagger_episodes=args.dagger_episodes,
         rollout_max_steps=args.rollout_max_steps,
         train_capture_hz=args.train_capture_hz,

@@ -13,6 +13,7 @@ def save_checkpoint(
     model: nn.Module,
     model_path: Path,
     epoch_number: int,
+    dropout: float,
     normalize: bool,
     action_space: str,
     norm_stats: NormStats,
@@ -25,6 +26,7 @@ def save_checkpoint(
     checkpoint = {
         "arch": arch,
         "model_dict": model.state_dict(),
+        "dropout": dropout,
         "normalize": normalize,
         "action_space": action_space,
         "epoch": epoch_number,

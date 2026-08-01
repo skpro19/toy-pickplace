@@ -32,8 +32,8 @@ class VisionMlpRecipe(TrainingRecipe):
         )
         return dataset, dataset.norm_stats
 
-    def build_model(self, *, device: torch.device) -> nn.Module:
-        return VisionMLP().to(device)
+    def build_model(self, *, device: torch.device, dropout: float) -> nn.Module:
+        return VisionMLP(dropout=dropout).to(device)
 
     def build_optimizer(self, *, model: nn.Module) -> torch.optim.Optimizer:
         return torch.optim.Adam(model.parameters(), lr=1e-3)

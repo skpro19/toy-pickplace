@@ -33,7 +33,7 @@ class MlpRecipe(TrainingRecipe):
         )
         return dataset, dataset.norm_stats
 
-    def build_model(self, *, device: torch.device) -> nn.Module:
+    def build_model(self, *, device: torch.device, dropout: float) -> nn.Module:
         return MLP(obs_dim=OBS_DIMS, action_dim=ACTION_DIMS).to(device)
 
     def build_optimizer(self, *, model: nn.Module) -> torch.optim.Optimizer:

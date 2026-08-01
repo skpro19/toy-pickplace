@@ -24,6 +24,7 @@ class LossStep(TypedDict):
 class TrainConfig(TypedDict):
     num_epochs: int
     batch_size: int
+    dropout: float
     npz_folders: list[Path]
     checkpoint_dir: Path
     log_dir: Path
@@ -60,7 +61,7 @@ class TrainingRecipe:
     ) -> tuple[Dataset, NormStats]:
         raise NotImplementedError
 
-    def build_model(self, *, device: torch.device) -> nn.Module:
+    def build_model(self, *, device: torch.device, dropout: float) -> nn.Module:
         raise NotImplementedError
 
     def build_optimizer(self, *, model: nn.Module) -> torch.optim.Optimizer:

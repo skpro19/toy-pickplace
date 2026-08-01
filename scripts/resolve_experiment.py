@@ -28,6 +28,7 @@ _VALID_FLYWHEEL_CONFIG_KEYS: frozenset[str] = frozenset(
         "train_capture_hz",
         "epochs",
         "batch_size",
+        "dropout",
         "early_stop_patience",
         "dataloader_workers",
         "persistent_workers",

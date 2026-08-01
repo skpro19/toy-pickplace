@@ -117,6 +117,7 @@ def run_training_trial(
         arch=arch,
         num_epochs=1,
         batch_size=4,
+        dropout=0.1,
         npz_folders=[data_dir],
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,

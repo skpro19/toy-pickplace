@@ -27,6 +27,7 @@ def train(
     arch: str = "mlp",
     num_epochs: int = 10,
     batch_size: int = 200,
+    dropout: float,
     npz_folders: list[Path],
     checkpoint_dir: Path,
     log_dir: Path,
@@ -51,6 +52,7 @@ def train(
     config: TrainConfig = {
         "num_epochs": num_epochs,
         "batch_size": batch_size,
+        "dropout": dropout,
         "npz_folders": npz_folders,
         "checkpoint_dir": checkpoint_dir,
         "log_dir": log_dir,
@@ -91,6 +93,12 @@ def parse_args():
     parser.add_argument("--checkpoint_root", type=Path, default=Path("checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=200)
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        required=True,
+        help="Backbone dropout probability for the policy model",
+    )
     parser.add_argument("--log_root", type=Path, default=Path("runs"))
     parser.add_argument(
         "--npz",
@@ -171,6 +179,8 @@ def parse_args():
         parser.error("--epochs must be at least 1")
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
+    if not 0.0 <= args.dropout < 1.0:
+        parser.error("--dropout must be between 0 and 1")
     if args.eval_interval < 1:
         parser.error("--eval-interval must be at least 1")
     if args.eval_episodes < 1:
@@ -220,6 +230,7 @@ def main():
         arch=args.arch,
         num_epochs=args.epochs,
         batch_size=args.batch_size,
+        dropout=args.dropout,
         npz_folders=args.npz,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,

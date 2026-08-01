@@ -43,7 +43,11 @@ class VisionMlpRuntime:
                 map_location=device,
                 weights_only=False,
             )
-        model = VisionMLP().to(device)
+        if "dropout" not in checkpoint:
+            raise ValueError(
+                f"Checkpoint is missing required field 'dropout': {model_path}"
+            )
+        model = VisionMLP(dropout=float(checkpoint["dropout"])).to(device)
         model.load_state_dict(checkpoint["model_dict"])
         model.eval()
 

@@ -76,17 +76,20 @@ class VisionEncoder(nn.Module):
 
 
 class VisionMLP(nn.Module):
-    def __init__(self):
+    def __init__(self, *, dropout: float):
         super().__init__()
 
         self.vision_encoder = VisionEncoder(in_dims=3, out_dims=128)
         self.backbone = nn.Sequential(
             nn.Linear(PROPRIO_DIMS + 128, 128),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(128, 128),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(128, 128),
             nn.ReLU(),
+            nn.Dropout(dropout),
         )
         self.joint_head = nn.Linear(128, ACTION_DIMS - 1)
         self.gripper_head = nn.Linear(128, 1)

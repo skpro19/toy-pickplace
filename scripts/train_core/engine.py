@@ -88,7 +88,7 @@ def run_training(
     joint_loss_fn = nn.MSELoss()
     gripper_loss_fn = nn.BCEWithLogitsLoss()
 
-    model = recipe.build_model(device=device)
+    model = recipe.build_model(device=device, dropout=config["dropout"])
     if config["init_checkpoint"] is not None:
         ckpt = torch.load(config["init_checkpoint"], map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_dict"])
@@ -127,6 +127,7 @@ def run_training(
                 model=model,
                 model_path=config["checkpoint_dir"] / "last.pt",
                 epoch_number=epoch_number,
+                dropout=config["dropout"],
                 normalize=config["normalize"],
                 action_space=config["action_space"],
                 norm_stats=norm_stats,
@@ -167,6 +168,7 @@ def run_training(
                         model=model,
                         model_path=config["checkpoint_dir"] / "best.pt",
                         epoch_number=epoch_number,
+                        dropout=config["dropout"],
                         normalize=config["normalize"],
                         action_space=config["action_space"],
                         norm_stats=norm_stats,
