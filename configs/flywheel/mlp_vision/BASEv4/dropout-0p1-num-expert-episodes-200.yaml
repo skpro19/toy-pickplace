@@ -1,0 +1,12 @@
+description: same as `BASEv4.yaml` with `num_expert_episodes=200` and `dropout=0.1`
+
+base_config: ../BASEv4.yaml
+
+overrides:
+  dropout: 0.1
+  num_expert_episodes: 200
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
