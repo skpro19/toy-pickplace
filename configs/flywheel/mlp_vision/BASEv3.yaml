@@ -16,6 +16,7 @@ train_capture_hz: 60  # obs/action/image rate for expert data and DAgger rollout
 # training
 epochs: 1000
 batch_size: 768
+dropout: 0.0  # backbone dropout probability for the policy model
 early_stop_patience: 50
 dataloader_workers: 4
 persistent_workers: true
