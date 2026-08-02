@@ -1,0 +1,11 @@
+description: same as `BASEv2.yaml` with the `eval_episodes=50` as baseline now
+
+base_config: ../BASEv3.yaml
+
+overrides: 
+  num_expert_episodes: 200
+
+global_seeds:
+  - 0
+  - 420
+  - 5693
