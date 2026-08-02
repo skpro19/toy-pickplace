@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 
 import torch
 from torch import nn
@@ -42,5 +43,16 @@ def save_checkpoint(
     if eval_selection_mode is not None:
         checkpoint["eval_selection_mode"] = eval_selection_mode
     checkpoint.update(norm_stats)
-    torch.save(checkpoint, model_path)
+    with tempfile.NamedTemporaryFile(
+        dir=model_path.parent,
+        prefix=f".{model_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary_file:
+        temporary_path = Path(temporary_file.name)
+    try:
+        torch.save(checkpoint, temporary_path)
+        temporary_path.replace(model_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return model_path

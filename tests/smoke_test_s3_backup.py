@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from typing import Any
+from typing import Any, BinaryIO, Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,14 +38,17 @@ class FakeS3Client:
         self.objects: dict[str, bytes] = {}
         self.modified: dict[str, datetime] = {}
         self.upload_count = 0
+        self.before_upload: Callable[[], None] | None = None
 
     def get_paginator(self, operation: str) -> FakePaginator:
         assert operation == "list_objects_v2"
         return FakePaginator(client=self)
 
-    def upload_file(self, filename: str, bucket: str, key: str) -> None:
+    def upload_fileobj(self, fileobj: BinaryIO, bucket: str, key: str) -> None:
         del bucket
-        self.objects[key] = Path(filename).read_bytes()
+        if self.before_upload is not None:
+            self.before_upload()
+        self.objects[key] = fileobj.read()
         self.modified[key] = datetime.now(timezone.utc)
         self.upload_count += 1
 
@@ -126,10 +129,30 @@ def main() -> None:
                 assert client.objects[other_run_key] == b"other-run"
                 assert client.upload_count == 3
 
+                active_checkpoint = checkpoint.parent / "last.pt"
+                active_checkpoint.write_bytes(b"checkpoint-before-replace")
+                replacement = Path("replacement.pt")
+                replacement.write_bytes(b"checkpoint-after-replace")
+                client.before_upload = lambda: replacement.replace(active_checkpoint)
+                s3_backup.cmd_upload(args(components="checkpoints", run="run-001"))
+                active_checkpoint_key = "checkpoints/flywheel/run-001/round-000/last.pt"
+                assert client.objects[active_checkpoint_key] == (
+                    b"checkpoint-before-replace"
+                )
+                client.before_upload = None
+
+                unpublished_checkpoint = checkpoint.parent / ".last.pt.pending.tmp"
+                unpublished_checkpoint.write_bytes(b"partial-checkpoint")
+                s3_backup.cmd_upload(args(components="checkpoints", run="run-001"))
+                assert not any(
+                    key.endswith(".tmp") for key in client.objects
+                )
+
+                upload_count = client.upload_count
                 s3_backup.cmd_upload(
                     args(components="checkpoints,results", run="run-001")
                 )
-                assert client.upload_count == 3
+                assert client.upload_count == upload_count
 
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):

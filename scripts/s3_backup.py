@@ -114,7 +114,11 @@ def _sync_directory(
     source: Path,
     destination: str,
 ) -> tuple[int, int]:
-    files = sorted(path for path in source.rglob("*") if path.is_file())
+    files = sorted(
+        path
+        for path in source.rglob("*")
+        if path.is_file() and not path.name.endswith(".tmp")
+    )
     uploads = [
         (path, _key(destination, path.relative_to(source).as_posix()))
         for path in files
@@ -130,20 +134,21 @@ def _sync_directory(
     total_bytes = sum(p.stat().st_size for p, _ in uploads)
     with tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Uploading") as pbar:
         for path, object_key in uploads:
-            remote = existing_objects.get(object_key)
-            modified = remote.get("LastModified") if remote else None
-            local = path.stat()
-            if (
-                remote
-                and remote.get("Size") == local.st_size
-                and modified is not None
-                and modified.timestamp() >= local.st_mtime
-            ):
+            with path.open("rb") as local_file:
+                local = os.fstat(local_file.fileno())
+                remote = existing_objects.get(object_key)
+                modified = remote.get("LastModified") if remote else None
+                if (
+                    remote
+                    and remote.get("Size") == local.st_size
+                    and modified is not None
+                    and modified.timestamp() >= local.st_mtime
+                ):
+                    pbar.update(local.st_size)
+                    continue
+                client.upload_fileobj(local_file, bucket, object_key)
                 pbar.update(local.st_size)
-                continue
-            client.upload_file(str(path), bucket, object_key)
-            pbar.update(local.st_size)
-            uploaded += 1
+                uploaded += 1
 
     stale_keys = sorted(set(existing_objects) - expected_keys)
     _delete_keys(client=client, bucket=bucket, keys=stale_keys)
