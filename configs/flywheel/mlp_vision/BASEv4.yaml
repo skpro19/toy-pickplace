@@ -1,5 +1,5 @@
 # same as BASEv3.yaml with following changes -> 
-# dropout: 0
+# dropout: 0.1
 
 # run 
 run_name: null
