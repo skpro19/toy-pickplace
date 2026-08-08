@@ -32,6 +32,13 @@ class EpisodeData(TypedDict):
 
 
 class PickPlaceDataset(Dataset):
+
+    action_space: Literal["joint_delta", "absolute"]
+    normalize: bool
+    obs: np.ndarray 
+    actions: np.ndarray
+    episode_ends: np.ndarray
+
     def __init__(
         self,
         *,
@@ -242,6 +249,10 @@ class PickPlaceDataset(Dataset):
             axis=0,
         )
 
+        lengths = [episode["obs"].shape[0] for episode in episodes]
+        self.episode_ends = np.cumsum(lengths, dtype=np.int64)
+      
+
     def _concatenate_extra_episode_data(
         self,
         *,
@@ -364,6 +375,9 @@ class PickPlaceDataset(Dataset):
 
 
 class PickPlaceVisionDataset(PickPlaceDataset):
+
+    img_obs: np.ndarray
+
     def _load_extra_episode_data(
         self,
         *,
@@ -420,3 +434,42 @@ class PickPlaceVisionDataset(PickPlaceDataset):
         img_obs /= 255.0
         img_obs = torch.from_numpy(img_obs).permute(2, 0, 1)
         return img_obs
+
+class PickPlaceACTDataset(PickPlaceVisionDataset):
+
+    k: int
+
+    def __init__(self, *, chunk_size: int, **kwargs):
+        
+        kwargs.setdefault("action_space", "absolute")
+        kwargs.setdefault("normalize", True)
+
+        super().__init__(**kwargs)
+        self.k = chunk_size 
+        
+    def _prepare_actions(self, *, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # print(f"_prepare_actions called!")
+        actions = torch.empty((self.k, ACTION_DIMS), dtype=torch.float32)
+        is_pad = torch.empty(self.k, dtype=torch.bool)
+        
+        episode_idx = np.searchsorted(self.episode_ends, idx, side="right") 
+        episode_end = self.episode_ends[episode_idx]
+
+        for i in range(self.k):
+            chunk_idx = idx + i
+            # need to clamp episode boundary
+            frame_idx = min(chunk_idx, episode_end - 1)
+            actions[i,:] = self._prepare_action(idx=frame_idx)
+            
+            is_pad[i] = (chunk_idx > episode_end - 1)
+
+        return (actions,is_pad)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,  torch.Tensor]:
+        actions, is_pad = self._prepare_actions(idx=idx)
+        return (
+            self._prepare_obs(idx=idx), 
+            actions, 
+            self._prepare_img_obs(idx=idx),
+            is_pad
+        )
