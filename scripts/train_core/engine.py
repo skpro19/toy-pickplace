@@ -28,6 +28,8 @@ def run_epoch(
     epoch_gripper_loss = 0.0
     num_batches = 0
 
+    model.train()
+
     for batch in dataloader:
         step = recipe.train_step(
             model=model,
