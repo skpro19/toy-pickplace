@@ -461,7 +461,7 @@ class PickPlaceACTDataset(PickPlaceVisionDataset):
             frame_idx = min(chunk_idx, episode_end - 1)
             actions[i,:] = self._prepare_action(idx=frame_idx)
             
-            is_pad[i] = (chunk_idx > episode_end - 1)
+            is_pad[i] = chunk_idx >= int(episode_end)
 
         return (actions,is_pad)
 
