@@ -75,6 +75,31 @@ For any `LineChart` or `BarChart` with two or more series:
 - Prefer built-in `cursor/canvas` components over hand-rolled markup
 - Run the skill's pre-delivery self-check before finishing
 
+### Hand-rolled SVG diagrams
+
+Explainer canvases often need custom SVG. Follow these rules so text stays legible
+and nothing clips:
+
+**Font sizes** — use a shared scale at the top of the file (adjust only with reason):
+- title: 16–17px · label: 14–15px · body: 14px · caption/axis: 13–14px
+- Never use 10–11px for labels the user must read
+
+**SVG vs React inside `<svg>`** — legends, labels, and annotations must be native
+SVG (`<text>`, `<g>`, `<line>`, `<rect>`). Do not put `Row`, `Text`, or other
+React components inside an `<svg>` block — they will not render.
+
+**Overflow** — size the `viewBox` to fit all content. After laying out step boxes
+or stacked rows, verify the bottom-most element plus padding is less than `h`.
+Increase `h` or reduce spacing rather than clipping.
+
+**Layout** — design wide explainer diagrams at ~840px `viewBox` width with
+`style={{ display: "block", maxWidth: "100%" }}`. Put them full-width in a
+`Stack`; do not squeeze them into `Grid columns={2}` beside prose (scaling makes
+fonts tiny). Two-column grids are fine for text + tables, not for wide SVGs.
+
+**Captions** — prefer `theme.text.secondary` over `tertiary` when the caption
+must be readable. Keep legend subtitles short so they do not overflow horizontally.
+
 ## Editing and debugging
 
 - Treat the `Canvas TypeScript check` line in tool results as authoritative diagnostics
