@@ -6,7 +6,7 @@ import torch
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from models.act.ACTVisionEncoder import ACTVisionEncoder  # noqa: E402
+from models.act.act_vision_encoder import ACTVisionEncoder  # noqa: E402
 
 N_SPATIAL_TOKENS = 64
 HIDDEN_DIMS = 128
