@@ -6,7 +6,7 @@ import torch
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from models.act.policy import ACTEncoder  # noqa: E402
+from models.act.encoder import ACTEncoder  # noqa: E402
 
 HIDDEN_DIMS = 128
 NUM_LAYERS = 4
