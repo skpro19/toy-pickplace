@@ -100,6 +100,41 @@ fonts tiny). Two-column grids are fine for text + tables, not for wide SVGs.
 **Captions** — prefer `theme.text.secondary` over `tertiary` when the caption
 must be readable. Keep legend subtitles short so they do not overflow horizontally.
 
+### Architecture diagrams
+
+When generating or explaining architecture (encoder stacks, transformer blocks,
+attention, residual nets, dataflow), color and layout by **role**, not by box.
+
+**Color by role** — pull hues from `useHostTheme().category`. Same operation →
+same color everywhere it appears:
+- tokens / activations (e.g. `x`, `y`) — `blue`
+- mixing across the sequence (self-attention, cross-attention) — `purple`
+- per-token independent compute (MLP / FFN) — `green`
+- normalization (LayerNorm, RMSNorm) — `cyan`
+- residual add / skip — `yellow`
+
+Do not give every box a different hue. Two LayerNorms and two residuals must
+match. Tinted fills (`fillOpacity` ~0.22) plus a matching stroke; no hardcoded
+hex, no gradients.
+
+**Legend** — put a `Swatch` + short label row *outside* the SVG (React `Row` is
+fine above the diagram; never inside `<svg>`). A reader should know the mapping
+without reading the chat.
+
+**Layout** — make mix vs independent ops obvious:
+- mixing: one wide bar spanning the sequence
+- per-token ops: one small box (or circle) per token, aligned in a row
+- tokens: labeled circles
+- residuals: a distinct skip path into a `+` node, not a vague arrow
+
+Reference: `cs231n-transformer-block.canvas.tsx` (CS231n Lecture 8 block
+template). Prefer that visual language for transformer-style blocks unless the
+user specifies another figure.
+
+**Chat explanations** — use the same vocabulary: name the role (mix, per-token,
+norm, residual) and the color. Do not dump a second unlabeled ASCII diagram that
+contradicts the canvas.
+
 ## Editing and debugging
 
 - Treat the `Canvas TypeScript check` line in tool results as authoritative diagnostics
