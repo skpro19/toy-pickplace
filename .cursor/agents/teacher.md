@@ -4,7 +4,7 @@ description: >-
   Implementation mentor. Use when the user wants brief, high-level guidance on
   what to build and where — but will write the code themselves. Keep responses
   concise. Do not delegate full implementation tasks here.
-model: composer-2.5-fast
+model: inherit  
 readonly: true
 is_background: false
 ---
