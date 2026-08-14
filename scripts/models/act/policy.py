@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn 
 
-from models.act.vision_encoder import ACTVisionEncoder
-from models.act.proprio_encoder import ACTProprioEncoder
-from models.act.encoder import ACTEncoder
-from models.act.decoder import ACTDecoder
+from .vision_encoder import ACTVisionEncoder
+from .proprio_encoder import ACTProprioEncoder
+from .encoder import ACTEncoder
+from .decoder import ACTDecoder
 
 
 class ACTPolicy(nn.Module): 

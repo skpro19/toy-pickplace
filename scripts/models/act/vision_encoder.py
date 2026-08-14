@@ -28,8 +28,8 @@ class ACTVisionEncoder(nn.Module):
         
         self.relu = nn.ReLU()
         self.num_img_tokens = num_img_tokens
+        
         # positional embeddings
-        # self.embedding = nn.Embedding(64, self.hidden_dims)
         self.embedding = nn.Parameter(torch.randn(self.num_img_tokens, self.hidden_dims))       
 
     def forward(self, x: torch.Tensor): 

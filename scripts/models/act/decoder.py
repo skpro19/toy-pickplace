@@ -34,6 +34,7 @@ class ACTDecoder(nn.Module):
             num_layers=self.num_layers
         )
 
+
     def forward(self, tgt: torch.Tensor, memory: torch.Tensor): 
         
         if memory.ndim != 3: 
