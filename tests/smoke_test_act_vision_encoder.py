@@ -35,17 +35,17 @@ def assert_backward_grads(*, device: torch.device) -> None:
     out.sum().backward()
     assert model.conv1.weight.grad is not None
     assert model.conv3.weight.grad is not None
-    assert model.embedding.weight.grad is not None
+    assert model.embedding.grad is not None
 
 
 def assert_pos_embed_applied(*, device: torch.device) -> None:
     model = make_model(device=device)
     x = make_input(batch_size=1, device=device)
     out = model(x)
-    pos = model.embedding(torch.arange(N_SPATIAL_TOKENS, device=device))
+    pos = model.embedding
     tokens_only = out - pos
 
-    model.embedding.weight.data.zero_()
+    model.embedding.data.zero_()
     out_without_pos = model(x)
     torch.testing.assert_close(out_without_pos, tokens_only)
 
@@ -62,7 +62,7 @@ def assert_input_guard(*, device: torch.device) -> None:
 
 def assert_embedding_param_count(*, device: torch.device) -> None:
     model = make_model(device=device)
-    assert model.embedding.weight.numel() == EMBEDDING_PARAM_COUNT
+    assert model.embedding.numel() == EMBEDDING_PARAM_COUNT
 
 
 def main() -> None:
